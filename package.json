@@ -1,0 +1,63 @@
+{
+  "name": "@brandon-svec/express_mcp",
+  "version": "0.0.13",
+  "description": "Express Router and middleware for integrating MCP (Model Context Protocol) functionality into existing Express servers",
+  "main": "src/index.js",
+  "type": "module",
+  "engines": {
+    "node": "20",
+    "npm": "10.x"
+  },
+  "scripts": {
+    "example": "node examples/example.js",
+    "dev": "nodemon examples/example.js",
+    "start": "node examples/example.js",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "test": "mocha --exit \"tests/**/*.js\" --bail",
+    "test:unit": "mocha --exit \"tests/unit/**/*.js\"",
+    "test:coverage": "c8 --reporter=lcov npm test",
+    "coverage": "c8 npm test",
+    "coverage:unit": "c8 npm run test:unit",
+    "coverage:report": "c8 report --reporter lcov --reporter=text"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git@git.soma.example.com:express-mcp/express-mcp"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "express",
+    "api",
+    "generic"
+  ],
+  "author": "Express MCP",
+  "license": "UNLICENSED",
+  "publishConfig": {
+    "access": "restricted",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^0.5.0",
+    "ajv": "^8.17.1",
+    "ajv-formats": "^3.0.1",
+    "flexsearch": "^0.8.205",
+    "pino": "^9.9.0"
+  },
+  "peerDependencies": {
+    "express": "^4.18.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.33.0",
+    "c8": "^8.0.1",
+    "chai": "^4.3.10",
+    "eslint": "^9.33.0",
+    "express": "^4.18.0",
+    "globals": "^16.3.0",
+    "mocha": "^10.2.0",
+    "nodemon": "^3.1.10",
+    "supertest": "^6.3.3",
+    "timekeeper": "^2.3.1"
+  }
+}
