@@ -88,6 +88,69 @@ app.listen(3000, () => {
 });
 ```
 
+## Authentication (OAuth SSO)
+
+Optional GitHub and/or Google login. Users receive a JWT; MCP clients send `Authorization: Bearer <token>` on each request.
+
+### Multi-provider (GitHub + Google)
+
+```javascript
+import { ExpressMcp } from '@brandon-svec/express_mcp';
+
+const expressMcp = new ExpressMcp({
+  auth: {
+    enabled: true,
+    callbackUrl: 'http://localhost:3000/auth/callback',
+    jwtSecret: process.env.JWT_SECRET,
+    sessionSecret: process.env.SESSION_SECRET,
+    allowedUsers: ['user@example.com', 'github-login'], // optional
+    providers: {
+      github: { clientId: '...', clientSecret: '...' },
+      google: { clientId: '...', clientSecret: '...' }
+    }
+  }
+});
+
+app.use('/auth', expressMcp.authRouter());
+app.use('/mcp', expressMcp.router());
+```
+
+Routes:
+
+- `GET /auth/login` — provider picker (or auto-redirect if only one)
+- `GET /auth/login/github` / `GET /auth/login/google`
+- `GET /auth/callback` — shared callback URL (register on both OAuth apps)
+- `GET /auth/me` — current user (Bearer token)
+
+### Single provider (backward compatible)
+
+```javascript
+auth: {
+  enabled: true,
+  provider: 'google',
+  clientId: '...',
+  clientSecret: '...',
+  callbackUrl: 'http://localhost:3000/auth/callback',
+  jwtSecret: '...',
+  sessionSecret: '...'
+}
+```
+
+### Environment helpers (host apps)
+
+```javascript
+import { buildAuthOptionsFromEnv } from '@brandon-svec/express_mcp';
+
+const auth = buildAuthOptionsFromEnv({ baseUrl: 'http://localhost:3000' });
+if (auth) {
+  const expressMcp = new ExpressMcp({ auth: { ...auth, enabled: true } });
+}
+```
+
+Env vars for multi-provider: `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, plus `JWT_SECRET`, `SESSION_SECRET`. Optional allowlist: `AUTH_ALLOWED_USERS=email1,login2`.
+
+Tool handlers receive `context.user` (`sub`, `login`, `email`, `provider`). MCP logs include user identity on each request (not the token).
+
 ## API Reference
 
 ### ExpressMcp Class
@@ -601,7 +664,7 @@ All responses follow JSON-RPC 2.0 format with proper error handling.
 # Development
 npm run dev                    # Start example with auto-restart
 npm run example               # Run example application
-npm start                     # Start example application
+npm run example:auth          # Run OAuth SSO example
 
 # Testing
 npm test                      # Run all tests

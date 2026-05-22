@@ -386,7 +386,7 @@ describe('ExpressMcp Logging Tests', () => {
       };
     });
 
-    it('should not include requestId in initialize log but use child logger for other operations', async () => {
+    it('should log initialize on child logger with requestId', async () => {
       const mockReq = {
         body: {
           jsonrpc: '2.0',
@@ -398,9 +398,9 @@ describe('ExpressMcp Logging Tests', () => {
       const postHandler = router.stack.find(layer => layer.route?.methods?.post)?.route?.stack?.[0]?.handle;
       await postHandler(mockReq, mockRes);
 
-      const initLog = logs.find(log => log.message === 'Client connected to MCP server');
+      const initLog = logs.find(log => log.message === 'MCP client initialized');
       assert.ok(initLog);
-      assert.strictEqual(initLog.data.requestId, undefined);
+      assert.strictEqual(initLog.data.requestId, 'init-test');
     });
 
     it('should handle unknown method with child logger', async () => {

@@ -3,6 +3,7 @@ dist/
 *.log
 .env
 .cursor.env
+.cursor/
 .DS_Store
 
 env

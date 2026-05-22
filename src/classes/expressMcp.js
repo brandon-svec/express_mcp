@@ -4,6 +4,9 @@ import { readFileSync } from 'fs';
 import { ToolRegistry } from './toolRegistry.js';
 import { KnowledgeBase } from './knowledgeBase.js';
 import { ToolExecution } from './toolExecution.js';
+import { AuthManager } from './authManager.js';
+import { userLogFields } from '../authz.js';
+import { normalizeAuthProviders, authServerInfo } from '../authConfig.js';
 import { 
   KnowledgeBaseSearchTool,
   KnowledgeBaseListTool,
@@ -26,6 +29,17 @@ export class ExpressMcp {
    * @param {Object} [options.loggerOptions] - Pino logger options (used only if logger is not provided)
    *   - Use enabled: true/false to control logging
    *   - Tool arguments are never logged for security reasons
+   * @param {Object} [options.auth] - Optional OAuth SSO configuration
+   * @param {boolean} [options.auth.enabled=false] - Enable Bearer JWT auth on MCP routes
+   * @param {string} [options.auth.provider='github'] - Single-provider shorthand (with clientId/clientSecret)
+   * @param {string} [options.auth.clientId] - OAuth client ID (single-provider)
+   * @param {string} [options.auth.clientSecret] - OAuth client secret (single-provider)
+   * @param {Object} [options.auth.providers] - Multi-provider map: { github: { clientId, clientSecret }, google: { ... } }
+   * @param {string} options.auth.callbackUrl - OAuth redirect URI (e.g. http://localhost:3000/auth/callback)
+   * @param {string} options.auth.jwtSecret - Secret for signing MCP session JWTs
+   * @param {string} [options.auth.jwtExpiresIn='7d'] - JWT expiry
+   * @param {string} options.auth.sessionSecret - Secret for express-session (OAuth handshake only)
+   * @param {string[]} [options.auth.allowedUsers] - Optional email/login allowlist (empty = allow all authenticated)
    */
   constructor(options = {}) {
     this.options = Object.assign({
@@ -34,6 +48,9 @@ export class ExpressMcp {
         level: 'info',
         name: 'express-mcp',
         enabled: true // Default enabled
+      },
+      auth: {
+        enabled: false
       }
     }, options);
     
@@ -57,8 +74,74 @@ export class ExpressMcp {
       this.toolRegistry.register(new KnowledgeBaseListTool(this.knowledgeBase), this.name);
       this.toolRegistry.register(new KnowledgeBaseGetTool(this.knowledgeBase), this.name);
     }
+
+    this.authManager = null;
+    this.enabledAuthProviders = [];
+    if (this.options.auth?.enabled) {
+      this._initializeAuth();
+    }
     
-    this.logger.info('TrustMCP instance initialized successfully');
+    this.logger.info('ExpressMcp instance initialized successfully');
+  }
+
+  /**
+   * Initialize AuthManager when auth is enabled.
+   * @private
+   */
+  _initializeAuth() {
+    const auth = this.options.auth;
+    const sharedRequired = ['callbackUrl', 'jwtSecret', 'sessionSecret'];
+    const missingShared = sharedRequired.filter((key) => !auth[key]);
+
+    if (missingShared.length > 0) {
+      throw new Error(
+        `Auth enabled but missing required options: ${missingShared.join(', ')}`
+      );
+    }
+
+    const { providers, enabledProviders } = normalizeAuthProviders(auth);
+    this.enabledAuthProviders = enabledProviders;
+
+    this.authManager = new AuthManager({
+      providers,
+      callbackUrl: auth.callbackUrl,
+      jwtSecret: auth.jwtSecret,
+      jwtExpiresIn: auth.jwtExpiresIn,
+      sessionSecret: auth.sessionSecret,
+      allowedUsers: auth.allowedUsers || [],
+      logger: this.logger
+    });
+
+    const allowlistInfo =
+      auth.allowedUsers?.length > 0
+        ? { allowedUserCount: auth.allowedUsers.length }
+        : { allowlist: 'open' };
+
+    this.logger.info(
+      { providers: enabledProviders, ...allowlistInfo },
+      'OAuth authentication enabled for MCP routes'
+    );
+  }
+
+  /**
+   * Whether authentication is enabled for this instance.
+   * @returns {boolean}
+   */
+  isAuthEnabled() {
+    return Boolean(this.authManager);
+  }
+
+  /**
+   * Express router for OAuth login, callback, logout, and /me.
+   * Mount at `/auth` when auth is enabled.
+   * @param {Object} [sessionOptions] - Options passed to express-session
+   * @returns {import('express').Router}
+   */
+  authRouter(sessionOptions = {}) {
+    if (!this.authManager) {
+      throw new Error('Auth is not enabled. Set options.auth.enabled to true.');
+    }
+    return this.authManager.createAuthRouter(sessionOptions);
   }
 
   /**
@@ -230,10 +313,19 @@ export class ExpressMcp {
     const router = Router();
     const toolRegistry = this.toolRegistry;
 
+    if (this.authManager) {
+      for (const middleware of this.authManager.protectedMiddleware()) {
+        router.use(middleware);
+      }
+    }
+
     // MCP Streamable HTTP endpoint for Cursor
     router.post('/', async (req, res) => {
       const requestId = req.body?.id || 'unknown';
-      const requestLogger = this.logger.child({ requestId });
+      const requestLogger = this.logger.child({
+        requestId,
+        ...userLogFields(req.mcpUser)
+      });
       
       try {
         const { jsonrpc, method, params, id } = req.body;
@@ -260,7 +352,7 @@ export class ExpressMcp {
             break;
             
           case 'initialize':
-            this.logger.debug('Client connected to MCP server');
+            requestLogger.info('MCP client initialized');
             {
               const serverName = this.name || '@express-mcp/express-mcp';
               const result = {
@@ -270,7 +362,10 @@ export class ExpressMcp {
                 },
                 serverInfo: {
                   name: serverName,
-                  version: packageVersion
+                  version: packageVersion,
+                  ...(this.authManager
+                    ? { auth: authServerInfo(this.enabledAuthProviders) }
+                    : {})
                 }
               };
               if (typeof this.description === 'string' && this.description.trim().length > 0) {
@@ -303,7 +398,8 @@ export class ExpressMcp {
             const toolExecution = new ToolExecution(name, id, args);
             
             const toolContext = {
-              execution: toolExecution
+              execution: toolExecution,
+              user: req.mcpUser ?? null
             };
             
             try {
