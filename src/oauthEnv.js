@@ -74,9 +74,7 @@ export function buildAuthOptionsFromEnv(overrides = {}) {
   const baseUrl =
     overrides.baseUrl ||
     process.env.BASE_URL ||
-    (process.env.HEROKU_APP_NAME
-      ? `https://${process.env.HEROKU_APP_NAME}.herokuapp.com`
-      : `http://localhost:${port}`);
+    `http://localhost:${port}`;
 
   const callbackUrl =
     overrides.callbackUrl ||

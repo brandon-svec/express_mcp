@@ -12,8 +12,6 @@
     "example": "node examples/example.js",
     "example:auth": "node examples/example-with-auth.js",
     "dev": "nodemon examples/example.js",
-    "start": "node server.js",
-    "start:heroku-local": "PORT=3000 HEROKU_APP_NAME=mcp-test-express node server.js",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "test": "mocha --exit \"tests/**/*.js\" --bail",

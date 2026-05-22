@@ -664,7 +664,7 @@ All responses follow JSON-RPC 2.0 format with proper error handling.
 # Development
 npm run dev                    # Start example with auto-restart
 npm run example               # Run example application
-npm start                     # Start example application
+npm run example:auth          # Run OAuth SSO example
 
 # Testing
 npm test                      # Run all tests
