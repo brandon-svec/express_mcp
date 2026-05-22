@@ -4,6 +4,7 @@ import { readFileSync } from 'fs';
 import { ToolRegistry } from './toolRegistry.js';
 import { KnowledgeBase } from './knowledgeBase.js';
 import { ToolExecution } from './toolExecution.js';
+import { AuthManager } from './authManager.js';
 import { 
   KnowledgeBaseSearchTool,
   KnowledgeBaseListTool,
@@ -26,6 +27,15 @@ export class ExpressMcp {
    * @param {Object} [options.loggerOptions] - Pino logger options (used only if logger is not provided)
    *   - Use enabled: true/false to control logging
    *   - Tool arguments are never logged for security reasons
+   * @param {Object} [options.auth] - Optional OAuth SSO configuration
+   * @param {boolean} [options.auth.enabled=false] - Enable Bearer JWT auth on MCP routes
+   * @param {string} [options.auth.provider='github'] - 'github' | 'google'
+   * @param {string} options.auth.clientId - OAuth client ID
+   * @param {string} options.auth.clientSecret - OAuth client secret
+   * @param {string} options.auth.callbackUrl - OAuth redirect URI (e.g. http://localhost:3000/auth/callback)
+   * @param {string} options.auth.jwtSecret - Secret for signing MCP session JWTs
+   * @param {string} [options.auth.jwtExpiresIn='7d'] - JWT expiry
+   * @param {string} options.auth.sessionSecret - Secret for express-session (OAuth handshake only)
    */
   constructor(options = {}) {
     this.options = Object.assign({
@@ -34,6 +44,9 @@ export class ExpressMcp {
         level: 'info',
         name: 'express-mcp',
         enabled: true // Default enabled
+      },
+      auth: {
+        enabled: false
       }
     }, options);
     
@@ -57,8 +70,66 @@ export class ExpressMcp {
       this.toolRegistry.register(new KnowledgeBaseListTool(this.knowledgeBase), this.name);
       this.toolRegistry.register(new KnowledgeBaseGetTool(this.knowledgeBase), this.name);
     }
+
+    this.authManager = null;
+    if (this.options.auth?.enabled) {
+      this._initializeAuth();
+    }
     
-    this.logger.info('TrustMCP instance initialized successfully');
+    this.logger.info('ExpressMcp instance initialized successfully');
+  }
+
+  /**
+   * Initialize AuthManager when auth is enabled.
+   * @private
+   */
+  _initializeAuth() {
+    const auth = this.options.auth;
+    const required = ['clientId', 'clientSecret', 'callbackUrl', 'jwtSecret', 'sessionSecret'];
+    const missing = required.filter((key) => !auth[key]);
+
+    if (missing.length > 0) {
+      throw new Error(
+        `Auth enabled but missing required options: ${missing.join(', ')}`
+      );
+    }
+
+    this.authManager = new AuthManager({
+      provider: auth.provider || 'github',
+      clientId: auth.clientId,
+      clientSecret: auth.clientSecret,
+      callbackUrl: auth.callbackUrl,
+      jwtSecret: auth.jwtSecret,
+      jwtExpiresIn: auth.jwtExpiresIn,
+      sessionSecret: auth.sessionSecret,
+      logger: this.logger
+    });
+
+    this.logger.info(
+      { provider: auth.provider || 'github' },
+      'OAuth authentication enabled for MCP routes'
+    );
+  }
+
+  /**
+   * Whether authentication is enabled for this instance.
+   * @returns {boolean}
+   */
+  isAuthEnabled() {
+    return Boolean(this.authManager);
+  }
+
+  /**
+   * Express router for OAuth login, callback, logout, and /me.
+   * Mount at `/auth` when auth is enabled.
+   * @param {Object} [sessionOptions] - Options passed to express-session
+   * @returns {import('express').Router}
+   */
+  authRouter(sessionOptions = {}) {
+    if (!this.authManager) {
+      throw new Error('Auth is not enabled. Set options.auth.enabled to true.');
+    }
+    return this.authManager.createAuthRouter(sessionOptions);
   }
 
   /**
@@ -230,6 +301,10 @@ export class ExpressMcp {
     const router = Router();
     const toolRegistry = this.toolRegistry;
 
+    if (this.authManager) {
+      router.use(this.authManager.bearerAuthMiddleware());
+    }
+
     // MCP Streamable HTTP endpoint for Cursor
     router.post('/', async (req, res) => {
       const requestId = req.body?.id || 'unknown';
@@ -270,7 +345,15 @@ export class ExpressMcp {
                 },
                 serverInfo: {
                   name: serverName,
-                  version: packageVersion
+                  version: packageVersion,
+                  ...(this.authManager
+                    ? {
+                        auth: {
+                          required: true,
+                          provider: this.options.auth.provider || 'github'
+                        }
+                      }
+                    : {})
                 }
               };
               if (typeof this.description === 'string' && this.description.trim().length > 0) {
