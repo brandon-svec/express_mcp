@@ -2,7 +2,7 @@
 
 /**
  * MCP example with optional OAuth SSO (GitHub and/or Google).
- * Copy .env.example to .env and fill in credentials before running.
+ * Copy examples/.env.example to examples/.env and fill in credentials before running.
  */
 
 import express from 'express';
@@ -18,7 +18,6 @@ import { loadEnvFile } from '../src/loadEnvFile.js';
 import { WhoAmITool } from '../src/tools/whoami.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-loadEnvFile(join(__dirname, '../.env'));
 loadEnvFile(join(__dirname, '.env'));
 
 class GreetingTool extends BaseTool {
@@ -45,7 +44,7 @@ async function startAuthExample() {
     console.error(
       'Missing OAuth config. Set GITHUB_CLIENT_* and/or GOOGLE_CLIENT_*, plus JWT_SECRET and SESSION_SECRET.'
     );
-    console.error('Copy examples/.env.example to .env and configure credentials.');
+    console.error('Copy examples/.env.example to examples/.env and configure credentials.');
     process.exit(1);
   }
 
