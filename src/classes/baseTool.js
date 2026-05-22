@@ -71,7 +71,9 @@ export class BaseTool {
   /**
    * Execute the tool with given arguments
    * @param {Object} _args - Tool arguments
-   * @param {Object} _context - Context object (apiService, etc.)
+   * @param {Object} _context - Execution context
+   * @param {import('./toolExecution.js').ToolExecution} _context.execution - Tool execution tracker
+   * @param {Object|null} [_context.user] - Authenticated user from JWT (sub, login, name, email, provider)
    * @returns {Promise<Object>} - Tool result
    */
   async execute(_args, _context) {

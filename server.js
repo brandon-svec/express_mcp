@@ -6,7 +6,14 @@
  */
 
 import express from 'express';
-import { ExpressMcp, BaseTool } from './src/index.js';
+import { dirname, join } from 'path';
+import { fileURLToPath } from 'url';
+import { ExpressMcp, BaseTool, buildAuthOptionsFromEnv, isOAuthConfigured } from './src/index.js';
+import { loadEnvFile } from './src/loadEnvFile.js';
+import { WhoAmITool } from './src/tools/whoami.js';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+loadEnvFile(join(__dirname, '.env'));
 
 const port = Number(process.env.PORT) || 3000;
 
@@ -18,16 +25,6 @@ function getBaseUrl() {
     return `https://${process.env.HEROKU_APP_NAME}.herokuapp.com`;
   }
   return `http://localhost:${port}`;
-}
-
-function isAuthConfigured() {
-  const required = [
-    'OAUTH_CLIENT_ID',
-    'OAUTH_CLIENT_SECRET',
-    'JWT_SECRET',
-    'SESSION_SECRET'
-  ];
-  return required.every((key) => Boolean(process.env[key]));
 }
 
 class GreetingTool extends BaseTool {
@@ -53,22 +50,15 @@ function createStatusTool(getRuntimeInfo) {
     }
 
     async execute() {
-      const info = getRuntimeInfo();
-      return {
-        service: 'mcp-test-express',
-        authEnabled: info.authEnabled,
-        baseUrl: info.baseUrl,
-        provider: info.provider
-      };
+      return getRuntimeInfo();
     }
   };
 }
 
 async function startServer() {
   const baseUrl = getBaseUrl();
-  const provider = process.env.OAUTH_PROVIDER || 'github';
-  const authEnabled =
-    process.env.AUTH_ENABLED !== 'false' && isAuthConfigured();
+  const authOptions = buildAuthOptionsFromEnv({ baseUrl });
+  const authEnabled = Boolean(authOptions);
 
   const mcpOptions = {
     name: process.env.MCP_SERVER_NAME || 'mcp-test-express',
@@ -83,32 +73,28 @@ async function startServer() {
   };
 
   if (authEnabled) {
-    mcpOptions.auth = {
-      enabled: true,
-      provider,
-      clientId: process.env.OAUTH_CLIENT_ID,
-      clientSecret: process.env.OAUTH_CLIENT_SECRET,
-      callbackUrl:
-        process.env.OAUTH_CALLBACK_URL || `${baseUrl}/auth/callback`,
-      jwtSecret: process.env.JWT_SECRET,
-      jwtExpiresIn: process.env.JWT_EXPIRES_IN || '7d',
-      sessionSecret: process.env.SESSION_SECRET
-    };
-  } else {
+    mcpOptions.auth = { ...authOptions, enabled: true };
+  } else if (process.env.AUTH_ENABLED !== 'false' && !isOAuthConfigured()) {
     console.warn(
-      'Auth disabled: set OAUTH_CLIENT_ID, OAUTH_CLIENT_SECRET, JWT_SECRET, SESSION_SECRET to enable OAuth.'
+      'Auth disabled: set GITHUB_* and/or GOOGLE_* OAuth credentials, JWT_SECRET, SESSION_SECRET.'
     );
   }
 
+  const expressMcp = new ExpressMcp(mcpOptions);
+  const enabledProviders = expressMcp.enabledAuthProviders || [];
+
   const runtimeInfo = () => ({
+    service: 'mcp-test-express',
     authEnabled,
     baseUrl,
-    provider
+    providers: enabledProviders
   });
 
-  const expressMcp = new ExpressMcp(mcpOptions);
   expressMcp.registerTool(new GreetingTool());
   expressMcp.registerTool(new (createStatusTool(runtimeInfo))());
+  if (authEnabled) {
+    expressMcp.registerTool(new WhoAmITool());
+  }
 
   if (mcpOptions.enableKnowledgeBase) {
     await expressMcp.addDocument('welcome', {
@@ -127,13 +113,14 @@ async function startServer() {
     res.json({
       ok: true,
       authEnabled,
+      providers: enabledProviders,
       mcpPath: '/mcp'
     });
   });
 
   app.get('/', (req, res) => {
     const loginLine = authEnabled
-      ? `<p><a href="/auth/login">Login with ${provider === 'google' ? 'Google' : 'GitHub'}</a></p>`
+      ? '<p><a href="/auth/login">Sign in</a> (GitHub and/or Google)</p>'
       : '<p>OAuth not configured. Set Heroku config vars to enable login.</p>';
 
     res.send(`<!DOCTYPE html>
@@ -160,6 +147,7 @@ async function startServer() {
     console.log(`MCP: ${baseUrl}/mcp`);
     if (authEnabled) {
       console.log(`Login: ${baseUrl}/auth/login`);
+      console.log(`Providers: ${enabledProviders.join(', ')}`);
     }
   });
 }

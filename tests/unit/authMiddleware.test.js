@@ -22,6 +22,16 @@ describe('MCP Auth Middleware', () => {
     }
   }
 
+  class WhoAmITool extends BaseTool {
+    constructor() {
+      super('whoami', 'Returns caller identity');
+    }
+
+    async execute(_args, context) {
+      return { login: context.user?.login, email: context.user?.email };
+    }
+  }
+
   function createAuthMcp(overrides = {}) {
     return new ExpressMcp(
       getTestExpressMcpOptions({
@@ -111,9 +121,42 @@ describe('MCP Auth Middleware', () => {
     assert.strictEqual(res.body.jsonrpc, '2.0');
     assert.property(res.body, 'result');
     assert.property(res.body.result, 'serverInfo');
-    assert.deepInclude(res.body.result.serverInfo, {
-      auth: { required: true, provider: 'github' }
+    assert.deepInclude(res.body.result.serverInfo.auth, {
+      required: true,
+      provider: 'github'
     });
+  });
+
+  it('initialize returns providers array when multi-provider configured', async () => {
+    expressMcp = createAuthMcp({
+      providers: {
+        github: { clientId: 'gh', clientSecret: 'ghs' },
+        google: { clientId: 'go', clientSecret: 'gos' }
+      }
+    });
+    expressMcp.registerTool(new HelloTool());
+    app = express();
+    app.use(express.json());
+    app.use('/mcp', expressMcp.router());
+
+    const token = issueToken({
+      sub: 'gh:1',
+      login: 'user',
+      name: 'User',
+      email: 'u@example.com',
+      provider: 'github'
+    });
+
+    const res = await request(app)
+      .post('/mcp')
+      .set('Authorization', `Bearer ${token}`)
+      .send(initializeBody);
+
+    assert.strictEqual(res.status, 200);
+    assert.deepEqual(res.body.result.serverInfo.auth.providers, [
+      'github',
+      'google'
+    ]);
   });
 
   it('authRouter throws when auth is disabled', () => {
@@ -132,15 +175,117 @@ describe('MCP Auth Middleware', () => {
       /missing required options/
     );
   });
+
+  it('returns 403 when user is not on allowlist', async () => {
+    expressMcp = createAuthMcp({ allowedUsers: ['allowed@example.com'] });
+    expressMcp.registerTool(new HelloTool());
+    app = express();
+    app.use(express.json());
+    app.use('/mcp', expressMcp.router());
+
+    const token = issueToken({
+      sub: 'gh:1',
+      login: 'blocked',
+      name: 'Blocked',
+      email: 'blocked@example.com',
+      provider: 'github'
+    });
+
+    const res = await request(app)
+      .post('/mcp')
+      .set('Authorization', `Bearer ${token}`)
+      .send(initializeBody);
+
+    assert.strictEqual(res.status, 403);
+    assert.strictEqual(res.body.error, 'forbidden');
+  });
+
+  it('allows MCP when email is on allowlist', async () => {
+    expressMcp = createAuthMcp({ allowedUsers: ['allowed@example.com'] });
+    expressMcp.registerTool(new HelloTool());
+    app = express();
+    app.use(express.json());
+    app.use('/mcp', expressMcp.router());
+
+    const token = issueToken({
+      sub: 'gh:2',
+      login: 'alloweduser',
+      name: 'Allowed',
+      email: 'allowed@example.com',
+      provider: 'github'
+    });
+
+    const res = await request(app)
+      .post('/mcp')
+      .set('Authorization', `Bearer ${token}`)
+      .send(initializeBody);
+
+    assert.strictEqual(res.status, 200);
+  });
+
+  it('allows MCP when login is on allowlist', async () => {
+    expressMcp = createAuthMcp({ allowedUsers: ['mygithublogin'] });
+    expressMcp.registerTool(new HelloTool());
+    app = express();
+    app.use(express.json());
+    app.use('/mcp', expressMcp.router());
+
+    const token = issueToken({
+      sub: 'gh:3',
+      login: 'mygithublogin',
+      name: 'Git User',
+      email: 'other@example.com',
+      provider: 'github'
+    });
+
+    const res = await request(app)
+      .post('/mcp')
+      .set('Authorization', `Bearer ${token}`)
+      .send(initializeBody);
+
+    assert.strictEqual(res.status, 200);
+  });
+
+  it('passes user into tool context', async () => {
+    expressMcp = createAuthMcp();
+    expressMcp.registerTool(new WhoAmITool());
+    app = express();
+    app.use(express.json());
+    app.use('/mcp', expressMcp.router());
+
+    const token = issueToken({
+      sub: 'gh:4',
+      login: 'ctxuser',
+      name: 'Ctx',
+      email: 'ctx@example.com',
+      provider: 'github'
+    });
+
+    const res = await request(app)
+      .post('/mcp')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        jsonrpc: '2.0',
+        method: 'tools/call',
+        params: { name: 'whoami', arguments: {} },
+        id: 10
+      });
+
+    assert.strictEqual(res.status, 200);
+    const text = res.body.result.content[0].text;
+    const parsed = JSON.parse(text);
+    assert.strictEqual(parsed.login, 'ctxuser');
+    assert.strictEqual(parsed.email, 'ctx@example.com');
+  });
 });
 
 describe('AuthManager', () => {
   it('issues and verifies JWT with user claims', async () => {
     const { AuthManager } = await import('../../src/classes/authManager.js');
     const auth = new AuthManager({
-      provider: 'github',
-      clientId: 'id',
-      clientSecret: 'secret',
+      providers: {
+        github: { clientId: 'id', clientSecret: 'secret' }
+      },
       callbackUrl: 'http://localhost/cb',
       jwtSecret: JWT_SECRET,
       jwtExpiresIn: '1h',
@@ -166,15 +311,15 @@ describe('AuthManager', () => {
   it('builds GitHub authorization URL with state', async () => {
     const { AuthManager } = await import('../../src/classes/authManager.js');
     const auth = new AuthManager({
-      provider: 'github',
-      clientId: 'gh-id',
-      clientSecret: 'gh-secret',
+      providers: {
+        github: { clientId: 'gh-id', clientSecret: 'gh-secret' }
+      },
       callbackUrl: 'http://localhost:3000/auth/callback',
       jwtSecret: JWT_SECRET,
       sessionSecret: SESSION_SECRET
     });
 
-    const url = auth.getAuthorizationUrl('state-abc');
+    const url = auth.getAuthorizationUrl('github', 'state-abc');
     assert.include(url, 'github.com/login/oauth/authorize');
     assert.include(url, 'client_id=gh-id');
     assert.include(url, 'state=state-abc');

@@ -20,12 +20,24 @@ Copy from [.env.example](.env.example) and set on Heroku:
 
 ```bash
 heroku config:set BASE_URL=https://mcp-test-express.herokuapp.com -a mcp-test-express
+# GitHub OAuth (optional if using Google only)
+heroku config:set GITHUB_CLIENT_ID=your_github_client_id -a mcp-test-express
+heroku config:set GITHUB_CLIENT_SECRET=your_github_client_secret -a mcp-test-express
+
+# Google OAuth (optional if using GitHub only)
+heroku config:set GOOGLE_CLIENT_ID=your_google_client_id -a mcp-test-express
+heroku config:set GOOGLE_CLIENT_SECRET=your_google_client_secret -a mcp-test-express
+
+# Legacy single-provider (if not using GITHUB_* + GOOGLE_* above)
 heroku config:set OAUTH_PROVIDER=github -a mcp-test-express
 heroku config:set OAUTH_CLIENT_ID=your_client_id -a mcp-test-express
 heroku config:set OAUTH_CLIENT_SECRET=your_client_secret -a mcp-test-express
 heroku config:set OAUTH_CALLBACK_URL=https://mcp-test-express.herokuapp.com/auth/callback -a mcp-test-express
 heroku config:set JWT_SECRET="$(openssl rand -hex 32)" -a mcp-test-express
 heroku config:set SESSION_SECRET="$(openssl rand -hex 32)" -a mcp-test-express
+
+# Optional: restrict who can use MCP after login (comma-separated emails or GitHub logins)
+heroku config:set AUTH_ALLOWED_USERS=you@gmail.com -a mcp-test-express
 ```
 
 `NODE_ENV=production` is set automatically by Heroku.

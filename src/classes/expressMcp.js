@@ -5,6 +5,8 @@ import { ToolRegistry } from './toolRegistry.js';
 import { KnowledgeBase } from './knowledgeBase.js';
 import { ToolExecution } from './toolExecution.js';
 import { AuthManager } from './authManager.js';
+import { userLogFields } from '../authz.js';
+import { normalizeAuthProviders, authServerInfo } from '../authConfig.js';
 import { 
   KnowledgeBaseSearchTool,
   KnowledgeBaseListTool,
@@ -29,13 +31,15 @@ export class ExpressMcp {
    *   - Tool arguments are never logged for security reasons
    * @param {Object} [options.auth] - Optional OAuth SSO configuration
    * @param {boolean} [options.auth.enabled=false] - Enable Bearer JWT auth on MCP routes
-   * @param {string} [options.auth.provider='github'] - 'github' | 'google'
-   * @param {string} options.auth.clientId - OAuth client ID
-   * @param {string} options.auth.clientSecret - OAuth client secret
+   * @param {string} [options.auth.provider='github'] - Single-provider shorthand (with clientId/clientSecret)
+   * @param {string} [options.auth.clientId] - OAuth client ID (single-provider)
+   * @param {string} [options.auth.clientSecret] - OAuth client secret (single-provider)
+   * @param {Object} [options.auth.providers] - Multi-provider map: { github: { clientId, clientSecret }, google: { ... } }
    * @param {string} options.auth.callbackUrl - OAuth redirect URI (e.g. http://localhost:3000/auth/callback)
    * @param {string} options.auth.jwtSecret - Secret for signing MCP session JWTs
    * @param {string} [options.auth.jwtExpiresIn='7d'] - JWT expiry
    * @param {string} options.auth.sessionSecret - Secret for express-session (OAuth handshake only)
+   * @param {string[]} [options.auth.allowedUsers] - Optional email/login allowlist (empty = allow all authenticated)
    */
   constructor(options = {}) {
     this.options = Object.assign({
@@ -72,6 +76,7 @@ export class ExpressMcp {
     }
 
     this.authManager = null;
+    this.enabledAuthProviders = [];
     if (this.options.auth?.enabled) {
       this._initializeAuth();
     }
@@ -85,28 +90,35 @@ export class ExpressMcp {
    */
   _initializeAuth() {
     const auth = this.options.auth;
-    const required = ['clientId', 'clientSecret', 'callbackUrl', 'jwtSecret', 'sessionSecret'];
-    const missing = required.filter((key) => !auth[key]);
+    const sharedRequired = ['callbackUrl', 'jwtSecret', 'sessionSecret'];
+    const missingShared = sharedRequired.filter((key) => !auth[key]);
 
-    if (missing.length > 0) {
+    if (missingShared.length > 0) {
       throw new Error(
-        `Auth enabled but missing required options: ${missing.join(', ')}`
+        `Auth enabled but missing required options: ${missingShared.join(', ')}`
       );
     }
 
+    const { providers, enabledProviders } = normalizeAuthProviders(auth);
+    this.enabledAuthProviders = enabledProviders;
+
     this.authManager = new AuthManager({
-      provider: auth.provider || 'github',
-      clientId: auth.clientId,
-      clientSecret: auth.clientSecret,
+      providers,
       callbackUrl: auth.callbackUrl,
       jwtSecret: auth.jwtSecret,
       jwtExpiresIn: auth.jwtExpiresIn,
       sessionSecret: auth.sessionSecret,
+      allowedUsers: auth.allowedUsers || [],
       logger: this.logger
     });
 
+    const allowlistInfo =
+      auth.allowedUsers?.length > 0
+        ? { allowedUserCount: auth.allowedUsers.length }
+        : { allowlist: 'open' };
+
     this.logger.info(
-      { provider: auth.provider || 'github' },
+      { providers: enabledProviders, ...allowlistInfo },
       'OAuth authentication enabled for MCP routes'
     );
   }
@@ -302,13 +314,18 @@ export class ExpressMcp {
     const toolRegistry = this.toolRegistry;
 
     if (this.authManager) {
-      router.use(this.authManager.bearerAuthMiddleware());
+      for (const middleware of this.authManager.protectedMiddleware()) {
+        router.use(middleware);
+      }
     }
 
     // MCP Streamable HTTP endpoint for Cursor
     router.post('/', async (req, res) => {
       const requestId = req.body?.id || 'unknown';
-      const requestLogger = this.logger.child({ requestId });
+      const requestLogger = this.logger.child({
+        requestId,
+        ...userLogFields(req.mcpUser)
+      });
       
       try {
         const { jsonrpc, method, params, id } = req.body;
@@ -335,7 +352,7 @@ export class ExpressMcp {
             break;
             
           case 'initialize':
-            this.logger.debug('Client connected to MCP server');
+            requestLogger.info('MCP client initialized');
             {
               const serverName = this.name || '@express-mcp/express-mcp';
               const result = {
@@ -347,12 +364,7 @@ export class ExpressMcp {
                   name: serverName,
                   version: packageVersion,
                   ...(this.authManager
-                    ? {
-                        auth: {
-                          required: true,
-                          provider: this.options.auth.provider || 'github'
-                        }
-                      }
+                    ? { auth: authServerInfo(this.enabledAuthProviders) }
                     : {})
                 }
               };
@@ -386,7 +398,8 @@ export class ExpressMcp {
             const toolExecution = new ToolExecution(name, id, args);
             
             const toolContext = {
-              execution: toolExecution
+              execution: toolExecution,
+              user: req.mcpUser ?? null
             };
             
             try {
