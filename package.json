@@ -23,7 +23,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git@git.soma.example.com:express-mcp/express-mcp"
+    "url": "git+https://github.com/brandon-svec/express_mcp.git"
   },
   "keywords": [
     "mcp",
