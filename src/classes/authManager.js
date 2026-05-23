@@ -7,6 +7,7 @@ import { isUserAllowed, userLogFields } from '../authz.js';
 import {
   AuthorizationCodeStore,
   OAuthClientRegistry,
+  PendingAuthStore,
   buildAuthorizationServerMetadata,
   buildProtectedResourceMetadata,
   buildWwwAuthenticateHeader,
@@ -73,8 +74,9 @@ export class AuthManager {
    * @param {string} options.jwtSecret
    * @param {string} [options.jwtExpiresIn='7d']
    * @param {string} options.sessionSecret
-   * @param {string} options.issuer - Public base URL for MCP OAuth (no trailing slash)
-   * @param {string} [options.resourcePath='/mcp'] - MCP HTTP resource path
+   * @param {string} options.issuer - MCP OAuth authorization server issuer (e.g. https://host/mcp)
+   * @param {string} [options.resourcePath='/mcp'] - MCP HTTP resource path (suffix under site origin)
+   * @param {string} [options.origin] - Site origin for PRM discovery; derived from issuer when omitted
    * @param {Object} [options.logger] - Logger with info, warn, error, debug
    * @param {string[]} [options.allowedUsers] - Optional email/login allowlist (empty = allow all)
    */
@@ -102,9 +104,25 @@ export class AuthManager {
     }
     this.issuer = options.issuer.replace(/\/$/, '');
     this.resourcePath = options.resourcePath || '/mcp';
+    const normalizedResourcePath = this.resourcePath.startsWith('/')
+      ? this.resourcePath
+      : `/${this.resourcePath}`;
+    if (options.origin) {
+      this.origin = options.origin.replace(/\/$/, '');
+    } else if (this.issuer.endsWith(normalizedResourcePath)) {
+      this.origin = this.issuer.slice(0, this.issuer.length - normalizedResourcePath.length);
+    } else {
+      throw new Error(
+        `issuer "${this.issuer}" must end with resourcePath "${normalizedResourcePath}" or provide origin`
+      );
+    }
+    if (!this.origin) {
+      throw new Error('origin could not be derived from issuer and resourcePath');
+    }
     this.authPath = options.authPath || '/auth';
     this.oauthClients = new OAuthClientRegistry();
     this.authorizationCodes = new AuthorizationCodeStore();
+    this.pendingAuthStore = new PendingAuthStore();
   }
 
   /**
@@ -309,26 +327,22 @@ export class AuthManager {
    * @param {Object} user
    * @private
    */
-  _completeMcpAuthorization(req, res, user) {
-    const pending = req.session.mcpAuthPending;
-    if (!pending) {
-      throw new Error('MCP authorization session is missing');
+  _completeMcpAuthorization(res, user, mcpAuthPending) {
+    if (!mcpAuthPending) {
+      throw new Error('MCP authorization pending state is missing');
     }
 
     const code = this.authorizationCodes.issue({
-      clientId: pending.client_id,
-      redirectUri: pending.redirect_uri,
-      codeChallenge: pending.code_challenge,
+      clientId: mcpAuthPending.client_id,
+      redirectUri: mcpAuthPending.redirect_uri,
+      codeChallenge: mcpAuthPending.code_challenge,
       user,
-      resource: pending.resource
+      resource: mcpAuthPending.resource
     });
 
-    delete req.session.mcpAuthPending;
-    delete req.session.mcpAuthFlow;
-
-    const redirectUrl = new URL(pending.redirect_uri);
+    const redirectUrl = new URL(mcpAuthPending.redirect_uri);
     redirectUrl.searchParams.set('code', code);
-    redirectUrl.searchParams.set('state', pending.state);
+    redirectUrl.searchParams.set('state', mcpAuthPending.state);
     res.redirect(redirectUrl.toString());
   }
 
@@ -338,7 +352,7 @@ export class AuthManager {
    * @private
    */
   _sendUnauthorized(res) {
-    res.set('WWW-Authenticate', buildWwwAuthenticateHeader(this.issuer, this.resourcePath));
+    res.set('WWW-Authenticate', buildWwwAuthenticateHeader(this.origin, this.resourcePath));
     return res.status(401).json({
       error: 'unauthorized',
       message: 'Authorization required. Use Bearer token.'
@@ -360,7 +374,7 @@ export class AuthManager {
         return next();
       } catch (error) {
         this.logger.debug?.({ err: error.message }, 'JWT verification failed');
-        res.set('WWW-Authenticate', buildWwwAuthenticateHeader(this.issuer, this.resourcePath));
+        res.set('WWW-Authenticate', buildWwwAuthenticateHeader(this.origin, this.resourcePath));
         return res.status(401).json({
           error: 'unauthorized',
           message: 'Invalid or expired token'
@@ -398,11 +412,11 @@ export class AuthManager {
     return [this.bearerAuthMiddleware(), this.authorizeMiddleware()];
   }
 
-  _renderLoginPicker() {
+  _renderLoginPicker(pendingQuery = '') {
     const links = this.enabledProviders
       .map(
         (name) =>
-          `<li><a href="${this.authPath}/login/${name}">Login with ${PROVIDER_META[name].label}</a></li>`
+          `<li><a href="${this.authPath}/login/${name}${pendingQuery}">Login with ${PROVIDER_META[name].label}</a></li>`
       )
       .join('\n');
     return `<!DOCTYPE html>
@@ -441,20 +455,27 @@ export class AuthManager {
   }
 
   /**
-   * Register MCP OAuth authorization server routes on a router.
+   * RFC 9728 protected resource metadata at site origin (not under /mcp).
    * @param {import('express').Router} router
    * @private
    */
-  _registerMcpOAuthRoutes(router) {
+  _registerProtectedResourceMetadataRoute(router) {
     const resourceSuffix = this.resourcePath.replace(/^\//, '');
     const protectedResourcePath = resourceSuffix
       ? `/.well-known/oauth-protected-resource/${resourceSuffix}`
       : '/.well-known/oauth-protected-resource';
 
     router.get(protectedResourcePath, (_req, res) => {
-      res.json(buildProtectedResourceMetadata(this.issuer, this.resourcePath));
+      res.json(buildProtectedResourceMetadata(this.origin, this.resourcePath, this.issuer));
     });
+  }
 
+  /**
+   * MCP OAuth authorization server routes (mount under /mcp).
+   * @param {import('express').Router} router
+   * @private
+   */
+  _registerAuthorizationServerRoutes(router) {
     router.get('/.well-known/oauth-authorization-server', (_req, res) => {
       res.json(buildAuthorizationServerMetadata(this.issuer));
     });
@@ -520,24 +541,30 @@ export class AuthManager {
         return res.status(400).json({ error: 'invalid_request', error_description: 'redirect_uri is not registered for this client' });
       }
 
-      req.session.mcpAuthPending = {
+      const mcpAuthPending = {
         client_id: clientId,
         redirect_uri: redirectUri,
         code_challenge: codeChallenge,
         state,
         resource: typeof resource === 'string' ? resource : null
       };
-      req.session.mcpAuthFlow = true;
 
       if (this.enabledProviders.length === 1) {
         const provider = this.enabledProviders[0];
-        const idpState = randomBytes(16).toString('hex');
-        req.session.oauthProvider = provider;
-        req.session.oauthState = idpState;
+        const idpState = this.pendingAuthStore.issue({
+          provider,
+          mcpAuthPending,
+          mcpAuthFlow: true
+        });
         return res.redirect(this.getAuthorizationUrl(provider, idpState));
       }
 
-      return res.redirect(`${this.authPath}/login`);
+      const idpState = this.pendingAuthStore.issue({
+        mcpAuthPending,
+        mcpAuthFlow: true,
+        requireProviderChoice: true
+      });
+      return res.redirect(`${this.authPath}/login?pending=${idpState}`);
     });
 
     router.post('/token', (req, res) => {
@@ -598,7 +625,8 @@ export class AuthManager {
     router.use(express.json());
     router.use(express.urlencoded({ extended: false }));
     router.use(this._sessionMiddleware(sessionOptions));
-    this._registerMcpOAuthRoutes(router);
+    this._registerProtectedResourceMetadataRoute(router);
+    this._registerAuthorizationServerRoutes(router);
     return router;
   }
 
@@ -629,10 +657,15 @@ export class AuthManager {
     });
 
     router.get('/login', (req, res) => {
+      const pendingQuery =
+        typeof req.query.pending === 'string' && req.query.pending
+          ? `?pending=${encodeURIComponent(req.query.pending)}`
+          : '';
+
       if (this.enabledProviders.length === 1) {
-        return res.redirect(`${this.authPath}/login/${this.enabledProviders[0]}`);
+        return res.redirect(`${this.authPath}/login/${this.enabledProviders[0]}${pendingQuery}`);
       }
-      res.send(this._renderLoginPicker());
+      res.send(this._renderLoginPicker(pendingQuery));
     });
 
     router.get('/login/:provider', (req, res) => {
@@ -641,6 +674,23 @@ export class AuthManager {
         return res.status(404).send(
           `<html><body><h1>Unknown provider</h1><p>Provider "${provider}" is not enabled.</p></body></html>`
         );
+      }
+
+      const pendingId = typeof req.query.pending === 'string' ? req.query.pending : null;
+      if (pendingId) {
+        const existing = this.pendingAuthStore.get(pendingId);
+        if (!existing || !existing.requireProviderChoice || !existing.mcpAuthPending) {
+          return res.status(400).send(
+            `<html><body><h1>Invalid login</h1><p>Pending MCP authorization expired or is invalid. Start again from ${this.authPath}/login.</p></body></html>`
+          );
+        }
+        this.pendingAuthStore.consume(pendingId);
+        const idpState = this.pendingAuthStore.issue({
+          provider,
+          mcpAuthPending: existing.mcpAuthPending,
+          mcpAuthFlow: true
+        });
+        return res.redirect(this.getAuthorizationUrl(provider, idpState));
       }
 
       const state = randomBytes(16).toString('hex');
@@ -652,7 +702,6 @@ export class AuthManager {
 
     router.get('/callback', async (req, res) => {
       const { code, state, error, error_description: errorDescription } = req.query;
-      const oauthProvider = req.session.oauthProvider;
 
       if (error) {
         return res.status(400).send(
@@ -660,22 +709,51 @@ export class AuthManager {
         );
       }
 
-      if (!oauthProvider || !this.enabledProviders.includes(oauthProvider)) {
+      if (typeof state !== 'string' || !state) {
         return res.status(400).send(
-          '<html><body><h1>Invalid callback</h1><p>Missing or unknown OAuth provider in session. Start login again from /auth/login.</p></body></html>'
+          '<html><body><h1>Invalid callback</h1><p>Missing state parameter.</p></body></html>'
         );
       }
 
-      if (!code || !state || state !== req.session.oauthState) {
+      if (typeof code !== 'string' || !code) {
         return res.status(400).send(
-          '<html><body><h1>Invalid callback</h1><p>Missing or invalid state parameter.</p></body></html>'
+          '<html><body><h1>Invalid callback</h1><p>Missing authorization code.</p></body></html>'
         );
       }
 
-      delete req.session.oauthState;
-      delete req.session.oauthProvider;
+      const pending = this.pendingAuthStore.consume(state);
+      let oauthProvider;
+      let mcpAuthFlow = false;
+      let mcpAuthPending = null;
 
-      const mcpAuthFlow = req.session.mcpAuthFlow;
+      if (pending) {
+        if (!pending.provider || !this.enabledProviders.includes(pending.provider)) {
+          return res.status(400).send(
+            `<html><body><h1>Invalid callback</h1><p>Unknown OAuth provider in pending state. Start login again from ${this.authPath}/login.</p></body></html>`
+          );
+        }
+        oauthProvider = pending.provider;
+        mcpAuthFlow = pending.mcpAuthFlow === true;
+        mcpAuthPending = pending.mcpAuthPending || null;
+      } else {
+        oauthProvider = req.session.oauthProvider;
+        if (!oauthProvider || !this.enabledProviders.includes(oauthProvider)) {
+          return res.status(400).send(
+            `<html><body><h1>Invalid callback</h1><p>Missing or expired OAuth state. Start login again from ${this.authPath}/login.</p></body></html>`
+          );
+        }
+        if (state !== req.session.oauthState) {
+          return res.status(400).send(
+            '<html><body><h1>Invalid callback</h1><p>Missing or invalid state parameter.</p></body></html>'
+          );
+        }
+        delete req.session.oauthState;
+        delete req.session.oauthProvider;
+        mcpAuthFlow = req.session.mcpAuthFlow === true;
+        mcpAuthPending = req.session.mcpAuthPending || null;
+        delete req.session.mcpAuthFlow;
+        delete req.session.mcpAuthPending;
+      }
 
       try {
         const user = await this.exchangeCodeForUser(oauthProvider, code);
@@ -687,8 +765,8 @@ export class AuthManager {
           );
         }
 
-        if (mcpAuthFlow && req.session.mcpAuthPending) {
-          return this._completeMcpAuthorization(req, res, user);
+        if (mcpAuthFlow && mcpAuthPending) {
+          return this._completeMcpAuthorization(res, user, mcpAuthPending);
         }
 
         const token = this.issueJwt(user);
@@ -726,35 +804,41 @@ export class AuthManager {
   }
 
   /**
-   * Combined HTTP router: MCP OAuth AS, IdP login, and MCP protocol.
+   * Combined HTTP router: PRM at site root; MCP OAuth AS, IdP, and protocol under mcpPath.
    * @param {Object} options
    * @param {import('express').Router} options.mcpRouter - MCP JSON-RPC router from ExpressMcp.router()
-   * @param {string} [options.mcpPath='/mcp'] - Mount path for MCP protocol
-   * @param {string} [options.authPath='/auth'] - Mount path for IdP login routes
+   * @param {string} [options.mcpPath='/mcp'] - Mount path for MCP OAuth, IdP, and protocol
    * @param {Object} [options.sessionOptions] - Passed to express-session (except secret)
    * @returns {import('express').Router}
    */
-  createHttpRouter({ mcpRouter, mcpPath = '/mcp', authPath = '/auth', sessionOptions = {} }) {
+  createHttpRouter({ mcpRouter, mcpPath = '/mcp', sessionOptions = {} }) {
     if (!mcpRouter) {
       throw new Error('mcpRouter is required for createHttpRouter');
     }
 
-    this.authPath = authPath;
+    this.authPath = `${mcpPath}/auth`;
 
     const root = Router();
     root.use(express.json());
     root.use(express.urlencoded({ extended: false }));
     root.use(this._sessionMiddleware(sessionOptions));
 
-    const oauthRouter = Router();
-    this._registerMcpOAuthRoutes(oauthRouter);
-    root.use(oauthRouter);
+    this._registerProtectedResourceMetadataRoute(root);
+
+    // Some MCP clients (e.g. Cursor) still call OAuth AS routes at site root even when
+    // issuer is under mcpPath. Canonical routes remain under mcpPath; these are aliases.
+    this._registerAuthorizationServerRoutes(root);
+
+    const mcpMount = Router();
+    this._registerAuthorizationServerRoutes(mcpMount);
 
     const authRouter = Router();
     this._registerAuthRoutes(authRouter);
-    root.use(authPath, authRouter);
+    mcpMount.use('/auth', authRouter);
 
-    root.use(mcpPath, mcpRouter);
+    mcpMount.use('/', mcpRouter);
+
+    root.use(mcpPath, mcpMount);
     return root;
   }
 }

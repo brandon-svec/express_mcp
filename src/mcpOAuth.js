@@ -17,17 +17,17 @@ export function verifyPkceChallenge(codeVerifier, codeChallenge) {
 }
 
 /**
- * @param {string} issuer - Base URL without trailing slash
+ * @param {string} origin - Site origin without trailing slash (e.g. https://host)
  * @param {string} resourcePath - MCP resource path (e.g. /mcp)
+ * @param {string} authorizationServerIssuer - MCP OAuth AS issuer (e.g. https://host/mcp)
  * @returns {Object}
  */
-export function buildProtectedResourceMetadata(issuer, resourcePath) {
+export function buildProtectedResourceMetadata(origin, resourcePath, authorizationServerIssuer) {
   const normalizedPath = resourcePath.startsWith('/') ? resourcePath : `/${resourcePath}`;
-  const resourceSuffix = normalizedPath.slice(1);
 
   return {
-    resource: `${issuer}${normalizedPath}`,
-    authorization_servers: [issuer],
+    resource: `${origin}${normalizedPath}`,
+    authorization_servers: [authorizationServerIssuer],
     scopes_supported: ['mcp'],
     bearer_methods_supported: ['header']
   };
@@ -51,26 +51,26 @@ export function buildAuthorizationServerMetadata(issuer) {
 }
 
 /**
- * @param {string} issuer
- * @param {string} resourcePath
+ * @param {string} origin - Site origin without trailing slash
+ * @param {string} resourcePath - MCP resource path (e.g. /mcp)
  * @returns {string}
  */
-export function protectedResourceMetadataUrl(issuer, resourcePath) {
+export function protectedResourceMetadataUrl(origin, resourcePath) {
   const normalizedPath = resourcePath.startsWith('/') ? resourcePath : `/${resourcePath}`;
   const resourceSuffix = normalizedPath.slice(1);
   if (!resourceSuffix) {
-    return `${issuer}/.well-known/oauth-protected-resource`;
+    return `${origin}/.well-known/oauth-protected-resource`;
   }
-  return `${issuer}/.well-known/oauth-protected-resource/${resourceSuffix}`;
+  return `${origin}/.well-known/oauth-protected-resource/${resourceSuffix}`;
 }
 
 /**
- * @param {string} issuer
- * @param {string} resourcePath
+ * @param {string} origin - Site origin without trailing slash
+ * @param {string} resourcePath - MCP resource path (e.g. /mcp)
  * @returns {string}
  */
-export function buildWwwAuthenticateHeader(issuer, resourcePath) {
-  const metadataUrl = protectedResourceMetadataUrl(issuer, resourcePath);
+export function buildWwwAuthenticateHeader(origin, resourcePath) {
+  const metadataUrl = protectedResourceMetadataUrl(origin, resourcePath);
   return `Bearer realm="mcp", resource_metadata="${metadataUrl}"`;
 }
 
@@ -121,6 +121,59 @@ export class OAuthClientRegistry {
       return false;
     }
     return client.redirect_uris.includes(redirectUri);
+  }
+}
+
+/**
+ * In-memory pending IdP auth state keyed by OAuth state sent to Google/GitHub.
+ * Survives MCP clients that call /authorize without a browser session cookie.
+ */
+export class PendingAuthStore {
+  constructor() {
+    /** @type {Map<string, Object>} */
+    this.entries = new Map();
+  }
+
+  /**
+   * @param {Object} entry
+   * @returns {string} state value for IdP redirect
+   */
+  issue(entry) {
+    const id = randomBytes(16).toString('hex');
+    this.entries.set(id, {
+      ...entry,
+      expiresAt: Date.now() + 10 * 60 * 1000
+    });
+    return id;
+  }
+
+  /**
+   * @param {string} id
+   * @returns {Object|null}
+   */
+  get(id) {
+    const entry = this.entries.get(id);
+    if (!entry) {
+      return null;
+    }
+    if (entry.expiresAt <= Date.now()) {
+      this.entries.delete(id);
+      return null;
+    }
+    return entry;
+  }
+
+  /**
+   * @param {string} id
+   * @returns {Object|null}
+   */
+  consume(id) {
+    const entry = this.get(id);
+    if (!entry) {
+      return null;
+    }
+    this.entries.delete(id);
+    return entry;
   }
 }
 

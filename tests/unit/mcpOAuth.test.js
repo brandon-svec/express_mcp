@@ -1,19 +1,21 @@
 import { assert } from 'chai';
 import { createHash, randomBytes } from 'crypto';
 import request from 'supertest';
-import express from 'express';
+import express, { Router } from 'express';
 import jwt from 'jsonwebtoken';
 import { AuthManager } from '../../src/classes/authManager.js';
 import {
   buildAuthorizationServerMetadata,
   buildProtectedResourceMetadata,
   buildWwwAuthenticateHeader,
+  PendingAuthStore,
   verifyPkceChallenge
 } from '../../src/mcpOAuth.js';
 
 const JWT_SECRET = 'test-jwt-secret';
 const SESSION_SECRET = 'test-session-secret';
-const ISSUER = 'http://localhost:3000';
+const ORIGIN = 'http://localhost:3000';
+const ISSUER = `${ORIGIN}/mcp`;
 
 function createAuthManager() {
   return new AuthManager({
@@ -22,6 +24,7 @@ function createAuthManager() {
     },
     callbackUrl: `${ISSUER}/auth/callback`,
     issuer: ISSUER,
+    resourcePath: '/mcp',
     jwtSecret: JWT_SECRET,
     sessionSecret: SESSION_SECRET,
     jwtExpiresIn: '1h',
@@ -30,21 +33,21 @@ function createAuthManager() {
 }
 
 function createOAuthApp(authManager) {
-  const app = express();
-  app.use(express.json());
-  app.use(express.urlencoded({ extended: false }));
-  app.use(authManager.createMcpOAuthRouter());
-  app.use('/auth', authManager.createAuthRouter());
-  app.post('/mcp', ...authManager.protectedMiddleware(), (_req, res) => {
+  const mcpRouter = Router();
+  mcpRouter.post('/', ...authManager.protectedMiddleware(), (_req, res) => {
     res.json({ ok: true });
   });
+
+  const app = express();
+  app.use(express.json());
+  app.use(authManager.createHttpRouter({ mcpRouter }));
   return app;
 }
 
 describe('MCP OAuth authorization server', () => {
   it('builds protected resource metadata', () => {
-    assert.deepEqual(buildProtectedResourceMetadata(ISSUER, '/mcp'), {
-      resource: `${ISSUER}/mcp`,
+    assert.deepEqual(buildProtectedResourceMetadata(ORIGIN, '/mcp', ISSUER), {
+      resource: `${ORIGIN}/mcp`,
       authorization_servers: [ISSUER],
       scopes_supported: ['mcp'],
       bearer_methods_supported: ['header']
@@ -64,6 +67,73 @@ describe('MCP OAuth authorization server', () => {
     });
   });
 
+  it('issues and consumes pending auth state', () => {
+    const store = new PendingAuthStore();
+    const id = store.issue({
+      provider: 'google',
+      mcpAuthFlow: true,
+      mcpAuthPending: { client_id: 'c1', state: 's1' }
+    });
+    assert.isString(id);
+    assert.deepEqual(store.get(id), {
+      provider: 'google',
+      mcpAuthFlow: true,
+      mcpAuthPending: { client_id: 'c1', state: 's1' },
+      expiresAt: store.get(id).expiresAt
+    });
+    const consumed = store.consume(id);
+    assert.strictEqual(consumed.provider, 'google');
+    assert.isNull(store.get(id));
+    assert.isNull(store.consume(id));
+  });
+
+  it('stores pending auth on authorize and completes callback without session cookie', async () => {
+    const authManager = createAuthManager();
+    const codeVerifier = randomBytes(32).toString('base64url');
+    const codeChallenge = createHash('sha256').update(codeVerifier).digest('base64url');
+    const client = authManager.oauthClients.register({
+      client_name: 'Cursor',
+      redirect_uris: ['cursor://callback'],
+      grant_types: ['authorization_code'],
+      response_types: ['code']
+    });
+    const mcpClientState = 'mcp-client-state-xyz';
+
+    authManager.exchangeCodeForUser = async () => ({
+      sub: 'gh:1',
+      login: 'test-user',
+      name: 'Test User',
+      email: 'test@example.com',
+      provider: 'github'
+    });
+
+    const app = createOAuthApp(authManager);
+    const authorizeRes = await request(app)
+      .get('/mcp/authorize')
+      .query({
+        client_id: client.client_id,
+        redirect_uri: 'cursor://callback',
+        response_type: 'code',
+        code_challenge: codeChallenge,
+        code_challenge_method: 'S256',
+        state: mcpClientState
+      });
+    assert.strictEqual(authorizeRes.status, 302);
+    const idpState = new URL(authorizeRes.headers.location).searchParams.get('state');
+    assert.isString(idpState);
+    assert.isNotNull(authManager.pendingAuthStore.get(idpState));
+
+    const callbackRes = await request(app)
+      .get('/mcp/auth/callback')
+      .query({ state: idpState, code: 'github-auth-code' });
+
+    assert.strictEqual(callbackRes.status, 302);
+    assert.include(callbackRes.headers.location, 'cursor://callback');
+    const callbackUrl = new URL(callbackRes.headers.location);
+    assert.strictEqual(callbackUrl.searchParams.get('state'), mcpClientState);
+    assert.isString(callbackUrl.searchParams.get('code'));
+  });
+
   it('verifies PKCE S256 challenges', () => {
     const verifier = randomBytes(32).toString('base64url');
     const challenge = createHash('sha256').update(verifier).digest('base64url');
@@ -74,7 +144,7 @@ describe('MCP OAuth authorization server', () => {
   it('registers MCP OAuth clients via POST /register', async () => {
     const app = createOAuthApp(createAuthManager());
     const res = await request(app)
-      .post('/register')
+      .post('/mcp/register')
       .send({
         client_name: 'Cursor',
         redirect_uris: ['cursor://anysphere.cursor-mcp/oauth/callback'],
@@ -92,9 +162,9 @@ describe('MCP OAuth authorization server', () => {
 
     const prm = await request(app).get('/.well-known/oauth-protected-resource/mcp');
     assert.strictEqual(prm.status, 200);
-    assert.strictEqual(prm.body.resource, `${ISSUER}/mcp`);
+    assert.strictEqual(prm.body.resource, `${ORIGIN}/mcp`);
 
-    const asm = await request(app).get('/.well-known/oauth-authorization-server');
+    const asm = await request(app).get('/mcp/.well-known/oauth-authorization-server');
     assert.strictEqual(asm.status, 200);
     assert.strictEqual(asm.body.registration_endpoint, `${ISSUER}/register`);
   });
@@ -106,7 +176,7 @@ describe('MCP OAuth authorization server', () => {
     assert.strictEqual(res.status, 401);
     assert.strictEqual(
       res.headers['www-authenticate'],
-      buildWwwAuthenticateHeader(ISSUER, '/mcp')
+      buildWwwAuthenticateHeader(ORIGIN, '/mcp')
     );
   });
 
@@ -132,12 +202,12 @@ describe('MCP OAuth authorization server', () => {
       redirectUri: 'cursor://callback',
       codeChallenge,
       user,
-      resource: `${ISSUER}/mcp`
+      resource: `${ORIGIN}/mcp`
     });
 
     const app = createOAuthApp(authManager);
     const res = await request(app)
-      .post('/token')
+      .post('/mcp/token')
       .type('form')
       .send({
         grant_type: 'authorization_code',
