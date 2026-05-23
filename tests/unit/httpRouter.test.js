@@ -3,12 +3,13 @@ import { createHash, randomBytes } from 'crypto';
 import request from 'supertest';
 import express from 'express';
 import { ExpressMcp, BaseTool } from '../../src/index.js';
-import { buildWwwAuthenticateHeader } from '../../src/mcpOAuth.js';
-import { getTestExpressMcpOptions } from '../config.js';
+import { getOAuthProtectedResourceMetadataUrl } from '@modelcontextprotocol/sdk/server/auth/router.js';
+import { getTestExpressMcpOptions, MCP_STREAMABLE_HTTP_ACCEPT, createInitializeRequest } from '../config.js';
 
 const JWT_SECRET = 'test-jwt-secret';
 const SESSION_SECRET = 'test-session-secret';
-const ISSUER = 'http://localhost:3000';
+const ORIGIN = 'http://localhost:3000';
+const ISSUER = `${ORIGIN}/mcp`;
 
 class HelloTool extends BaseTool {
   constructor() {
@@ -31,6 +32,7 @@ function createExpressMcpWithAuth() {
         clientSecret: 'test-client-secret',
         callbackUrl: `${ISSUER}/auth/callback`,
         issuer: ISSUER,
+        resourcePath: '/mcp',
         jwtSecret: JWT_SECRET,
         jwtExpiresIn: '1h',
         sessionSecret: SESSION_SECRET
@@ -52,7 +54,8 @@ describe('ExpressMcp.httpRouter', () => {
 
     const res = await request(app)
       .post('/mcp')
-      .send({ jsonrpc: '2.0', method: 'initialize', id: 1 });
+      .set('Accept', MCP_STREAMABLE_HTTP_ACCEPT)
+      .send(createInitializeRequest(1));
 
     assert.strictEqual(res.status, 200);
   });
@@ -67,27 +70,31 @@ describe('ExpressMcp.httpRouter', () => {
     const prm = await request(app).get('/.well-known/oauth-protected-resource/mcp');
     assert.strictEqual(prm.status, 200);
 
-    const register = await request(app)
-      .post('/register')
-      .send({
-        client_name: 'Cursor',
-        redirect_uris: ['cursor://callback'],
-        grant_types: ['authorization_code'],
-        response_types: ['code']
-      });
+    const registerBody = {
+      client_name: 'Cursor',
+      redirect_uris: ['cursor://callback'],
+      grant_types: ['authorization_code'],
+      response_types: ['code']
+    };
+
+    const register = await request(app).post('/mcp/register').send(registerBody);
     assert.strictEqual(register.status, 201);
+
+    const registerRoot = await request(app).post('/register').send(registerBody);
+    assert.strictEqual(registerRoot.status, 201);
 
     const mcp = await request(app)
       .post('/mcp')
-      .send({ jsonrpc: '2.0', method: 'initialize', id: 1 });
+      .set('Accept', MCP_STREAMABLE_HTTP_ACCEPT)
+      .send(createInitializeRequest(1));
     assert.strictEqual(mcp.status, 401);
-    assert.strictEqual(
+    assert.include(
       mcp.headers['www-authenticate'],
-      buildWwwAuthenticateHeader(ISSUER, '/mcp')
+      getOAuthProtectedResourceMetadataUrl(new URL(`${ORIGIN}/mcp`))
     );
 
-    const login = await request(app).get('/auth/login');
+    const login = await request(app).get('/mcp/auth/login');
     assert.strictEqual(login.status, 302);
-    assert.include(login.headers.location, '/auth/login/github');
+    assert.include(login.headers.location, '/mcp/auth/login/github');
   });
 });

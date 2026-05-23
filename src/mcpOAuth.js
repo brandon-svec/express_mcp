@@ -51,30 +51,6 @@ export function buildAuthorizationServerMetadata(issuer) {
 }
 
 /**
- * @param {string} origin - Site origin without trailing slash
- * @param {string} resourcePath - MCP resource path (e.g. /mcp)
- * @returns {string}
- */
-export function protectedResourceMetadataUrl(origin, resourcePath) {
-  const normalizedPath = resourcePath.startsWith('/') ? resourcePath : `/${resourcePath}`;
-  const resourceSuffix = normalizedPath.slice(1);
-  if (!resourceSuffix) {
-    return `${origin}/.well-known/oauth-protected-resource`;
-  }
-  return `${origin}/.well-known/oauth-protected-resource/${resourceSuffix}`;
-}
-
-/**
- * @param {string} origin - Site origin without trailing slash
- * @param {string} resourcePath - MCP resource path (e.g. /mcp)
- * @returns {string}
- */
-export function buildWwwAuthenticateHeader(origin, resourcePath) {
-  const metadataUrl = protectedResourceMetadataUrl(origin, resourcePath);
-  return `Bearer realm="mcp", resource_metadata="${metadataUrl}"`;
-}
-
-/**
  * In-memory OAuth client registry for Dynamic Client Registration.
  */
 export class OAuthClientRegistry {

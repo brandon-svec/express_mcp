@@ -59,6 +59,11 @@ export const TEST_CONFIG = {
     initialize: {
       jsonrpc: '2.0',
       method: 'initialize',
+      params: {
+        protocolVersion: '2024-11-05',
+        capabilities: {},
+        clientInfo: { name: 'express-mcp-test', version: '1.0.0' }
+      },
       id: 1
     },
     
@@ -80,6 +85,9 @@ export const TEST_CONFIG = {
   }
 };
 
+// Streamable HTTP transport requires both content types in Accept (MCP spec).
+export const MCP_STREAMABLE_HTTP_ACCEPT = 'application/json, text/event-stream';
+
 // Test utilities
 export const createMcpRequest = (method, params = {}, id = 1) => ({
   jsonrpc: '2.0',
@@ -87,6 +95,29 @@ export const createMcpRequest = (method, params = {}, id = 1) => ({
   params,
   id
 });
+
+export const createInitializeRequest = (id = 1) => ({
+  jsonrpc: '2.0',
+  method: 'initialize',
+  params: {
+    protocolVersion: TEST_CONFIG.mcp.protocolVersion,
+    capabilities: {},
+    clientInfo: {
+      name: 'express-mcp-test',
+      version: '1.0.0'
+    }
+  },
+  id
+});
+
+/**
+ * Supertest POST helper with Streamable HTTP Accept header.
+ * @param {import('supertest').SuperTest} agent
+ * @param {string} [path='/mcp']
+ */
+export function mcpPost(agent, path = '/mcp') {
+  return agent.post(path).set('Accept', MCP_STREAMABLE_HTTP_ACCEPT);
+}
 
 export const createToolCallRequest = (toolName, args = {}, id = 1) => ({
   jsonrpc: '2.0',

@@ -1,3 +1,10 @@
+import { ToolExecution } from './toolExecution.js';
+import {
+  CallToolRequestSchema,
+  ListToolsRequestSchema,
+  McpError
+} from '@modelcontextprotocol/sdk/types.js';
+
 /**
  * Internal tool registry for the MCP module
  * Manages registration and execution of MCP tools
@@ -94,6 +101,56 @@ export class ToolRegistry {
    */
   getTools() {
     return Array.from(this.tools.values());
+  }
+
+  /**
+   * Register all tools on an SDK McpServer instance using JSON Schema tool definitions.
+   * @param {import('@modelcontextprotocol/sdk/server/mcp.js').McpServer} mcpServer
+   * @param {{ user?: Object|null }} [context]
+   */
+  registerOnMcpServer(mcpServer, context = {}) {
+    const server = mcpServer.server;
+
+    server.registerCapabilities({
+      tools: {}
+    });
+
+    server.setRequestHandler(ListToolsRequestSchema, () => ({
+      tools: this.getToolDefinitions()
+    }));
+
+    server.setRequestHandler(CallToolRequestSchema, async (request) => {
+      const { name, arguments: args } = request.params;
+      const toolExecution = new ToolExecution(name, null, args);
+      const toolContext = {
+        execution: toolExecution,
+        user: context.user ?? null
+      };
+
+      const execution = await this.executeTool(name, args, toolContext);
+
+      if (execution.status === 'error') {
+        const errorData = execution.getErrorData();
+        const error = new McpError(
+          errorData.errorCode ?? -32603,
+          errorData.error ?? 'Tool execution failed'
+        );
+        if (errorData.errorData) {
+          error.data = errorData.errorData;
+        }
+        throw error;
+      }
+
+      const result = execution.result;
+      return {
+        content: [
+          {
+            type: 'text',
+            text: typeof result === 'string' ? result : JSON.stringify(result, null, 2)
+          }
+        ]
+      };
+    });
   }
 
   /**

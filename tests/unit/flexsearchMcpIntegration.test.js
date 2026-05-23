@@ -7,7 +7,7 @@ import { strict as assert } from 'assert';
 import express from 'express';
 import request from 'supertest';
 import { ExpressMcp } from '../../src/classes/expressMcp.js';
-import { getTestExpressMcpOptions } from '../config.js';
+import { getTestExpressMcpOptions, MCP_STREAMABLE_HTTP_ACCEPT } from '../config.js';
 
 describe('FlexSearch MCP Integration Tests', () => {
   let app;
@@ -19,7 +19,10 @@ describe('FlexSearch MCP Integration Tests', () => {
     app = express();
     app.use(express.json());
     app.use('/mcp', expressMcp.router());
-    agent = request(app);
+    const baseAgent = request(app);
+    agent = {
+      post: (path) => baseAgent.post(path).set('Accept', MCP_STREAMABLE_HTTP_ACCEPT)
+    };
 
     // Pre-populate with test documents for search testing
     expressMcp.addDocument('flexsearch-doc1', {

@@ -4,13 +4,15 @@ import session from 'express-session';
 import jwt from 'jsonwebtoken';
 import { randomBytes } from 'crypto';
 import { isUserAllowed, userLogFields } from '../authz.js';
+import { requireBearerAuth } from '@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js';
+import { InvalidTokenError } from '@modelcontextprotocol/sdk/server/auth/errors.js';
+import { getOAuthProtectedResourceMetadataUrl } from '@modelcontextprotocol/sdk/server/auth/router.js';
 import {
   AuthorizationCodeStore,
   OAuthClientRegistry,
   PendingAuthStore,
   buildAuthorizationServerMetadata,
   buildProtectedResourceMetadata,
-  buildWwwAuthenticateHeader,
   jwtExpiresInSeconds,
   verifyPkceChallenge
 } from '../mcpOAuth.js';
@@ -347,39 +349,17 @@ export class AuthManager {
   }
 
   /**
-   * @param {import('express').Request} req
-   * @param {import('express').Response} res
+   * Map SDK AuthInfo to legacy req.mcpUser JWT payload shape.
+   * @returns {import('express').RequestHandler}
    * @private
    */
-  _sendUnauthorized(res) {
-    res.set('WWW-Authenticate', buildWwwAuthenticateHeader(this.origin, this.resourcePath));
-    return res.status(401).json({
-      error: 'unauthorized',
-      message: 'Authorization required. Use Bearer token.'
-    });
-  }
-
-  bearerAuthMiddleware() {
-    return (req, res, next) => {
-      const authHeader = req.headers.authorization;
-
-      if (!authHeader || !authHeader.startsWith('Bearer ')) {
-        return this._sendUnauthorized(res);
+  _mcpUserMiddleware() {
+    return (req, _res, next) => {
+      const user = req.auth?.extra?.user;
+      if (user) {
+        req.mcpUser = user;
       }
-
-      const token = authHeader.slice(7).trim();
-
-      try {
-        req.mcpUser = this.verifyJwt(token);
-        return next();
-      } catch (error) {
-        this.logger.debug?.({ err: error.message }, 'JWT verification failed');
-        res.set('WWW-Authenticate', buildWwwAuthenticateHeader(this.origin, this.resourcePath));
-        return res.status(401).json({
-          error: 'unauthorized',
-          message: 'Invalid or expired token'
-        });
-      }
+      next();
     };
   }
 
@@ -409,7 +389,36 @@ export class AuthManager {
    * @returns {import('express').RequestHandler[]}
    */
   protectedMiddleware() {
-    return [this.bearerAuthMiddleware(), this.authorizeMiddleware()];
+    const resourceUrl = new URL(`${this.origin}${this.resourcePath}`);
+    const resourceMetadataUrl = getOAuthProtectedResourceMetadataUrl(resourceUrl);
+
+    return [
+      requireBearerAuth({
+        verifier: {
+          verifyAccessToken: async (token) => {
+            let payload;
+            try {
+              payload = this.verifyJwt(token);
+            } catch (error) {
+              throw new InvalidTokenError(error.message);
+            }
+            if (typeof payload.exp !== 'number') {
+              throw new InvalidTokenError('JWT payload missing exp claim');
+            }
+            return {
+              token,
+              clientId: payload.sub,
+              scopes: ['mcp'],
+              expiresAt: payload.exp,
+              extra: { user: payload }
+            };
+          }
+        },
+        resourceMetadataUrl
+      }),
+      this._mcpUserMiddleware(),
+      this.authorizeMiddleware()
+    ];
   }
 
   _renderLoginPicker(pendingQuery = '') {

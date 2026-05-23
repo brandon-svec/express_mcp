@@ -1,12 +1,13 @@
 import { Router } from 'express';
 import pino from 'pino';
 import { readFileSync } from 'fs';
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { ToolRegistry } from './toolRegistry.js';
 import { KnowledgeBase } from './knowledgeBase.js';
-import { ToolExecution } from './toolExecution.js';
 import { AuthManager } from './authManager.js';
 import { userLogFields } from '../authz.js';
-import { normalizeAuthProviders, authServerInfo } from '../authConfig.js';
+import { normalizeAuthProviders } from '../authConfig.js';
 import { 
   KnowledgeBaseSearchTool,
   KnowledgeBaseListTool,
@@ -39,7 +40,7 @@ export class ExpressMcp {
    * @param {string} options.auth.jwtSecret - Secret for signing MCP session JWTs
    * @param {string} [options.auth.jwtExpiresIn='7d'] - JWT expiry
    * @param {string} options.auth.sessionSecret - Secret for express-session (OAuth handshake only)
-   * @param {string} options.auth.issuer - Public base URL for MCP OAuth metadata and endpoints
+   * @param {string} options.auth.issuer - MCP OAuth authorization server issuer (e.g. https://host/mcp)
    * @param {string} [options.auth.resourcePath='/mcp'] - MCP HTTP resource path for PRM discovery
    * @param {string[]} [options.auth.allowedUsers] - Optional email/login allowlist (empty = allow all authenticated)
    */
@@ -112,20 +113,10 @@ export class ExpressMcp {
       sessionSecret: auth.sessionSecret,
       issuer: auth.issuer,
       resourcePath: auth.resourcePath,
-      authPath: auth.authPath,
       allowedUsers: auth.allowedUsers || [],
       logger: this.logger
     });
 
-    const allowlistInfo =
-      auth.allowedUsers?.length > 0
-        ? { allowedUserCount: auth.allowedUsers.length }
-        : { allowlist: 'open' };
-
-    this.logger.info(
-      { providers: enabledProviders, ...allowlistInfo },
-      'OAuth authentication enabled for MCP routes'
-    );
   }
 
   /**
@@ -166,14 +157,12 @@ export class ExpressMcp {
    * Combined HTTP router for MCP OAuth, IdP login, and MCP protocol.
    * Mount once on the host app (e.g. `app.use(expressMcp.httpRouter())`).
    * @param {Object} [options]
-   * @param {string} [options.mcpPath='/mcp'] - Mount path for MCP JSON-RPC
-   * @param {string} [options.authPath='/auth'] - Mount path for IdP browser login
+   * @param {string} [options.mcpPath='/mcp'] - Mount path for MCP OAuth, IdP login, and JSON-RPC
    * @param {Object} [options.sessionOptions] - Options passed to express-session
    * @returns {import('express').Router}
    */
   httpRouter(options = {}) {
     const mcpPath = options.mcpPath || '/mcp';
-    const authPath = options.authPath || '/auth';
 
     if (!this.authManager) {
       const router = Router();
@@ -181,10 +170,29 @@ export class ExpressMcp {
       return router;
     }
 
+    const auth = this.options.auth;
+    const allowlistInfo =
+      auth.allowedUsers?.length > 0
+        ? { allowedUserCount: auth.allowedUsers.length }
+        : { allowlist: 'open' };
+
+    this.logger.info(
+      {
+        issuer: auth.issuer,
+        origin: this.authManager.origin,
+        callbackUrl: auth.callbackUrl,
+        resourcePath: auth.resourcePath || mcpPath,
+        mcpPath,
+        authPath: this.authManager.authPath,
+        providers: this.enabledAuthProviders,
+        ...allowlistInfo
+      },
+      'MCP auth enabled'
+    );
+
     return this.authManager.createHttpRouter({
       mcpRouter: this.router(),
       mcpPath,
-      authPath,
       sessionOptions: options.sessionOptions || {}
     });
   }
@@ -351,12 +359,40 @@ export class ExpressMcp {
   }
 
   /**
+   * Build an SDK McpServer with tools registered from ToolRegistry.
+   * @param {{ user?: Object|null }} [context]
+   * @returns {import('@modelcontextprotocol/sdk/server/mcp.js').McpServer}
+   * @private
+   */
+  _buildMcpServer(context = {}) {
+    const serverName = this.name || '@express-mcp/express-mcp';
+    const serverOptions = {
+      capabilities: {
+        tools: {}
+      }
+    };
+    if (typeof this.description === 'string' && this.description.trim().length > 0) {
+      serverOptions.instructions = this.description.trim();
+    }
+
+    const mcpServer = new McpServer(
+      {
+        name: serverName,
+        version: packageVersion
+      },
+      serverOptions
+    );
+
+    this.toolRegistry.registerOnMcpServer(mcpServer, context);
+    return mcpServer;
+  }
+
+  /**
    * Creates an Express router with MCP protocol routes
    * @returns {Router} Express router configured for MCP
    */
   router() {
     const router = Router();
-    const toolRegistry = this.toolRegistry;
 
     if (this.authManager) {
       for (const middleware of this.authManager.protectedMiddleware()) {
@@ -364,162 +400,36 @@ export class ExpressMcp {
       }
     }
 
-    // MCP Streamable HTTP endpoint for Cursor
     router.post('/', async (req, res) => {
-      const requestId = req.body?.id || 'unknown';
       const requestLogger = this.logger.child({
-        requestId,
+        requestId: req.body?.id || 'unknown',
         ...userLogFields(req.mcpUser)
       });
-      
+
+      const transport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: undefined,
+        enableJsonResponse: true
+      });
+      const mcpServer = this._buildMcpServer({ user: req.mcpUser ?? null });
+
+      transport.onerror = (error) => {
+        requestLogger.error({ error: error.message, stack: error.stack }, 'MCP transport error');
+      };
+
       try {
-        const { jsonrpc, method, params, id } = req.body;
-        
-        // Validate JSON-RPC 2.0 format
-        if (jsonrpc !== '2.0') {
-          requestLogger.warn({ jsonrpc }, 'Invalid JSON-RPC version');
-          return res.status(400).json({
+        await mcpServer.connect(transport);
+        await transport.handleRequest(req, res, req.body);
+      } catch (error) {
+        requestLogger.error({ error: error.message, stack: error.stack }, 'MCP request failed');
+        if (!res.headersSent) {
+          res.status(500).json({
             jsonrpc: '2.0',
-            error: { code: -32600, message: 'Invalid Request - jsonrpc must be "2.0"' },
-            id: id ?? null
+            error: { code: -32603, message: error.message },
+            id: req.body?.id ?? null
           });
         }
-        
-        // Handle MCP protocol messages
-        switch (method) {
-          case 'notifications/initialized':
-            // Cursor sends this after initialization - just acknowledge it
-            res.json({
-              jsonrpc: '2.0',
-              result: null,
-              id: id ?? null
-            });
-            break;
-            
-          case 'initialize':
-            requestLogger.info('MCP client initialized');
-            {
-              const serverName = this.name || '@express-mcp/express-mcp';
-              const result = {
-                protocolVersion: '2024-11-05',
-                capabilities: {
-                  tools: {}
-                },
-                serverInfo: {
-                  name: serverName,
-                  version: packageVersion,
-                  ...(this.authManager
-                    ? { auth: authServerInfo(this.enabledAuthProviders) }
-                    : {})
-                }
-              };
-              if (typeof this.description === 'string' && this.description.trim().length > 0) {
-                result.instructions = this.description.trim();
-              }
-              res.json({
-                jsonrpc: '2.0',
-                result,
-                id: id ?? null
-              });
-            }
-            break;
-            
-          case 'tools/list': {
-            const tools = toolRegistry.getToolDefinitions();
-            res.json({
-              jsonrpc: '2.0',
-              result: {
-                tools
-              },
-              id: id ?? null
-            });
-            break;
-          }
-            
-          case 'tools/call': {
-            const { name, arguments: args } = params;
-            
-            // Create ToolExecution instance for this tool call
-            const toolExecution = new ToolExecution(name, id, args);
-            
-            const toolContext = {
-              execution: toolExecution,
-              user: req.mcpUser ?? null
-            };
-            
-            try {
-              const execution = await toolRegistry.executeTool(name, args, toolContext);
-              
-              // Get execution data for logging
-              const executionData = execution.getLogData();
-              
-              // Create JSON-RPC response based on execution status
-              let response;
-              if (execution.status === 'error') {
-                const errorData = execution.getErrorData();
-                response = {
-                  jsonrpc: '2.0',
-                  error: {
-                    code: errorData.errorCode || -32603,
-                    message: errorData.error || 'Tool execution failed'
-                  },
-                  id: id
-                };
-                
-                if (errorData.errorData) {
-                  response.error.data = errorData.errorData;
-                }
-                
-                requestLogger.warn({ ...executionData, errorDetails: errorData }, 'Tool call failed');
-              } else {
-                response = {
-                  jsonrpc: '2.0',
-                  result: {
-                    content: [
-                      {
-                        type: 'text',
-                        text: typeof execution.result === 'string' ? execution.result : JSON.stringify(execution.result, null, 2)
-                      }
-                    ]
-                  },
-                  id: id
-                };
-                
-                requestLogger.info({ 
-                  ...executionData
-                }, 'Tool call succeeded');
-              }
-              
-              res.json(response);
-            } catch (error) {
-              // Get execution data even on exception
-              const executionData = toolExecution.getLogData();
-              
-              requestLogger.warn({ 
-                ...executionData,
-                error: error.message, 
-                stack: error.stack 
-              }, 'Tool execution failed with exception');
-              throw error;
-            }
-            break;
-          }
-            
-          default:
-            requestLogger.warn({ method }, 'Unknown method called');
-            res.status(400).json({
-              jsonrpc: '2.0',
-              error: { code: -32601, message: `Unknown method: ${method}` },
-              id: id ?? null
-            });
-        }
-      } catch (error) {
-        requestLogger.error({ error: error.message, stack: error.stack }, 'Request processing failed');
-        res.status(500).json({
-          jsonrpc: '2.0',
-          error: { code: -32603, message: error.message },
-          id: req.body?.id ?? null
-        });
+      } finally {
+        await mcpServer.close().catch(() => {});
       }
     });
 

@@ -4,13 +4,14 @@ import request from 'supertest';
 import express, { Router } from 'express';
 import jwt from 'jsonwebtoken';
 import { AuthManager } from '../../src/classes/authManager.js';
+import { getOAuthProtectedResourceMetadataUrl } from '@modelcontextprotocol/sdk/server/auth/router.js';
 import {
   buildAuthorizationServerMetadata,
   buildProtectedResourceMetadata,
-  buildWwwAuthenticateHeader,
   PendingAuthStore,
   verifyPkceChallenge
 } from '../../src/mcpOAuth.js';
+import { MCP_STREAMABLE_HTTP_ACCEPT } from '../config.js';
 
 const JWT_SECRET = 'test-jwt-secret';
 const SESSION_SECRET = 'test-session-secret';
@@ -171,12 +172,15 @@ describe('MCP OAuth authorization server', () => {
 
   it('returns WWW-Authenticate on unauthorized MCP requests', async () => {
     const app = createOAuthApp(createAuthManager());
-    const res = await request(app).post('/mcp').send({ jsonrpc: '2.0', method: 'initialize', id: 1 });
+    const res = await request(app)
+      .post('/mcp')
+      .set('Accept', MCP_STREAMABLE_HTTP_ACCEPT)
+      .send({ jsonrpc: '2.0', method: 'initialize', id: 1, params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 't', version: '1' } } });
 
     assert.strictEqual(res.status, 401);
-    assert.strictEqual(
+    assert.include(
       res.headers['www-authenticate'],
-      buildWwwAuthenticateHeader(ORIGIN, '/mcp')
+      getOAuthProtectedResourceMetadataUrl(new URL(`${ORIGIN}/mcp`))
     );
   });
 

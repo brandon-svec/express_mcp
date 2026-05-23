@@ -7,7 +7,7 @@ import { strict as assert } from 'assert';
 import express from 'express';
 import request from 'supertest';
 import { ExpressMcp } from '../../src/classes/expressMcp.js';
-import { getTestExpressMcpOptions } from '../config.js';
+import { getTestExpressMcpOptions, MCP_STREAMABLE_HTTP_ACCEPT } from '../config.js';
 
 describe('ExpressMcp Knowledge Base Integration', () => {
   let app;
@@ -20,7 +20,10 @@ describe('ExpressMcp Knowledge Base Integration', () => {
       app = express();
       app.use(express.json());
       app.use('/mcp', expressMcp.router());
-      agent = request(app);
+      const baseAgent = request(app);
+      agent = {
+        post: (path) => baseAgent.post(path).set('Accept', MCP_STREAMABLE_HTTP_ACCEPT)
+      };
     });
 
     it('should have knowledge base instance but no tools when tools disabled', () => {
@@ -64,7 +67,10 @@ describe('ExpressMcp Knowledge Base Integration', () => {
       app = express();
       app.use(express.json());
       app.use('/mcp', expressMcp.router());
-      agent = request(app);
+      const baseAgent = request(app);
+      agent = {
+        post: (path) => baseAgent.post(path).set('Accept', MCP_STREAMABLE_HTTP_ACCEPT)
+      };
     });
 
     it('should always have knowledge base instance', () => {

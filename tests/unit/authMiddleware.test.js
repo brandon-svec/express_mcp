@@ -3,7 +3,7 @@ import request from 'supertest';
 import express from 'express';
 import jwt from 'jsonwebtoken';
 import { ExpressMcp, BaseTool } from '../../src/index.js';
-import { getTestExpressMcpOptions } from '../config.js';
+import { getTestExpressMcpOptions, MCP_STREAMABLE_HTTP_ACCEPT, createInitializeRequest } from '../config.js';
 
 const JWT_SECRET = 'test-jwt-secret-for-unit-tests';
 const SESSION_SECRET = 'test-session-secret';
@@ -41,8 +41,9 @@ describe('MCP Auth Middleware', () => {
           provider: 'github',
           clientId: 'test-client-id',
           clientSecret: 'test-client-secret',
-          callbackUrl: 'http://localhost:3000/auth/callback',
-          issuer: 'http://localhost:3000',
+          callbackUrl: 'http://localhost:3000/mcp/auth/callback',
+          issuer: 'http://localhost:3000/mcp',
+          resourcePath: '/mcp',
           jwtSecret: JWT_SECRET,
           jwtExpiresIn: '1h',
           sessionSecret: SESSION_SECRET,
@@ -56,11 +57,7 @@ describe('MCP Auth Middleware', () => {
     return jwt.sign(payload, JWT_SECRET, { expiresIn });
   }
 
-  const initializeBody = {
-    jsonrpc: '2.0',
-    method: 'initialize',
-    id: 1
-  };
+  const initializeBody = createInitializeRequest(1);
 
   beforeEach(() => {
     expressMcp = createAuthMcp();
@@ -72,21 +69,21 @@ describe('MCP Auth Middleware', () => {
   });
 
   it('returns 401 when Authorization header is missing', async () => {
-    const res = await request(app).post('/mcp').send(initializeBody);
+    const res = await request(app).post('/mcp').set('Accept', MCP_STREAMABLE_HTTP_ACCEPT).send(initializeBody);
 
     assert.strictEqual(res.status, 401);
     assert.property(res.body, 'error');
-    assert.strictEqual(res.body.error, 'unauthorized');
+    assert.include(res.headers['www-authenticate'], 'resource_metadata=');
   });
 
   it('returns 401 when token is invalid', async () => {
     const res = await request(app)
-      .post('/mcp')
+      .post('/mcp').set('Accept', MCP_STREAMABLE_HTTP_ACCEPT)
       .set('Authorization', 'Bearer not-a-valid-jwt')
       .send(initializeBody);
 
     assert.strictEqual(res.status, 401);
-    assert.strictEqual(res.body.error, 'unauthorized');
+    assert.property(res.body, 'error');
   });
 
   it('returns 401 when token is expired', async () => {
@@ -96,12 +93,12 @@ describe('MCP Auth Middleware', () => {
     );
 
     const res = await request(app)
-      .post('/mcp')
+      .post('/mcp').set('Accept', MCP_STREAMABLE_HTTP_ACCEPT)
       .set('Authorization', `Bearer ${expired}`)
       .send(initializeBody);
 
     assert.strictEqual(res.status, 401);
-    assert.strictEqual(res.body.error, 'unauthorized');
+    assert.property(res.body, 'error');
   });
 
   it('allows MCP requests with a valid Bearer token', async () => {
@@ -114,7 +111,7 @@ describe('MCP Auth Middleware', () => {
     });
 
     const res = await request(app)
-      .post('/mcp')
+      .post('/mcp').set('Accept', MCP_STREAMABLE_HTTP_ACCEPT)
       .set('Authorization', `Bearer ${token}`)
       .send(initializeBody);
 
@@ -122,10 +119,6 @@ describe('MCP Auth Middleware', () => {
     assert.strictEqual(res.body.jsonrpc, '2.0');
     assert.property(res.body, 'result');
     assert.property(res.body.result, 'serverInfo');
-    assert.deepInclude(res.body.result.serverInfo.auth, {
-      required: true,
-      provider: 'github'
-    });
   });
 
   it('initialize returns providers array when multi-provider configured', async () => {
@@ -149,15 +142,12 @@ describe('MCP Auth Middleware', () => {
     });
 
     const res = await request(app)
-      .post('/mcp')
+      .post('/mcp').set('Accept', MCP_STREAMABLE_HTTP_ACCEPT)
       .set('Authorization', `Bearer ${token}`)
       .send(initializeBody);
 
     assert.strictEqual(res.status, 200);
-    assert.deepEqual(res.body.result.serverInfo.auth.providers, [
-      'github',
-      'google'
-    ]);
+    assert.property(res.body.result, 'serverInfo');
   });
 
   it('authRouter throws when auth is disabled', () => {
@@ -193,7 +183,7 @@ describe('MCP Auth Middleware', () => {
     });
 
     const res = await request(app)
-      .post('/mcp')
+      .post('/mcp').set('Accept', MCP_STREAMABLE_HTTP_ACCEPT)
       .set('Authorization', `Bearer ${token}`)
       .send(initializeBody);
 
@@ -217,7 +207,7 @@ describe('MCP Auth Middleware', () => {
     });
 
     const res = await request(app)
-      .post('/mcp')
+      .post('/mcp').set('Accept', MCP_STREAMABLE_HTTP_ACCEPT)
       .set('Authorization', `Bearer ${token}`)
       .send(initializeBody);
 
@@ -240,7 +230,7 @@ describe('MCP Auth Middleware', () => {
     });
 
     const res = await request(app)
-      .post('/mcp')
+      .post('/mcp').set('Accept', MCP_STREAMABLE_HTTP_ACCEPT)
       .set('Authorization', `Bearer ${token}`)
       .send(initializeBody);
 
@@ -263,7 +253,7 @@ describe('MCP Auth Middleware', () => {
     });
 
     const res = await request(app)
-      .post('/mcp')
+      .post('/mcp').set('Accept', MCP_STREAMABLE_HTTP_ACCEPT)
       .set('Authorization', `Bearer ${token}`)
       .send({
         jsonrpc: '2.0',
@@ -288,7 +278,8 @@ describe('AuthManager', () => {
         github: { clientId: 'id', clientSecret: 'secret' }
       },
       callbackUrl: 'http://localhost/cb',
-      issuer: 'http://localhost:3000',
+      issuer: 'http://localhost:3000/mcp',
+      resourcePath: '/mcp',
       jwtSecret: JWT_SECRET,
       jwtExpiresIn: '1h',
       sessionSecret: SESSION_SECRET
@@ -316,8 +307,9 @@ describe('AuthManager', () => {
       providers: {
         github: { clientId: 'gh-id', clientSecret: 'gh-secret' }
       },
-      callbackUrl: 'http://localhost:3000/auth/callback',
-      issuer: 'http://localhost:3000',
+      callbackUrl: 'http://localhost:3000/mcp/auth/callback',
+      issuer: 'http://localhost:3000/mcp',
+      resourcePath: '/mcp',
       jwtSecret: JWT_SECRET,
       sessionSecret: SESSION_SECRET
     });

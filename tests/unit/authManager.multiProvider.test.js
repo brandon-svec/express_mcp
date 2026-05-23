@@ -13,8 +13,10 @@ function createMultiAuthManager() {
       github: { clientId: 'gh-id', clientSecret: 'gh-secret' },
       google: { clientId: 'go-id', clientSecret: 'go-secret' }
     },
-    callbackUrl: 'http://localhost:3000/auth/callback',
-    issuer: 'http://localhost:3000',
+    callbackUrl: 'http://localhost:3000/mcp/auth/callback',
+    issuer: 'http://localhost:3000/mcp',
+    resourcePath: '/mcp',
+    authPath: '/mcp/auth',
     jwtSecret: JWT_SECRET,
     sessionSecret: SESSION_SECRET,
     logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} }
@@ -47,25 +49,25 @@ describe('AuthManager multi-provider', () => {
   it('GET /login shows picker when multiple providers', async () => {
     const auth = createMultiAuthManager();
     const app = express();
-    app.use('/auth', auth.createAuthRouter());
+    app.use('/mcp/auth', auth.createAuthRouter());
 
-    const res = await request(app).get('/auth/login');
+    const res = await request(app).get('/mcp/auth/login');
     assert.strictEqual(res.status, 200);
-    assert.include(res.text, '/auth/login/github');
-    assert.include(res.text, '/auth/login/google');
+    assert.include(res.text, '/mcp/auth/login/github');
+    assert.include(res.text, '/mcp/auth/login/google');
   });
 
   it('GET /login/:provider redirects to IdP', async () => {
     const auth = createMultiAuthManager();
     const app = express();
-    app.use('/auth', auth.createAuthRouter());
+    app.use('/mcp/auth', auth.createAuthRouter());
 
-    const gh = await request(app).get('/auth/login/github');
+    const gh = await request(app).get('/mcp/auth/login/github');
     assert.strictEqual(gh.status, 302);
     assert.include(gh.headers.location, 'github.com/login/oauth/authorize');
     assert.include(gh.headers.location, 'client_id=gh-id');
 
-    const go = await request(app).get('/auth/login/google');
+    const go = await request(app).get('/mcp/auth/login/google');
     assert.strictEqual(go.status, 302);
     assert.include(go.headers.location, 'accounts.google.com');
     assert.include(go.headers.location, 'client_id=go-id');
@@ -74,9 +76,9 @@ describe('AuthManager multi-provider', () => {
   it('GET /login/:provider returns 404 for unknown provider', async () => {
     const auth = createMultiAuthManager();
     const app = express();
-    app.use('/auth', auth.createAuthRouter());
+    app.use('/mcp/auth', auth.createAuthRouter());
 
-    const res = await request(app).get('/auth/login/foo');
+    const res = await request(app).get('/mcp/auth/login/foo');
     assert.strictEqual(res.status, 404);
   });
 
@@ -85,25 +87,27 @@ describe('AuthManager multi-provider', () => {
       providers: {
         github: { clientId: 'gh-id', clientSecret: 'gh-secret' }
       },
-      callbackUrl: 'http://localhost:3000/auth/callback',
-      issuer: 'http://localhost:3000',
+      callbackUrl: 'http://localhost:3000/mcp/auth/callback',
+      issuer: 'http://localhost:3000/mcp',
+      resourcePath: '/mcp',
       jwtSecret: JWT_SECRET,
       sessionSecret: SESSION_SECRET
     });
     const app = express();
-    app.use('/auth', auth.createAuthRouter());
+    auth.authPath = '/mcp/auth';
+    app.use('/mcp/auth', auth.createAuthRouter());
 
-    const res = await request(app).get('/auth/login');
+    const res = await request(app).get('/mcp/auth/login');
     assert.strictEqual(res.status, 302);
-    assert.include(res.headers.location, '/auth/login/github');
+    assert.include(res.headers.location, '/mcp/auth/login/github');
   });
 
   it('GET /debug lists all enabled providers', async () => {
     const auth = createMultiAuthManager();
     const app = express();
-    app.use('/auth', auth.createAuthRouter());
+    app.use('/mcp/auth', auth.createAuthRouter());
 
-    const res = await request(app).get('/auth/debug');
+    const res = await request(app).get('/mcp/auth/debug');
     assert.strictEqual(res.status, 200);
     assert.deepEqual(res.body.enabledProviders, ['github', 'google']);
     assert.lengthOf(res.body.providers, 2);
