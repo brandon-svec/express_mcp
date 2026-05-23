@@ -31,8 +31,8 @@ npm install @express-mcp/express-mcp express
 
 ```bash
 # Clone the repository
-git clone git@git.soma.example.com:express-mcp/express-mcp
-cd express-mcp
+git clone git@github.com:brandon-svec/express_mcp.git
+cd express_mcp
 
 # Install dependencies
 npm install
