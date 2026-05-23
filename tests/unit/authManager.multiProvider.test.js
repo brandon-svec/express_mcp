@@ -14,6 +14,7 @@ function createMultiAuthManager() {
       google: { clientId: 'go-id', clientSecret: 'go-secret' }
     },
     callbackUrl: 'http://localhost:3000/auth/callback',
+    issuer: 'http://localhost:3000',
     jwtSecret: JWT_SECRET,
     sessionSecret: SESSION_SECRET,
     logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} }
@@ -85,6 +86,7 @@ describe('AuthManager multi-provider', () => {
         github: { clientId: 'gh-id', clientSecret: 'gh-secret' }
       },
       callbackUrl: 'http://localhost:3000/auth/callback',
+      issuer: 'http://localhost:3000',
       jwtSecret: JWT_SECRET,
       sessionSecret: SESSION_SECRET
     });

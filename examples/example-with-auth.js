@@ -91,6 +91,7 @@ async function startAuthExample() {
   });
 
   app.use('/auth', expressMcp.authRouter());
+  app.use(expressMcp.mcpOAuthRouter());
   app.use('/mcp', expressMcp.router());
 
   app.listen(port, () => {

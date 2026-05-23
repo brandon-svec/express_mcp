@@ -39,6 +39,8 @@ export class ExpressMcp {
    * @param {string} options.auth.jwtSecret - Secret for signing MCP session JWTs
    * @param {string} [options.auth.jwtExpiresIn='7d'] - JWT expiry
    * @param {string} options.auth.sessionSecret - Secret for express-session (OAuth handshake only)
+   * @param {string} options.auth.issuer - Public base URL for MCP OAuth metadata and endpoints
+   * @param {string} [options.auth.resourcePath='/mcp'] - MCP HTTP resource path for PRM discovery
    * @param {string[]} [options.auth.allowedUsers] - Optional email/login allowlist (empty = allow all authenticated)
    */
   constructor(options = {}) {
@@ -90,7 +92,7 @@ export class ExpressMcp {
    */
   _initializeAuth() {
     const auth = this.options.auth;
-    const sharedRequired = ['callbackUrl', 'jwtSecret', 'sessionSecret'];
+    const sharedRequired = ['callbackUrl', 'jwtSecret', 'sessionSecret', 'issuer'];
     const missingShared = sharedRequired.filter((key) => !auth[key]);
 
     if (missingShared.length > 0) {
@@ -108,6 +110,8 @@ export class ExpressMcp {
       jwtSecret: auth.jwtSecret,
       jwtExpiresIn: auth.jwtExpiresIn,
       sessionSecret: auth.sessionSecret,
+      issuer: auth.issuer,
+      resourcePath: auth.resourcePath,
       allowedUsers: auth.allowedUsers || [],
       logger: this.logger
     });
@@ -142,6 +146,19 @@ export class ExpressMcp {
       throw new Error('Auth is not enabled. Set options.auth.enabled to true.');
     }
     return this.authManager.createAuthRouter(sessionOptions);
+  }
+
+  /**
+   * Express router for MCP OAuth authorization server (DCR, PKCE, metadata).
+   * Mount at `/` when auth is enabled.
+   * @param {Object} [sessionOptions] - Options passed to express-session
+   * @returns {import('express').Router}
+   */
+  mcpOAuthRouter(sessionOptions = {}) {
+    if (!this.authManager) {
+      throw new Error('Auth is not enabled. Set options.auth.enabled to true.');
+    }
+    return this.authManager.createMcpOAuthRouter(sessionOptions);
   }
 
   /**

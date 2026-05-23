@@ -85,6 +85,7 @@ export function buildAuthOptionsFromEnv(overrides = {}) {
   const auth = {
     enabled: true, // consumed by host app when assigning mcpOptions.auth
     callbackUrl,
+    issuer: baseUrl.replace(/\/$/, ''),
     jwtSecret: process.env.JWT_SECRET,
     jwtExpiresIn: process.env.JWT_EXPIRES_IN || '7d',
     sessionSecret: process.env.SESSION_SECRET,

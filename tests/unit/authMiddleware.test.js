@@ -42,6 +42,7 @@ describe('MCP Auth Middleware', () => {
           clientId: 'test-client-id',
           clientSecret: 'test-client-secret',
           callbackUrl: 'http://localhost:3000/auth/callback',
+          issuer: 'http://localhost:3000',
           jwtSecret: JWT_SECRET,
           jwtExpiresIn: '1h',
           sessionSecret: SESSION_SECRET,
@@ -287,6 +288,7 @@ describe('AuthManager', () => {
         github: { clientId: 'id', clientSecret: 'secret' }
       },
       callbackUrl: 'http://localhost/cb',
+      issuer: 'http://localhost:3000',
       jwtSecret: JWT_SECRET,
       jwtExpiresIn: '1h',
       sessionSecret: SESSION_SECRET
@@ -315,6 +317,7 @@ describe('AuthManager', () => {
         github: { clientId: 'gh-id', clientSecret: 'gh-secret' }
       },
       callbackUrl: 'http://localhost:3000/auth/callback',
+      issuer: 'http://localhost:3000',
       jwtSecret: JWT_SECRET,
       sessionSecret: SESSION_SECRET
     });
