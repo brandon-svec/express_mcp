@@ -112,6 +112,7 @@ export class ExpressMcp {
       sessionSecret: auth.sessionSecret,
       issuer: auth.issuer,
       resourcePath: auth.resourcePath,
+      authPath: auth.authPath,
       allowedUsers: auth.allowedUsers || [],
       logger: this.logger
     });
@@ -159,6 +160,33 @@ export class ExpressMcp {
       throw new Error('Auth is not enabled. Set options.auth.enabled to true.');
     }
     return this.authManager.createMcpOAuthRouter(sessionOptions);
+  }
+
+  /**
+   * Combined HTTP router for MCP OAuth, IdP login, and MCP protocol.
+   * Mount once on the host app (e.g. `app.use(expressMcp.httpRouter())`).
+   * @param {Object} [options]
+   * @param {string} [options.mcpPath='/mcp'] - Mount path for MCP JSON-RPC
+   * @param {string} [options.authPath='/auth'] - Mount path for IdP browser login
+   * @param {Object} [options.sessionOptions] - Options passed to express-session
+   * @returns {import('express').Router}
+   */
+  httpRouter(options = {}) {
+    const mcpPath = options.mcpPath || '/mcp';
+    const authPath = options.authPath || '/auth';
+
+    if (!this.authManager) {
+      const router = Router();
+      router.use(mcpPath, this.router());
+      return router;
+    }
+
+    return this.authManager.createHttpRouter({
+      mcpRouter: this.router(),
+      mcpPath,
+      authPath,
+      sessionOptions: options.sessionOptions || {}
+    });
   }
 
   /**

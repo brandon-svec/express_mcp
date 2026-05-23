@@ -90,9 +90,7 @@ async function startAuthExample() {
 </html>`);
   });
 
-  app.use('/auth', expressMcp.authRouter());
-  app.use(expressMcp.mcpOAuthRouter());
-  app.use('/mcp', expressMcp.router());
+  app.use(expressMcp.httpRouter());
 
   app.listen(port, () => {
     console.log(`Server: ${baseUrl}`);

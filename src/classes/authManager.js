@@ -102,6 +102,7 @@ export class AuthManager {
     }
     this.issuer = options.issuer.replace(/\/$/, '');
     this.resourcePath = options.resourcePath || '/mcp';
+    this.authPath = options.authPath || '/auth';
     this.oauthClients = new OAuthClientRegistry();
     this.authorizationCodes = new AuthorizationCodeStore();
   }
@@ -401,7 +402,7 @@ export class AuthManager {
     const links = this.enabledProviders
       .map(
         (name) =>
-          `<li><a href="/auth/login/${name}">Login with ${PROVIDER_META[name].label}</a></li>`
+          `<li><a href="${this.authPath}/login/${name}">Login with ${PROVIDER_META[name].label}</a></li>`
       )
       .join('\n');
     return `<!DOCTYPE html>
@@ -440,17 +441,11 @@ export class AuthManager {
   }
 
   /**
-   * MCP OAuth 2.1 authorization server routes for MCP clients (DCR, PKCE, metadata).
-   * Mount at `/` on the host app (e.g. `app.use(expressMcp.mcpOAuthRouter())`).
-   * @param {Object} [sessionOptions] - Passed to express-session (except secret)
-   * @returns {import('express').Router}
+   * Register MCP OAuth authorization server routes on a router.
+   * @param {import('express').Router} router
+   * @private
    */
-  createMcpOAuthRouter(sessionOptions = {}) {
-    const router = Router();
-    router.use(express.json());
-    router.use(express.urlencoded({ extended: false }));
-    router.use(this._sessionMiddleware(sessionOptions));
-
+  _registerMcpOAuthRoutes(router) {
     const resourceSuffix = this.resourcePath.replace(/^\//, '');
     const protectedResourcePath = resourceSuffix
       ? `/.well-known/oauth-protected-resource/${resourceSuffix}`
@@ -542,7 +537,7 @@ export class AuthManager {
         return res.redirect(this.getAuthorizationUrl(provider, idpState));
       }
 
-      return res.redirect('/auth/login');
+      return res.redirect(`${this.authPath}/login`);
     });
 
     router.post('/token', (req, res) => {
@@ -590,21 +585,29 @@ export class AuthManager {
         expires_in: expiresIn
       });
     });
+  }
 
+  /**
+   * MCP OAuth 2.1 authorization server routes for MCP clients (DCR, PKCE, metadata).
+   * Mount at `/` on the host app (e.g. `app.use(expressMcp.mcpOAuthRouter())`).
+   * @param {Object} [sessionOptions] - Passed to express-session (except secret)
+   * @returns {import('express').Router}
+   */
+  createMcpOAuthRouter(sessionOptions = {}) {
+    const router = Router();
+    router.use(express.json());
+    router.use(express.urlencoded({ extended: false }));
+    router.use(this._sessionMiddleware(sessionOptions));
+    this._registerMcpOAuthRoutes(router);
     return router;
   }
 
   /**
-   * Create Express router for OAuth login flow and session helpers.
-   * Mount at `/auth` (e.g. `app.use('/auth', authManager.createAuthRouter())`).
-   * @param {Object} [sessionOptions] - Passed to express-session (except secret)
-   * @returns {import('express').Router}
+   * Register IdP browser login routes on a router (mount at /auth).
+   * @param {import('express').Router} router
+   * @private
    */
-  createAuthRouter(sessionOptions = {}) {
-    const router = Router();
-
-    router.use(this._sessionMiddleware(sessionOptions));
-
+  _registerAuthRoutes(router) {
     router.get('/debug', (req, res) => {
       const providers = this.enabledProviders.map((name) => {
         const url = this.getAuthorizationUrl(name, 'debug');
@@ -627,7 +630,7 @@ export class AuthManager {
 
     router.get('/login', (req, res) => {
       if (this.enabledProviders.length === 1) {
-        return res.redirect(`/auth/login/${this.enabledProviders[0]}`);
+        return res.redirect(`${this.authPath}/login/${this.enabledProviders[0]}`);
       }
       res.send(this._renderLoginPicker());
     });
@@ -707,7 +710,51 @@ export class AuthManager {
     router.get('/me', ...this.protectedMiddleware(), (req, res) => {
       res.json({ user: req.mcpUser });
     });
+  }
 
+  /**
+   * Create Express router for OAuth login flow and session helpers.
+   * Mount at `/auth` (e.g. `app.use('/auth', authManager.createAuthRouter())`).
+   * @param {Object} [sessionOptions] - Passed to express-session (except secret)
+   * @returns {import('express').Router}
+   */
+  createAuthRouter(sessionOptions = {}) {
+    const router = Router();
+    router.use(this._sessionMiddleware(sessionOptions));
+    this._registerAuthRoutes(router);
     return router;
+  }
+
+  /**
+   * Combined HTTP router: MCP OAuth AS, IdP login, and MCP protocol.
+   * @param {Object} options
+   * @param {import('express').Router} options.mcpRouter - MCP JSON-RPC router from ExpressMcp.router()
+   * @param {string} [options.mcpPath='/mcp'] - Mount path for MCP protocol
+   * @param {string} [options.authPath='/auth'] - Mount path for IdP login routes
+   * @param {Object} [options.sessionOptions] - Passed to express-session (except secret)
+   * @returns {import('express').Router}
+   */
+  createHttpRouter({ mcpRouter, mcpPath = '/mcp', authPath = '/auth', sessionOptions = {} }) {
+    if (!mcpRouter) {
+      throw new Error('mcpRouter is required for createHttpRouter');
+    }
+
+    this.authPath = authPath;
+
+    const root = Router();
+    root.use(express.json());
+    root.use(express.urlencoded({ extended: false }));
+    root.use(this._sessionMiddleware(sessionOptions));
+
+    const oauthRouter = Router();
+    this._registerMcpOAuthRoutes(oauthRouter);
+    root.use(oauthRouter);
+
+    const authRouter = Router();
+    this._registerAuthRoutes(authRouter);
+    root.use(authPath, authRouter);
+
+    root.use(mcpPath, mcpRouter);
+    return root;
   }
 }
