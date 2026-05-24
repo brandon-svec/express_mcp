@@ -109,10 +109,18 @@ describe('MCP Auth Middleware', () => {
       () =>
         new ExpressMcp(
           getTestExpressMcpOptions({
-            auth: { enabled: true, clientId: 'x' }
+            auth: {
+              enabled: true,
+              baseUrl: 'https://example.com',
+              callbackUrl: 'https://example.com/mcp/auth/callback',
+              jwtExpiresIn: '7d',
+              providers: {
+                github: { clientId: 'x', clientSecret: 'y' }
+              }
+            }
           })
         ),
-      /callbackUrl is missing or empty/
+      /jwtSecret is missing or empty/
     );
   });
 
