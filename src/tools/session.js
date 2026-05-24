@@ -1,6 +1,17 @@
 import { BaseTool } from '../classes/baseTool.js';
 
 /**
+ * @param {number} unixSeconds
+ * @returns {string}
+ */
+function jwtTimestampToIso(unixSeconds) {
+  if (typeof unixSeconds !== 'number' || !Number.isFinite(unixSeconds)) {
+    throw new Error(`Invalid JWT timestamp: ${unixSeconds}`);
+  }
+  return new Date(unixSeconds * 1000).toISOString();
+}
+
+/**
  * Session management tool when auth is enabled.
  */
 export class SessionTool extends BaseTool {
@@ -10,7 +21,7 @@ export class SessionTool extends BaseTool {
   constructor(authManager) {
     super(
       'session',
-      'Session management: who_am_i returns the current authenticated user; reset_session invalidates this token and forces re-authentication.',
+      'Session management: who_am_i returns the current authenticated user with token issuedAt and expiresAt; reset_session invalidates this token and forces re-authentication.',
       {
         type: 'object',
         properties: {
@@ -33,13 +44,21 @@ export class SessionTool extends BaseTool {
       if (!user) {
         return { authenticated: false };
       }
+      if (typeof user.iat !== 'number') {
+        throw new Error('JWT payload missing iat claim');
+      }
+      if (typeof user.exp !== 'number') {
+        throw new Error('JWT payload missing exp claim');
+      }
       return {
         authenticated: true,
         sub: user.sub,
         login: user.login,
         name: user.name,
         email: user.email,
-        provider: user.provider
+        provider: user.provider,
+        issuedAt: jwtTimestampToIso(user.iat),
+        expiresAt: jwtTimestampToIso(user.exp)
       };
     }
 

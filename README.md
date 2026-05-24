@@ -711,16 +711,7 @@ examples/
 
 ## Publishing New Versions
 
-### Locally (for testing)
-
-This is useful when you want to test the integration of **express-mcp** in other services locally before publishing a new version.
-
-1. Run `npm pack` in this module to generate `express-mcp-x.x.x.tgz`
-2. Install in your target service: `npm install path/to/express-mcp-x.x.x.tgz`
-
-### Remotely (production)
-
-Releases to ExampleCorp NPM package registry are enabled on `main` branch through CI.
+Releases to the npm registry are enabled on `main` branch through CI.
 
 To create a new release:
 

@@ -262,6 +262,9 @@ describe('MCP Auth Middleware', () => {
     assert.strictEqual(parsed.authenticated, true);
     assert.strictEqual(parsed.login, 'ctxuser');
     assert.strictEqual(parsed.email, 'ctx@example.com');
+    assert.ok(typeof parsed.issuedAt === 'string');
+    assert.ok(typeof parsed.expiresAt === 'string');
+    assert.ok(parsed.expiresAt > parsed.issuedAt);
   });
 
   it('reset_session revokes token and subsequent requests return 401', async () => {
