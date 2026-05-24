@@ -1,25 +1,15 @@
 import { assert } from 'chai';
 import request from 'supertest';
 import express from 'express';
-import { AuthManager } from '../../src/classes/authManager.js';
 import { normalizeAuthProviders } from '../../src/authConfig.js';
-
-const JWT_SECRET = 'test-jwt-secret';
-const SESSION_SECRET = 'test-session-secret';
+import { createTestAuthManager, TEST_AUTH } from '../authTestUtils.js';
 
 function createMultiAuthManager() {
-  return new AuthManager({
+  return createTestAuthManager({
     providers: {
-      github: { clientId: 'gh-id', clientSecret: 'gh-secret' },
-      google: { clientId: 'go-id', clientSecret: 'go-secret' }
-    },
-    callbackUrl: 'http://localhost:3000/mcp/auth/callback',
-    issuer: 'http://localhost:3000/mcp',
-    resourcePath: '/mcp',
-    authPath: '/mcp/auth',
-    jwtSecret: JWT_SECRET,
-    sessionSecret: SESSION_SECRET,
-    logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} }
+      github: TEST_AUTH.githubAlt,
+      google: TEST_AUTH.google
+    }
   });
 }
 
@@ -83,18 +73,8 @@ describe('AuthManager multi-provider', () => {
   });
 
   it('GET /login redirects when only one provider enabled', async () => {
-    const auth = new AuthManager({
-      providers: {
-        github: { clientId: 'gh-id', clientSecret: 'gh-secret' }
-      },
-      callbackUrl: 'http://localhost:3000/mcp/auth/callback',
-      issuer: 'http://localhost:3000/mcp',
-      resourcePath: '/mcp',
-      jwtSecret: JWT_SECRET,
-      sessionSecret: SESSION_SECRET
-    });
+    const auth = createTestAuthManager();
     const app = express();
-    auth.authPath = '/mcp/auth';
     app.use('/mcp/auth', auth.createAuthRouter());
 
     const res = await request(app).get('/mcp/auth/login');

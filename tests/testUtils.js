@@ -6,6 +6,19 @@
 import { BaseTool } from '../src/classes/baseTool.js';
 
 /**
+ * Creates a simple hello tool used across HTTP integration tests.
+ */
+export class HelloTool extends BaseTool {
+  constructor() {
+    super('hello', 'Says hello');
+  }
+
+  async execute() {
+    return 'Hello!';
+  }
+}
+
+/**
  * Creates a simple test tool for testing purposes
  */
 export class SimpleTestTool extends BaseTool {
