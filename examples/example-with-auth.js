@@ -15,7 +15,6 @@ import {
   isOAuthConfigured
 } from '../src/index.js';
 import { loadEnvFile } from '../src/loadEnvFile.js';
-import { WhoAmITool } from '../src/tools/whoami.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 loadEnvFile(join(__dirname, '.env'));
@@ -62,7 +61,6 @@ async function startAuthExample() {
   const enabledProviders = expressMcp.enabledAuthProviders || [];
 
   expressMcp.registerTool(new GreetingTool());
-  expressMcp.registerTool(new WhoAmITool());
 
   const app = express();
   app.use(express.json());

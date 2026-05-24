@@ -7,7 +7,7 @@ import { strict as assert } from 'assert';
 import express from 'express';
 import request from 'supertest';
 import { ExpressMcp } from '../../src/classes/expressMcp.js';
-import { getTestExpressMcpOptions, MCP_STREAMABLE_HTTP_ACCEPT } from '../config.js';
+import { getTestExpressMcpOptions, createMcpSession, mcpPostWithSession } from '../config.js';
 
 describe('ExpressMcp Knowledge Base Integration', () => {
   let app;
@@ -15,14 +15,15 @@ describe('ExpressMcp Knowledge Base Integration', () => {
   let agent;
 
   describe('Knowledge Base Tools Disabled', () => {
-    beforeEach(() => {
+    beforeEach(async () => {
       expressMcp = new ExpressMcp(getTestExpressMcpOptions({ enableKnowledgeBase: false }));
       app = express();
       app.use(express.json());
       app.use('/mcp', expressMcp.router());
       const baseAgent = request(app);
+      const sessionId = await createMcpSession(baseAgent);
       agent = {
-        post: (path) => baseAgent.post(path).set('Accept', MCP_STREAMABLE_HTTP_ACCEPT)
+        post: (path) => mcpPostWithSession(baseAgent, sessionId, path)
       };
     });
 
@@ -62,14 +63,15 @@ describe('ExpressMcp Knowledge Base Integration', () => {
   });
 
   describe('Knowledge Base Tools Enabled (Default)', () => {
-    beforeEach(() => {
+    beforeEach(async () => {
       expressMcp = new ExpressMcp(getTestExpressMcpOptions()); // Default behavior
       app = express();
       app.use(express.json());
       app.use('/mcp', expressMcp.router());
       const baseAgent = request(app);
+      const sessionId = await createMcpSession(baseAgent);
       agent = {
-        post: (path) => baseAgent.post(path).set('Accept', MCP_STREAMABLE_HTTP_ACCEPT)
+        post: (path) => mcpPostWithSession(baseAgent, sessionId, path)
       };
     });
 

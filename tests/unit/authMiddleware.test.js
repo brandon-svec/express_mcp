@@ -2,8 +2,9 @@ import { assert } from 'chai';
 import request from 'supertest';
 import express from 'express';
 import jwt from 'jsonwebtoken';
+import { randomUUID } from 'crypto';
 import { ExpressMcp, BaseTool } from '../../src/index.js';
-import { getTestExpressMcpOptions, MCP_STREAMABLE_HTTP_ACCEPT, createInitializeRequest } from '../config.js';
+import { getTestExpressMcpOptions, MCP_STREAMABLE_HTTP_ACCEPT, createInitializeRequest, createMcpSession, mcpPostWithSession } from '../config.js';
 
 const JWT_SECRET = 'test-jwt-secret-for-unit-tests';
 const SESSION_SECRET = 'test-session-secret';
@@ -19,16 +20,6 @@ describe('MCP Auth Middleware', () => {
 
     async execute() {
       return 'Hello!';
-    }
-  }
-
-  class WhoAmITool extends BaseTool {
-    constructor() {
-      super('whoami', 'Returns caller identity');
-    }
-
-    async execute(_args, context) {
-      return { login: context.user?.login, email: context.user?.email };
     }
   }
 
@@ -54,7 +45,7 @@ describe('MCP Auth Middleware', () => {
   }
 
   function issueToken(payload, expiresIn = '1h') {
-    return jwt.sign(payload, JWT_SECRET, { expiresIn });
+    return jwt.sign({ jti: randomUUID(), ...payload }, JWT_SECRET, { expiresIn });
   }
 
   const initializeBody = createInitializeRequest(1);
@@ -237,9 +228,8 @@ describe('MCP Auth Middleware', () => {
     assert.strictEqual(res.status, 200);
   });
 
-  it('passes user into tool context', async () => {
+  it('passes user into tool context via session tool who_am_i', async () => {
     expressMcp = createAuthMcp();
-    expressMcp.registerTool(new WhoAmITool());
     app = express();
     app.use(express.json());
     app.use('/mcp', expressMcp.router());
@@ -252,21 +242,69 @@ describe('MCP Auth Middleware', () => {
       provider: 'github'
     });
 
-    const res = await request(app)
-      .post('/mcp').set('Accept', MCP_STREAMABLE_HTTP_ACCEPT)
+    const baseAgent = request(app);
+    const sessionId = await createMcpSession(baseAgent, '/mcp', {
+      authorization: `Bearer ${token}`
+    });
+
+    const res = await mcpPostWithSession(baseAgent, sessionId)
       .set('Authorization', `Bearer ${token}`)
       .send({
         jsonrpc: '2.0',
         method: 'tools/call',
-        params: { name: 'whoami', arguments: {} },
+        params: { name: 'session', arguments: { action: 'who_am_i' } },
         id: 10
       });
 
     assert.strictEqual(res.status, 200);
     const text = res.body.result.content[0].text;
     const parsed = JSON.parse(text);
+    assert.strictEqual(parsed.authenticated, true);
     assert.strictEqual(parsed.login, 'ctxuser');
     assert.strictEqual(parsed.email, 'ctx@example.com');
+  });
+
+  it('reset_session revokes token and subsequent requests return 401', async () => {
+    expressMcp = createAuthMcp();
+    app = express();
+    app.use(express.json());
+    app.use('/mcp', expressMcp.router());
+
+    const token = issueToken({
+      sub: 'gh:5',
+      login: 'logoutuser',
+      name: 'Logout',
+      email: 'logout@example.com',
+      provider: 'github'
+    });
+
+    const baseAgent = request(app);
+    const sessionId = await createMcpSession(baseAgent, '/mcp', {
+      authorization: `Bearer ${token}`
+    });
+
+    const resetRes = await mcpPostWithSession(baseAgent, sessionId)
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        jsonrpc: '2.0',
+        method: 'tools/call',
+        params: { name: 'session', arguments: { action: 'reset_session' } },
+        id: 11
+      });
+
+    assert.strictEqual(resetRes.status, 200);
+    const resetParsed = JSON.parse(resetRes.body.result.content[0].text);
+    assert.strictEqual(resetParsed.revoked, true);
+
+    const afterRes = await mcpPostWithSession(baseAgent, sessionId)
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        jsonrpc: '2.0',
+        method: 'tools/list',
+        id: 12
+      });
+
+    assert.strictEqual(afterRes.status, 401);
   });
 });
 

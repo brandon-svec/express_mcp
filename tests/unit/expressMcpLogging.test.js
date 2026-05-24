@@ -8,7 +8,7 @@ import express from 'express';
 import request from 'supertest';
 import { ExpressMcp } from '../../src/classes/expressMcp.js';
 import { BaseTool } from '../../src/classes/baseTool.js';
-import { MCP_STREAMABLE_HTTP_ACCEPT, createInitializeRequest } from '../config.js';
+import { MCP_STREAMABLE_HTTP_ACCEPT, createInitializeRequest, createMcpSession, mcpPostWithSession } from '../config.js';
 
 describe('ExpressMcp Logging Tests', () => {
   let logs;
@@ -253,9 +253,9 @@ describe('ExpressMcp Logging Tests', () => {
       app.use(express.json());
       app.use('/mcp', expressMcp.router());
 
-      const response = await request(app)
-        .post('/mcp')
-        .set('Accept', MCP_STREAMABLE_HTTP_ACCEPT)
+      const baseAgent = request(app);
+      const sessionId = await createMcpSession(baseAgent);
+      const response = await mcpPostWithSession(baseAgent, sessionId)
         .send({
           jsonrpc: '2.0',
           method: 'tools/call',
@@ -277,9 +277,9 @@ describe('ExpressMcp Logging Tests', () => {
       app.use(express.json());
       app.use('/mcp', expressMcp.router());
 
-      const response = await request(app)
-        .post('/mcp')
-        .set('Accept', MCP_STREAMABLE_HTTP_ACCEPT)
+      const baseAgent = request(app);
+      const sessionId = await createMcpSession(baseAgent);
+      const response = await mcpPostWithSession(baseAgent, sessionId)
         .send({
           jsonrpc: '2.0',
           method: 'tools/call',
@@ -326,9 +326,9 @@ describe('ExpressMcp Logging Tests', () => {
       app.use(express.json());
       app.use('/mcp', expressMcp.router());
 
-      const response = await request(app)
-        .post('/mcp')
-        .set('Accept', MCP_STREAMABLE_HTTP_ACCEPT)
+      const baseAgent = request(app);
+      const sessionId = await createMcpSession(baseAgent);
+      const response = await mcpPostWithSession(baseAgent, sessionId)
         .send({
           jsonrpc: '2.0',
           method: 'unknown-method',

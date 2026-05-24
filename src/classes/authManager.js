@@ -2,7 +2,7 @@ import { Router } from 'express';
 import express from 'express';
 import session from 'express-session';
 import jwt from 'jsonwebtoken';
-import { randomBytes } from 'crypto';
+import { randomBytes, randomUUID } from 'crypto';
 import { isUserAllowed, userLogFields } from '../authz.js';
 import { requireBearerAuth } from '@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js';
 import { InvalidTokenError } from '@modelcontextprotocol/sdk/server/auth/errors.js';
@@ -125,6 +125,7 @@ export class AuthManager {
     this.oauthClients = new OAuthClientRegistry();
     this.authorizationCodes = new AuthorizationCodeStore();
     this.pendingAuthStore = new PendingAuthStore();
+    this._revokedTokens = new Set();
   }
 
   /**
@@ -284,6 +285,7 @@ export class AuthManager {
    */
   issueJwt(user) {
     const payload = {
+      jti: randomUUID(),
       sub: user.sub,
       login: user.login,
       name: user.name,
@@ -294,6 +296,17 @@ export class AuthManager {
     return jwt.sign(payload, this.jwtSecret, {
       expiresIn: this.jwtExpiresIn
     });
+  }
+
+  /**
+   * Revoke a JWT by its jti claim.
+   * @param {string} jti
+   */
+  revokeToken(jti) {
+    if (!jti) {
+      throw new Error('jti is required to revoke a token');
+    }
+    this._revokedTokens.add(jti);
   }
 
   /**
@@ -323,10 +336,61 @@ export class AuthManager {
   }
 
   /**
+   * @param {string} redirectUri
+   * @returns {boolean}
+   * @private
+   */
+  _isHttpRedirectUri(redirectUri) {
+    let parsed;
+    try {
+      parsed = new URL(redirectUri);
+    } catch {
+      return false;
+    }
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+  }
+
+  /**
+   * HTML interstitial for custom-scheme OAuth redirects (e.g. cursor://).
+   * Triggers the deep link and attempts to close the browser tab.
+   * @param {string} redirectTarget
+   * @returns {string}
+   * @private
+   */
+  _renderCustomSchemeOAuthCompletePage(redirectTarget) {
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Authentication complete</title>
+</head>
+<body>
+  <p>Authentication complete. Return to Cursor.</p>
+  <p id="status">Opening Cursor…</p>
+  <script>
+    (function () {
+      var target = ${JSON.stringify(redirectTarget)};
+      window.location.replace(target);
+      setTimeout(function () {
+        window.close();
+      }, 500);
+      setTimeout(function () {
+        var status = document.getElementById('status');
+        if (status) {
+          status.textContent = 'You can close this tab and return to Cursor.';
+        }
+      }, 1500);
+    })();
+  </script>
+</body>
+</html>`;
+  }
+
+  /**
    * Redirect MCP client back to its redirect URI with an authorization code.
-   * @param {import('express').Request} req
    * @param {import('express').Response} res
    * @param {Object} user
+   * @param {Object} mcpAuthPending
    * @private
    */
   _completeMcpAuthorization(res, user, mcpAuthPending) {
@@ -345,7 +409,16 @@ export class AuthManager {
     const redirectUrl = new URL(mcpAuthPending.redirect_uri);
     redirectUrl.searchParams.set('code', code);
     redirectUrl.searchParams.set('state', mcpAuthPending.state);
-    res.redirect(redirectUrl.toString());
+    const redirectTarget = redirectUrl.toString();
+
+    if (this._isHttpRedirectUri(mcpAuthPending.redirect_uri)) {
+      return res.redirect(redirectTarget);
+    }
+
+    return res
+      .status(200)
+      .type('html')
+      .send(this._renderCustomSchemeOAuthCompletePage(redirectTarget));
   }
 
   /**
@@ -401,6 +474,9 @@ export class AuthManager {
               payload = this.verifyJwt(token);
             } catch (error) {
               throw new InvalidTokenError(error.message);
+            }
+            if (payload.jti && this._revokedTokens.has(payload.jti)) {
+              throw new InvalidTokenError('Token has been revoked');
             }
             if (typeof payload.exp !== 'number') {
               throw new InvalidTokenError('JWT payload missing exp claim');

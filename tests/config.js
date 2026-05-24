@@ -88,6 +88,8 @@ export const TEST_CONFIG = {
 // Streamable HTTP transport requires both content types in Accept (MCP spec).
 export const MCP_STREAMABLE_HTTP_ACCEPT = 'application/json, text/event-stream';
 
+export const MCP_SESSION_ID_HEADER = 'mcp-session-id';
+
 // Test utilities
 export const createMcpRequest = (method, params = {}, id = 1) => ({
   jsonrpc: '2.0',
@@ -117,6 +119,36 @@ export const createInitializeRequest = (id = 1) => ({
  */
 export function mcpPost(agent, path = '/mcp') {
   return agent.post(path).set('Accept', MCP_STREAMABLE_HTTP_ACCEPT);
+}
+
+/**
+ * POST initialize and return the MCP session ID from response headers.
+ * @param {import('supertest').SuperTest} agent
+ * @param {string} [path='/mcp']
+ * @param {{ authorization?: string }} [options]
+ * @returns {Promise<string>}
+ */
+export async function createMcpSession(agent, path = '/mcp', options = {}) {
+  let req = mcpPost(agent, path).send(createInitializeRequest(1));
+  if (options.authorization) {
+    req = req.set('Authorization', options.authorization);
+  }
+  const res = await req;
+  const sessionId = res.headers[MCP_SESSION_ID_HEADER];
+  if (!sessionId) {
+    throw new Error(`No ${MCP_SESSION_ID_HEADER} in initialize response (status ${res.status})`);
+  }
+  return sessionId;
+}
+
+/**
+ * Supertest POST helper with Streamable HTTP Accept and session ID headers.
+ * @param {import('supertest').SuperTest} agent
+ * @param {string} sessionId
+ * @param {string} [path='/mcp']
+ */
+export function mcpPostWithSession(agent, sessionId, path = '/mcp') {
+  return mcpPost(agent, path).set(MCP_SESSION_ID_HEADER, sessionId);
 }
 
 export const createToolCallRequest = (toolName, args = {}, id = 1) => ({

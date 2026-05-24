@@ -128,8 +128,55 @@ describe('MCP OAuth authorization server', () => {
       .get('/mcp/auth/callback')
       .query({ state: idpState, code: 'github-auth-code' });
 
+    assert.strictEqual(callbackRes.status, 200);
+    assert.include(callbackRes.headers['content-type'], 'text/html');
+    assert.include(callbackRes.text, 'cursor://callback');
+    assert.include(callbackRes.text, 'window.close');
+    assert.include(callbackRes.text, `state=${mcpClientState}`);
+    const codeMatch = callbackRes.text.match(/code=([A-Za-z0-9_-]+)/);
+    assert.isNotNull(codeMatch);
+  });
+
+  it('uses HTTP redirect for https redirect_uri callbacks', async () => {
+    const authManager = createAuthManager();
+    const codeVerifier = randomBytes(32).toString('base64url');
+    const codeChallenge = createHash('sha256').update(codeVerifier).digest('base64url');
+    const client = authManager.oauthClients.register({
+      client_name: 'WebClient',
+      redirect_uris: ['https://example.com/oauth/callback'],
+      grant_types: ['authorization_code'],
+      response_types: ['code']
+    });
+    const mcpClientState = 'web-client-state';
+
+    authManager.exchangeCodeForUser = async () => ({
+      sub: 'gh:1',
+      login: 'test-user',
+      name: 'Test User',
+      email: 'test@example.com',
+      provider: 'github'
+    });
+
+    const app = createOAuthApp(authManager);
+    const authorizeRes = await request(app)
+      .get('/mcp/authorize')
+      .query({
+        client_id: client.client_id,
+        redirect_uri: 'https://example.com/oauth/callback',
+        response_type: 'code',
+        code_challenge: codeChallenge,
+        code_challenge_method: 'S256',
+        state: mcpClientState
+      });
+    assert.strictEqual(authorizeRes.status, 302);
+    const idpState = new URL(authorizeRes.headers.location).searchParams.get('state');
+
+    const callbackRes = await request(app)
+      .get('/mcp/auth/callback')
+      .query({ state: idpState, code: 'github-auth-code' });
+
     assert.strictEqual(callbackRes.status, 302);
-    assert.include(callbackRes.headers.location, 'cursor://callback');
+    assert.include(callbackRes.headers.location, 'https://example.com/oauth/callback');
     const callbackUrl = new URL(callbackRes.headers.location);
     assert.strictEqual(callbackUrl.searchParams.get('state'), mcpClientState);
     assert.isString(callbackUrl.searchParams.get('code'));

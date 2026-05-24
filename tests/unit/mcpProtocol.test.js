@@ -4,7 +4,7 @@ import express from 'express';
 import { readFileSync } from 'fs';
 import { ExpressMcp, BaseTool } from '../../src/index.js';
 import { DataTypeTestTool } from '../testUtils.js';
-import { getTestExpressMcpOptions, MCP_STREAMABLE_HTTP_ACCEPT, createInitializeRequest } from '../config.js';
+import { getTestExpressMcpOptions, MCP_STREAMABLE_HTTP_ACCEPT, MCP_SESSION_ID_HEADER, createInitializeRequest, createMcpSession, mcpPostWithSession } from '../config.js';
 
 const packageVersion = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')).version;
 
@@ -56,7 +56,7 @@ describe('MCP Protocol Functional Tests', () => {
     }
   }
 
-  beforeEach(() => {
+  beforeEach(async () => {
     // Create Express app for testing
     app = express();
     app.use(express.json());
@@ -79,21 +79,23 @@ describe('MCP Protocol Functional Tests', () => {
       next(err);
     });
     
-    // Create cached SuperTest agent with Streamable HTTP Accept header
     const baseAgent = request(app);
+    const sessionId = await createMcpSession(baseAgent);
     agent = {
-      post: (path) => baseAgent.post(path).set('Accept', MCP_STREAMABLE_HTTP_ACCEPT)
+      post: (path) => mcpPostWithSession(baseAgent, sessionId, path)
     };
   });
 
   describe('POST /mcp - MCP Protocol', () => {
     describe('initialize method', () => {
       it('should handle initialize request', async () => {
-        const response = await agent
+        const response = await request(app)
           .post('/mcp')
+          .set('Accept', MCP_STREAMABLE_HTTP_ACCEPT)
           .send(createInitializeRequest(1));
 
         assert.strictEqual(response.status, 200);
+        assert.ok(response.headers[MCP_SESSION_ID_HEADER]);
         assert.deepStrictEqual(response.body, {
           jsonrpc: '2.0',
           result: {
@@ -167,9 +169,8 @@ describe('MCP Protocol Functional Tests', () => {
         emptyApp.use('/empty', emptyExpressMcp.router());
 
         const emptyAgent = request(emptyApp);
-        const response = await emptyAgent
-          .post('/empty')
-          .set('Accept', MCP_STREAMABLE_HTTP_ACCEPT)
+        const emptySessionId = await createMcpSession(emptyAgent, '/empty');
+        const response = await mcpPostWithSession(emptyAgent, emptySessionId, '/empty')
           .send({
             jsonrpc: '2.0',
             method: 'tools/list',
@@ -409,8 +410,9 @@ describe('MCP Protocol Functional Tests', () => {
       });
 
       it('should handle null id in initialize method', async () => {
-        const response = await agent
+        const response = await request(app)
           .post('/mcp')
+          .set('Accept', MCP_STREAMABLE_HTTP_ACCEPT)
           .send({
             ...createInitializeRequest(null),
             id: null
@@ -465,9 +467,9 @@ describe('MCP Protocol Functional Tests', () => {
         errorApp.use(express.json());
         errorApp.use('/mcp', errorExpressMcp.router());
 
-        const response = await request(errorApp)
-          .post('/mcp')
-          .set('Accept', MCP_STREAMABLE_HTTP_ACCEPT)
+        const errorAgent = request(errorApp);
+        const errorSessionId = await createMcpSession(errorAgent);
+        const response = await mcpPostWithSession(errorAgent, errorSessionId)
           .send({
             jsonrpc: '2.0',
             method: 'tools/call',
@@ -530,9 +532,9 @@ describe('MCP Protocol Functional Tests', () => {
           });
 
 
-        assert.strictEqual(response.status, 200);
+        assert.strictEqual(response.status, 400);
         assert.strictEqual(response.body.jsonrpc, '2.0');
-        assert.property(response.body, 'result');
+        assert.property(response.body, 'error');
       });
     });
 

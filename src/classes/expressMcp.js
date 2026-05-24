@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import pino from 'pino';
 import { readFileSync } from 'fs';
+import { randomUUID } from 'crypto';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { ToolRegistry } from './toolRegistry.js';
@@ -13,6 +14,7 @@ import {
   KnowledgeBaseListTool,
   KnowledgeBaseGetTool
 } from '../tools/knowledgeBase.js';
+import { SessionTool } from '../tools/session.js';
 
 const packageVersion = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')).version;
 
@@ -82,6 +84,7 @@ export class ExpressMcp {
     this.enabledAuthProviders = [];
     if (this.options.auth?.enabled) {
       this._initializeAuth();
+      this.toolRegistry.register(new SessionTool(this.authManager), this.name);
     }
     
     this.logger.info('ExpressMcp instance initialized successfully');
@@ -125,6 +128,17 @@ export class ExpressMcp {
    */
   isAuthEnabled() {
     return Boolean(this.authManager);
+  }
+
+  /**
+   * Revoke a JWT session by its jti claim.
+   * @param {string} jti
+   */
+  revokeSession(jti) {
+    if (!this.authManager) {
+      throw new Error('Auth is not enabled');
+    }
+    this.authManager.revokeToken(jti);
   }
 
   /**
@@ -393,6 +407,7 @@ export class ExpressMcp {
    */
   router() {
     const router = Router();
+    const sessions = new Map();
 
     if (this.authManager) {
       for (const middleware of this.authManager.protectedMiddleware()) {
@@ -400,24 +415,52 @@ export class ExpressMcp {
       }
     }
 
-    router.post('/', async (req, res) => {
+    const handlePost = async (req, res) => {
       const requestLogger = this.logger.child({
         requestId: req.body?.id || 'unknown',
         ...userLogFields(req.mcpUser)
       });
 
-      const transport = new StreamableHTTPServerTransport({
-        sessionIdGenerator: undefined,
-        enableJsonResponse: true
-      });
-      const mcpServer = this._buildMcpServer({ user: req.mcpUser ?? null });
+      const sessionId = req.headers['mcp-session-id'];
+      let transport;
+      let mcpServer;
 
-      transport.onerror = (error) => {
-        requestLogger.error({ error: error.message, stack: error.stack }, 'MCP transport error');
-      };
+      if (sessionId) {
+        const session = sessions.get(sessionId);
+        if (!session) {
+          if (!res.headersSent) {
+            res.status(404).json({
+              jsonrpc: '2.0',
+              error: { code: -32000, message: 'Session not found' },
+              id: req.body?.id ?? null
+            });
+          }
+          return;
+        }
+        ({ transport, mcpServer } = session);
+      } else {
+        let sessionEntry;
+        transport = new StreamableHTTPServerTransport({
+          sessionIdGenerator: () => randomUUID(),
+          enableJsonResponse: true,
+          onsessioninitialized: (sid) => {
+            sessions.set(sid, sessionEntry);
+          }
+        });
+        transport.onclose = () => {
+          if (transport.sessionId) {
+            sessions.delete(transport.sessionId);
+          }
+        };
+        transport.onerror = (error) => {
+          requestLogger.error({ error: error.message, stack: error.stack }, 'MCP transport error');
+        };
+        mcpServer = this._buildMcpServer({ user: req.mcpUser ?? null });
+        sessionEntry = { transport, mcpServer };
+        await mcpServer.connect(transport);
+      }
 
       try {
-        await mcpServer.connect(transport);
         await transport.handleRequest(req, res, req.body);
       } catch (error) {
         requestLogger.error({ error: error.message, stack: error.stack }, 'MCP request failed');
@@ -428,10 +471,45 @@ export class ExpressMcp {
             id: req.body?.id ?? null
           });
         }
-      } finally {
-        await mcpServer.close().catch(() => {});
       }
-    });
+    };
+
+    const handleSessionRequest = async (req, res) => {
+      const sessionId = req.headers['mcp-session-id'];
+      if (!sessionId) {
+        if (!res.headersSent) {
+          res.status(400).json({
+            jsonrpc: '2.0',
+            error: { code: -32000, message: 'Mcp-Session-Id header is required' }
+          });
+        }
+        return;
+      }
+
+      const session = sessions.get(sessionId);
+      if (!session) {
+        if (!res.headersSent) {
+          res.status(404).end();
+        }
+        return;
+      }
+
+      try {
+        await session.transport.handleRequest(req, res);
+      } catch (error) {
+        this.logger.error({ error: error.message, stack: error.stack }, 'MCP session request failed');
+        if (!res.headersSent) {
+          res.status(500).json({
+            jsonrpc: '2.0',
+            error: { code: -32603, message: error.message }
+          });
+        }
+      }
+    };
+
+    router.post('/', handlePost);
+    router.get('/', handleSessionRequest);
+    router.delete('/', handleSessionRequest);
 
     return router;
   }
