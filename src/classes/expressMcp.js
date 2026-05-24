@@ -8,7 +8,8 @@ import { ToolRegistry } from './toolRegistry.js';
 import { KnowledgeBase } from './knowledgeBase.js';
 import { AuthManager } from './authManager.js';
 import { userLogFields } from '../authz.js';
-import { normalizeAuthProviders } from '../authConfig.js';
+import { buildAuthOptions } from '../buildAuthOptions.js';
+import { normalizeAuthProviders, validateAuthOptions } from '../authConfig.js';
 import { 
   KnowledgeBaseSearchTool,
   KnowledgeBaseListTool,
@@ -32,19 +33,20 @@ export class ExpressMcp {
    * @param {Object} [options.loggerOptions] - Pino logger options (used only if logger is not provided)
    *   - Use enabled: true/false to control logging
    *   - Tool arguments are never logged for security reasons
-   * @param {Object} [options.auth] - Optional OAuth SSO configuration
+   * @param {Object} [options.auth] - Optional OAuth SSO (normalized via buildAuthOptions)
    * @param {boolean} [options.auth.enabled=false] - Enable Bearer JWT auth on MCP routes
-   * @param {string} [options.auth.provider='github'] - Single-provider shorthand (with clientId/clientSecret)
-   * @param {string} [options.auth.clientId] - OAuth client ID (single-provider)
-   * @param {string} [options.auth.clientSecret] - OAuth client secret (single-provider)
-   * @param {Object} [options.auth.providers] - Multi-provider map: { github: { clientId, clientSecret }, google: { ... } }
-   * @param {string} options.auth.callbackUrl - OAuth redirect URI (e.g. http://localhost:3000/auth/callback)
-   * @param {string} options.auth.jwtSecret - Secret for signing MCP session JWTs
-   * @param {string} [options.auth.jwtExpiresIn='7d'] - JWT expiry
-   * @param {string} options.auth.sessionSecret - Secret for express-session (OAuth handshake only)
-   * @param {string} options.auth.issuer - MCP OAuth authorization server issuer (e.g. https://host/mcp)
-   * @param {string} [options.auth.resourcePath='/mcp'] - MCP HTTP resource path for PRM discovery
-   * @param {string[]} [options.auth.allowedUsers] - Optional email/login allowlist (empty = allow all authenticated)
+   * @param {string} [options.auth.baseUrl] - Public origin; issuer derived as baseUrl + resourcePath
+   * @param {string} [options.auth.callbackUrl] - OAuth redirect URI (e.g. https://host/mcp/auth/callback)
+   * @param {string} [options.auth.jwtSecret] - Secret for signing MCP session JWTs
+   * @param {string} [options.auth.jwtExpiresIn] - JWT expiry (e.g. `7d`)
+   * @param {string} [options.auth.sessionSecret] - express-session secret for OAuth handshake
+   * @param {Object} [options.auth.providers] - { github|google: { clientId, clientSecret } }
+   * @param {string} [options.auth.provider] - Single-provider shorthand name
+   * @param {string} [options.auth.clientId] - Single-provider client ID
+   * @param {string} [options.auth.clientSecret] - Single-provider client secret
+   * @param {string} [options.auth.issuer] - Override derived issuer
+   * @param {string} [options.auth.resourcePath] - MCP mount path (default `/mcp`)
+   * @param {string[]} [options.auth.allowedUsers] - Optional allowlist; `[]` = any authenticated user
    */
   constructor(options = {}) {
     this.options = Object.assign({
@@ -58,7 +60,11 @@ export class ExpressMcp {
         enabled: false
       }
     }, options);
-    
+
+    if (options.auth) {
+      this.options.auth = buildAuthOptions(options.auth);
+    }
+
     // Store the instance name and description
     this.name = this.options.name;
     this.description = this.options.description;
@@ -96,14 +102,7 @@ export class ExpressMcp {
    */
   _initializeAuth() {
     const auth = this.options.auth;
-    const sharedRequired = ['callbackUrl', 'jwtSecret', 'sessionSecret', 'issuer'];
-    const missingShared = sharedRequired.filter((key) => !auth[key]);
-
-    if (missingShared.length > 0) {
-      throw new Error(
-        `Auth enabled but missing required options: ${missingShared.join(', ')}`
-      );
-    }
+    validateAuthOptions(auth);
 
     const { providers, enabledProviders } = normalizeAuthProviders(auth);
     this.enabledAuthProviders = enabledProviders;

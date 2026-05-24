@@ -112,7 +112,7 @@ describe('MCP Auth Middleware', () => {
             auth: { enabled: true, clientId: 'x' }
           })
         ),
-      /missing required options/
+      /callbackUrl is missing or empty/
     );
   });
 

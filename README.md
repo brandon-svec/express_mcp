@@ -92,62 +92,45 @@ app.listen(3000, () => {
 
 Optional GitHub and/or Google login. Users receive a JWT; MCP clients send `Authorization: Bearer <token>` on each request.
 
-### Multi-provider (GitHub + Google)
+See **[docs/AUTH.md](docs/AUTH.md)** for the full config reference, env vars, and OAuth provider setup checklist.
+
+### Plug-and-play (recommended)
 
 ```javascript
 import { ExpressMcp } from '@brandon-svec/express_mcp';
 
 const expressMcp = new ExpressMcp({
+  name: 'my-service',
   auth: {
     enabled: true,
-    callbackUrl: 'http://localhost:3000/auth/callback',
+    baseUrl: 'https://my-host.example.com',
+    callbackUrl: 'https://my-host.example.com/mcp/auth/callback',
     jwtSecret: process.env.JWT_SECRET,
     sessionSecret: process.env.SESSION_SECRET,
-    allowedUsers: ['user@example.com', 'github-login'], // optional
+    jwtExpiresIn: '7d',
+    allowedUsers: [],
     providers: {
-      github: { clientId: '...', clientSecret: '...' },
-      google: { clientId: '...', clientSecret: '...' }
+      google: { clientId: '...', clientSecret: '...' },
+      github: { clientId: '...', clientSecret: '...' }
     }
   }
 });
 
-app.use('/auth', expressMcp.authRouter());
-app.use('/mcp', expressMcp.router());
+app.use(expressMcp.httpRouter()); // OAuth + MCP on one router
 ```
 
-Routes:
-
-- `GET /auth/login` — provider picker (or auto-redirect if only one)
-- `GET /auth/login/github` / `GET /auth/login/google`
-- `GET /auth/callback` — shared callback URL (register on both OAuth apps)
-- `GET /auth/me` — current user (Bearer token)
-
-### Single provider (backward compatible)
-
-```javascript
-auth: {
-  enabled: true,
-  provider: 'google',
-  clientId: '...',
-  clientSecret: '...',
-  callbackUrl: 'http://localhost:3000/auth/callback',
-  jwtSecret: '...',
-  sessionSecret: '...'
-}
-```
-
-### Environment helpers (host apps)
+### Environment helpers
 
 ```javascript
 import { buildAuthOptionsFromEnv } from '@brandon-svec/express_mcp';
 
 const auth = buildAuthOptionsFromEnv({ baseUrl: 'http://localhost:3000' });
 if (auth) {
-  const expressMcp = new ExpressMcp({ auth: { ...auth, enabled: true } });
+  const expressMcp = new ExpressMcp({ name: 'my-service', auth });
 }
 ```
 
-Env vars for multi-provider: `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, plus `JWT_SECRET`, `SESSION_SECRET`. Optional allowlist: `AUTH_ALLOWED_USERS=email1,login2`.
+Env vars: `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `JWT_SECRET`, `SESSION_SECRET`. Optional: `JWT_EXPIRES_IN`, `AUTH_ALLOWED_USERS`, `OAUTH_CALLBACK_URL`.
 
 Tool handlers receive `context.user` (`sub`, `login`, `email`, `provider`). MCP logs include user identity on each request (not the token).
 

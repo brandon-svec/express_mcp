@@ -2,6 +2,7 @@
  * Resolve OAuth client credentials and auth options from environment.
  */
 
+import { buildAuthOptions } from './buildAuthOptions.js';
 import { parseAllowedUsersFromEnv } from './authz.js';
 
 function provider() {
@@ -84,10 +85,10 @@ export function buildAuthOptionsFromEnv(overrides = {}) {
     `${normalizedBase}${mcpPath}/auth/callback`;
 
   const providers = buildProvidersFromEnv();
-  const auth = {
-    enabled: true, // consumed by host app when assigning mcpOptions.auth
+  const raw = {
+    enabled: true,
+    baseUrl: normalizedBase,
     callbackUrl,
-    issuer: `${normalizedBase}${mcpPath}`,
     resourcePath: mcpPath,
     jwtSecret: process.env.JWT_SECRET,
     jwtExpiresIn: process.env.JWT_EXPIRES_IN || '7d',
@@ -96,14 +97,14 @@ export function buildAuthOptionsFromEnv(overrides = {}) {
   };
 
   if (Object.keys(providers).length > 0) {
-    auth.providers = providers;
+    raw.providers = providers;
   } else {
-    auth.provider = provider();
-    auth.clientId = getOAuthClientId();
-    auth.clientSecret = getOAuthClientSecret();
+    raw.provider = provider();
+    raw.clientId = getOAuthClientId();
+    raw.clientSecret = getOAuthClientSecret();
   }
 
-  return auth;
+  return buildAuthOptions(raw);
 }
 
 export { parseAllowedUsersFromEnv } from './authz.js';
