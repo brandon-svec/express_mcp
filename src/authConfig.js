@@ -1,6 +1,44 @@
 import { SUPPORTED_OAUTH_PROVIDERS } from './classes/authManager.js';
 
 /**
+ * @param {unknown} value
+ * @param {string} label
+ * @returns {string}
+ */
+function requireNonEmptyString(value, label) {
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new Error(`Auth enabled but ${label} is missing or empty.`);
+  }
+  return value.trim();
+}
+
+/**
+ * Validate ExpressMcp auth options when auth is enabled.
+ * @param {Object} auth - options.auth from ExpressMcp constructor
+ */
+export function validateAuthOptions(auth) {
+  if (!auth?.enabled) {
+    return;
+  }
+
+  requireNonEmptyString(auth.callbackUrl, 'callbackUrl');
+  requireNonEmptyString(auth.jwtSecret, 'jwtSecret');
+  requireNonEmptyString(auth.sessionSecret, 'sessionSecret');
+  requireNonEmptyString(auth.issuer, 'issuer');
+  requireNonEmptyString(auth.jwtExpiresIn, 'jwtExpiresIn');
+
+  if (auth.resourcePath !== undefined) {
+    requireNonEmptyString(auth.resourcePath, 'resourcePath');
+  }
+
+  if (auth.allowedUsers !== undefined && !Array.isArray(auth.allowedUsers)) {
+    throw new Error('Auth enabled but allowedUsers must be an array.');
+  }
+
+  normalizeAuthProviders(auth);
+}
+
+/**
  * Normalize ExpressMcp auth options into a providers map for AuthManager.
  * @param {Object} auth - options.auth from ExpressMcp constructor
  * @returns {{ providers: Object, enabledProviders: string[] }}
@@ -24,9 +62,32 @@ export function normalizeAuthProviders(auth) {
     );
   }
 
-  const enabledProviders = SUPPORTED_OAUTH_PROVIDERS.filter(
-    (name) => providers[name]?.clientId && providers[name]?.clientSecret
-  );
+  const enabledProviders = [];
+
+  for (const name of SUPPORTED_OAUTH_PROVIDERS) {
+    const providerConfig = providers[name];
+    if (!providerConfig) {
+      continue;
+    }
+
+    const hasClientId =
+      typeof providerConfig.clientId === 'string' && providerConfig.clientId.trim();
+    const hasClientSecret =
+      typeof providerConfig.clientSecret === 'string' &&
+      providerConfig.clientSecret.trim();
+
+    if (hasClientId && hasClientSecret) {
+      enabledProviders.push(name);
+      continue;
+    }
+
+    if (hasClientId || hasClientSecret) {
+      const missing = hasClientId ? 'clientSecret' : 'clientId';
+      throw new Error(
+        `Auth enabled but ${name} ${missing} is missing or empty.`
+      );
+    }
+  }
 
   if (enabledProviders.length === 0) {
     throw new Error(

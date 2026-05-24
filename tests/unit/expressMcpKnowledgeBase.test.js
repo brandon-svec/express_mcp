@@ -7,7 +7,7 @@ import { strict as assert } from 'assert';
 import express from 'express';
 import request from 'supertest';
 import { ExpressMcp } from '../../src/classes/expressMcp.js';
-import { getTestExpressMcpOptions } from '../config.js';
+import { getTestExpressMcpOptions, createMcpSession, mcpPostWithSession } from '../config.js';
 
 describe('ExpressMcp Knowledge Base Integration', () => {
   let app;
@@ -15,12 +15,16 @@ describe('ExpressMcp Knowledge Base Integration', () => {
   let agent;
 
   describe('Knowledge Base Tools Disabled', () => {
-    beforeEach(() => {
+    beforeEach(async () => {
       expressMcp = new ExpressMcp(getTestExpressMcpOptions({ enableKnowledgeBase: false }));
       app = express();
       app.use(express.json());
       app.use('/mcp', expressMcp.router());
-      agent = request(app);
+      const baseAgent = request(app);
+      const sessionId = await createMcpSession(baseAgent);
+      agent = {
+        post: (path) => mcpPostWithSession(baseAgent, sessionId, path)
+      };
     });
 
     it('should have knowledge base instance but no tools when tools disabled', () => {
@@ -59,12 +63,16 @@ describe('ExpressMcp Knowledge Base Integration', () => {
   });
 
   describe('Knowledge Base Tools Enabled (Default)', () => {
-    beforeEach(() => {
+    beforeEach(async () => {
       expressMcp = new ExpressMcp(getTestExpressMcpOptions()); // Default behavior
       app = express();
       app.use(express.json());
       app.use('/mcp', expressMcp.router());
-      agent = request(app);
+      const baseAgent = request(app);
+      const sessionId = await createMcpSession(baseAgent);
+      agent = {
+        post: (path) => mcpPostWithSession(baseAgent, sessionId, path)
+      };
     });
 
     it('should always have knowledge base instance', () => {

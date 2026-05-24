@@ -5,6 +5,7 @@ dist/
 .cursor.env
 .cursor/
 .DS_Store
+*.tgz
 
 env
 coverage/

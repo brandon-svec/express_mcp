@@ -5,6 +5,8 @@ export { ExpressMcp, AuthManager } from './classes/index.js';
 export { BaseTool } from './classes/index.js';
 
 // Auth helpers for host apps
+export { buildAuthOptions } from './buildAuthOptions.js';
+
 export {
   buildAuthOptionsFromEnv,
   parseAllowedUsersFromEnv,
@@ -13,5 +15,9 @@ export {
   isOAuthConfigured
 } from './oauthEnv.js';
 
-export { normalizeAuthProviders, authServerInfo } from './authConfig.js';
+export {
+  normalizeAuthProviders,
+  authServerInfo,
+  validateAuthOptions
+} from './authConfig.js';
 export { SUPPORTED_OAUTH_PROVIDERS } from './classes/authManager.js';

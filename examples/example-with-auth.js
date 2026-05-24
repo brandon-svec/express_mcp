@@ -15,7 +15,6 @@ import {
   isOAuthConfigured
 } from '../src/index.js';
 import { loadEnvFile } from '../src/loadEnvFile.js';
-import { WhoAmITool } from '../src/tools/whoami.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 loadEnvFile(join(__dirname, '.env'));
@@ -48,21 +47,20 @@ async function startAuthExample() {
     process.exit(1);
   }
 
-  const authOptions = buildAuthOptionsFromEnv({ baseUrl });
-  const callbackUrl = authOptions.callbackUrl;
+  const auth = buildAuthOptionsFromEnv({ baseUrl });
+  const callbackUrl = auth.callbackUrl;
 
   const expressMcp = new ExpressMcp({
     name: 'example-mcp-auth',
     description: 'Example MCP server with OAuth SSO',
     enableKnowledgeBase: true,
     loggerOptions: { enabled: true, level: 'info' },
-    auth: { ...authOptions, enabled: true }
+    auth
   });
 
   const enabledProviders = expressMcp.enabledAuthProviders || [];
 
   expressMcp.registerTool(new GreetingTool());
-  expressMcp.registerTool(new WhoAmITool());
 
   const app = express();
   app.use(express.json());
@@ -70,7 +68,7 @@ async function startAuthExample() {
   const providerLinks = enabledProviders
     .map((name) => {
       const label = name === 'google' ? 'Google' : 'GitHub';
-      return `<li><a href="/auth/login/${name}">Login with ${label}</a></li>`;
+      return `<li><a href="/mcp/auth/login/${name}">Login with ${label}</a></li>`;
     })
     .join('\n');
 
@@ -80,22 +78,21 @@ async function startAuthExample() {
 <head><title>MCP Auth Example</title></head>
 <body>
   <h1>express_mcp OAuth example</h1>
-  <p><a href="/auth/login">Sign in</a></p>
+  <p><a href="/mcp/auth/login">Sign in</a></p>
   <ul>${providerLinks}</ul>
   <p>MCP endpoint: <code>POST ${baseUrl}/mcp</code> (requires Bearer token after login)</p>
   <p><strong>OAuth redirect URI</strong> (register on each provider app):</p>
   <pre style="background:#f4f4f4;padding:0.5em;">${callbackUrl}</pre>
-  <p><a href="/auth/debug">OAuth debug JSON</a></p>
+  <p><a href="/mcp/auth/debug">OAuth debug JSON</a></p>
 </body>
 </html>`);
   });
 
-  app.use('/auth', expressMcp.authRouter());
-  app.use('/mcp', expressMcp.router());
+  app.use(expressMcp.httpRouter());
 
   app.listen(port, () => {
     console.log(`Server: ${baseUrl}`);
-    console.log(`Login: ${baseUrl}/auth/login`);
+    console.log(`Login: ${baseUrl}/mcp/auth/login`);
     console.log(`MCP:   ${baseUrl}/mcp`);
     console.log(`Providers: ${enabledProviders.join(', ')}`);
   });

@@ -4,7 +4,7 @@ import express from 'express';
 import { readFileSync } from 'fs';
 import { ExpressMcp, BaseTool } from '../../src/index.js';
 import { DataTypeTestTool } from '../testUtils.js';
-import { getTestExpressMcpOptions } from '../config.js';
+import { getTestExpressMcpOptions, MCP_STREAMABLE_HTTP_ACCEPT, MCP_SESSION_ID_HEADER, createInitializeRequest, createMcpSession, mcpPostWithSession } from '../config.js';
 
 const packageVersion = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')).version;
 
@@ -56,7 +56,7 @@ describe('MCP Protocol Functional Tests', () => {
     }
   }
 
-  beforeEach(() => {
+  beforeEach(async () => {
     // Create Express app for testing
     app = express();
     app.use(express.json());
@@ -79,22 +79,23 @@ describe('MCP Protocol Functional Tests', () => {
       next(err);
     });
     
-    // Create cached SuperTest agent for better performance
-    agent = request(app);
+    const baseAgent = request(app);
+    const sessionId = await createMcpSession(baseAgent);
+    agent = {
+      post: (path) => mcpPostWithSession(baseAgent, sessionId, path)
+    };
   });
 
   describe('POST /mcp - MCP Protocol', () => {
     describe('initialize method', () => {
       it('should handle initialize request', async () => {
-        const response = await agent
+        const response = await request(app)
           .post('/mcp')
-          .send({
-            jsonrpc: '2.0',
-            method: 'initialize',
-            id: 1
-          });
+          .set('Accept', MCP_STREAMABLE_HTTP_ACCEPT)
+          .send(createInitializeRequest(1));
 
         assert.strictEqual(response.status, 200);
+        assert.ok(response.headers[MCP_SESSION_ID_HEADER]);
         assert.deepStrictEqual(response.body, {
           jsonrpc: '2.0',
           result: {
@@ -118,16 +119,10 @@ describe('MCP Protocol Functional Tests', () => {
           .post('/mcp')
           .send({
             jsonrpc: '2.0',
-            method: 'notifications/initialized',
-            id: 2
+            method: 'notifications/initialized'
           });
 
-        assert.strictEqual(response.status, 200);
-        assert.deepStrictEqual(response.body, {
-          jsonrpc: '2.0',
-          result: null,
-          id: 2
-        });
+        assert.strictEqual(response.status, 202);
       });
     });
 
@@ -173,8 +168,9 @@ describe('MCP Protocol Functional Tests', () => {
         emptyApp.use(express.json());
         emptyApp.use('/empty', emptyExpressMcp.router());
 
-        const response = await request(emptyApp)
-          .post('/empty')
+        const emptyAgent = request(emptyApp);
+        const emptySessionId = await createMcpSession(emptyAgent, '/empty');
+        const response = await mcpPostWithSession(emptyAgent, emptySessionId, '/empty')
           .send({
             jsonrpc: '2.0',
             method: 'tools/list',
@@ -268,14 +264,11 @@ describe('MCP Protocol Functional Tests', () => {
           });
 
         assert.strictEqual(response.status, 200);
-        assert.deepStrictEqual(response.body, {
-          jsonrpc: '2.0',
-          error: {
-            code: -32601,
-            message: "Tool 'non-existent' not found"
-          },
-          id: 8
-        });
+        assert.strictEqual(response.body.jsonrpc, '2.0');
+        assert.property(response.body, 'error');
+        assert.strictEqual(response.body.error.code, -32601);
+        assert.include(response.body.error.message, "Tool 'non-existent' not found");
+        assert.strictEqual(response.body.id, 8);
       });
 
       it('should handle tool execution errors', async () => {
@@ -315,14 +308,9 @@ describe('MCP Protocol Functional Tests', () => {
           });
 
         assert.strictEqual(response.status, 400);
-        assert.deepStrictEqual(response.body, {
-          jsonrpc: '2.0',
-          error: {
-            code: -32600,
-            message: 'Invalid Request - jsonrpc must be "2.0"'
-          },
-          id: 10
-        });
+        assert.strictEqual(response.body.jsonrpc, '2.0');
+        assert.property(response.body, 'error');
+        assert.strictEqual(response.body.error.code, -32700);
       });
 
       it('should reject invalid JSON-RPC version with null id', async () => {
@@ -335,14 +323,9 @@ describe('MCP Protocol Functional Tests', () => {
           });
 
         assert.strictEqual(response.status, 400);
-        assert.deepStrictEqual(response.body, {
-          jsonrpc: '2.0',
-          error: {
-            code: -32600,
-            message: 'Invalid Request - jsonrpc must be "2.0"'
-          },
-          id: null
-        });
+        assert.strictEqual(response.body.jsonrpc, '2.0');
+        assert.property(response.body, 'error');
+        assert.strictEqual(response.body.error.code, -32700);
       });
 
       it('should reject unknown methods', async () => {
@@ -354,15 +337,9 @@ describe('MCP Protocol Functional Tests', () => {
             id: 11
           });
 
-        assert.strictEqual(response.status, 400);
-        assert.deepStrictEqual(response.body, {
-          jsonrpc: '2.0',
-          error: {
-            code: -32601,
-            message: 'Unknown method: unknown/method'
-          },
-          id: 11
-        });
+        assert.strictEqual(response.status, 200);
+        assert.strictEqual(response.body.jsonrpc, '2.0');
+        assert.property(response.body, 'error');
       });
 
       it('should reject unknown methods with null id', async () => {
@@ -375,14 +352,9 @@ describe('MCP Protocol Functional Tests', () => {
           });
 
         assert.strictEqual(response.status, 400);
-        assert.deepStrictEqual(response.body, {
-          jsonrpc: '2.0',
-          error: {
-            code: -32601,
-            message: 'Unknown method: unknown/method'
-          },
-          id: null
-        });
+        assert.strictEqual(response.body.jsonrpc, '2.0');
+        assert.property(response.body, 'error');
+        assert.strictEqual(response.body.id, null);
       });
 
       it('should handle malformed JSON from Express', async () => {
@@ -438,17 +410,16 @@ describe('MCP Protocol Functional Tests', () => {
       });
 
       it('should handle null id in initialize method', async () => {
-        const response = await agent
+        const response = await request(app)
           .post('/mcp')
+          .set('Accept', MCP_STREAMABLE_HTTP_ACCEPT)
           .send({
-            jsonrpc: '2.0',
-            method: 'initialize',
+            ...createInitializeRequest(null),
             id: null
           });
 
-        assert.strictEqual(response.status, 200);
-        assert.property(response.body, 'id');
-        assert.strictEqual(response.body.id, null);
+        assert.strictEqual(response.status, 400);
+        assert.property(response.body, 'error');
       });
 
       it('should handle null id in notifications/initialized method', async () => {
@@ -460,9 +431,7 @@ describe('MCP Protocol Functional Tests', () => {
             id: null
           });
 
-        assert.strictEqual(response.status, 200);
-        assert.property(response.body, 'id');
-        assert.strictEqual(response.body.id, null);
+        assert.strictEqual(response.status, 400);
       });
 
       it('should handle missing id by setting it to null', async () => {
@@ -473,8 +442,7 @@ describe('MCP Protocol Functional Tests', () => {
             method: 'tools/list'
           });
 
-        assert.property(response.body, 'id');
-        assert.strictEqual(response.body.id, null);
+        assert.strictEqual(response.status, 202);
       });
     });
 
@@ -499,8 +467,9 @@ describe('MCP Protocol Functional Tests', () => {
         errorApp.use(express.json());
         errorApp.use('/mcp', errorExpressMcp.router());
 
-        const response = await request(errorApp)
-          .post('/mcp')
+        const errorAgent = request(errorApp);
+        const errorSessionId = await createMcpSession(errorAgent);
+        const response = await mcpPostWithSession(errorAgent, errorSessionId)
           .send({
             jsonrpc: '2.0',
             method: 'tools/call',
@@ -515,7 +484,7 @@ describe('MCP Protocol Functional Tests', () => {
         assert.strictEqual(response.body.jsonrpc, '2.0');
         assert.property(response.body, 'error');
         assert.strictEqual(response.body.error.code, -32603);
-        assert.include(response.body.error.message, 'Tool execution failed');
+        assert.include(response.body.error.message, 'Internal tool error');
         assert.strictEqual(response.body.id, 'error-test');
       });
 
@@ -531,18 +500,16 @@ describe('MCP Protocol Functional Tests', () => {
 
         const response = await request(malformedApp)
           .post('/mcp')
+          .set('Accept', MCP_STREAMABLE_HTTP_ACCEPT)
           .send({
             jsonrpc: '2.0',
             method: 'tools/list',
             id: 'test-id'
           });
 
-        assert.strictEqual(response.status, 500);
+        assert.strictEqual(response.status, 400);
         assert.strictEqual(response.body.jsonrpc, '2.0');
         assert.property(response.body, 'error');
-        assert.strictEqual(response.body.error.code, -32603);
-        assert.include(response.body.error.message, 'Cannot destructure');
-        assert.strictEqual(response.body.id, null);
       });
 
       it('should handle errors when request body is undefined', async () => {
@@ -557,21 +524,18 @@ describe('MCP Protocol Functional Tests', () => {
 
         const response = await request(malformedApp)
           .post('/mcp')
+          .set('Accept', MCP_STREAMABLE_HTTP_ACCEPT)
           .send({
             jsonrpc: '2.0',
             method: 'tools/list',
             id: 'test-id'
           });
 
-        assert.strictEqual(response.status, 500);
+
+        assert.strictEqual(response.status, 400);
         assert.strictEqual(response.body.jsonrpc, '2.0');
         assert.property(response.body, 'error');
-        assert.strictEqual(response.body.error.code, -32603);
-        assert.include(response.body.error.message, 'Cannot destructure');
-        assert.strictEqual(response.body.id, null);
       });
-
-
     });
 
     describe('tools/call method', () => {

@@ -1,17 +1,21 @@
 import { Router } from 'express';
 import pino from 'pino';
 import { readFileSync } from 'fs';
+import { randomUUID } from 'crypto';
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { ToolRegistry } from './toolRegistry.js';
 import { KnowledgeBase } from './knowledgeBase.js';
-import { ToolExecution } from './toolExecution.js';
 import { AuthManager } from './authManager.js';
 import { userLogFields } from '../authz.js';
-import { normalizeAuthProviders, authServerInfo } from '../authConfig.js';
+import { buildAuthOptions } from '../buildAuthOptions.js';
+import { normalizeAuthProviders, validateAuthOptions } from '../authConfig.js';
 import { 
   KnowledgeBaseSearchTool,
   KnowledgeBaseListTool,
   KnowledgeBaseGetTool
 } from '../tools/knowledgeBase.js';
+import { SessionTool } from '../tools/session.js';
 
 const packageVersion = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')).version;
 
@@ -29,17 +33,20 @@ export class ExpressMcp {
    * @param {Object} [options.loggerOptions] - Pino logger options (used only if logger is not provided)
    *   - Use enabled: true/false to control logging
    *   - Tool arguments are never logged for security reasons
-   * @param {Object} [options.auth] - Optional OAuth SSO configuration
+   * @param {Object} [options.auth] - Optional OAuth SSO (normalized via buildAuthOptions)
    * @param {boolean} [options.auth.enabled=false] - Enable Bearer JWT auth on MCP routes
-   * @param {string} [options.auth.provider='github'] - Single-provider shorthand (with clientId/clientSecret)
-   * @param {string} [options.auth.clientId] - OAuth client ID (single-provider)
-   * @param {string} [options.auth.clientSecret] - OAuth client secret (single-provider)
-   * @param {Object} [options.auth.providers] - Multi-provider map: { github: { clientId, clientSecret }, google: { ... } }
-   * @param {string} options.auth.callbackUrl - OAuth redirect URI (e.g. http://localhost:3000/auth/callback)
-   * @param {string} options.auth.jwtSecret - Secret for signing MCP session JWTs
-   * @param {string} [options.auth.jwtExpiresIn='7d'] - JWT expiry
-   * @param {string} options.auth.sessionSecret - Secret for express-session (OAuth handshake only)
-   * @param {string[]} [options.auth.allowedUsers] - Optional email/login allowlist (empty = allow all authenticated)
+   * @param {string} [options.auth.baseUrl] - Public origin; issuer derived as baseUrl + resourcePath
+   * @param {string} [options.auth.callbackUrl] - OAuth redirect URI (e.g. https://host/mcp/auth/callback)
+   * @param {string} [options.auth.jwtSecret] - Secret for signing MCP session JWTs
+   * @param {string} [options.auth.jwtExpiresIn] - JWT expiry (e.g. `7d`)
+   * @param {string} [options.auth.sessionSecret] - express-session secret for OAuth handshake
+   * @param {Object} [options.auth.providers] - { github|google: { clientId, clientSecret } }
+   * @param {string} [options.auth.provider] - Single-provider shorthand name
+   * @param {string} [options.auth.clientId] - Single-provider client ID
+   * @param {string} [options.auth.clientSecret] - Single-provider client secret
+   * @param {string} [options.auth.issuer] - Override derived issuer
+   * @param {string} [options.auth.resourcePath] - MCP mount path (default `/mcp`)
+   * @param {string[]} [options.auth.allowedUsers] - Optional allowlist; `[]` = any authenticated user
    */
   constructor(options = {}) {
     this.options = Object.assign({
@@ -53,7 +60,11 @@ export class ExpressMcp {
         enabled: false
       }
     }, options);
-    
+
+    if (options.auth) {
+      this.options.auth = buildAuthOptions(options.auth);
+    }
+
     // Store the instance name and description
     this.name = this.options.name;
     this.description = this.options.description;
@@ -79,6 +90,7 @@ export class ExpressMcp {
     this.enabledAuthProviders = [];
     if (this.options.auth?.enabled) {
       this._initializeAuth();
+      this.toolRegistry.register(new SessionTool(this.authManager), this.name);
     }
     
     this.logger.info('ExpressMcp instance initialized successfully');
@@ -90,14 +102,7 @@ export class ExpressMcp {
    */
   _initializeAuth() {
     const auth = this.options.auth;
-    const sharedRequired = ['callbackUrl', 'jwtSecret', 'sessionSecret'];
-    const missingShared = sharedRequired.filter((key) => !auth[key]);
-
-    if (missingShared.length > 0) {
-      throw new Error(
-        `Auth enabled but missing required options: ${missingShared.join(', ')}`
-      );
-    }
+    validateAuthOptions(auth);
 
     const { providers, enabledProviders } = normalizeAuthProviders(auth);
     this.enabledAuthProviders = enabledProviders;
@@ -108,19 +113,12 @@ export class ExpressMcp {
       jwtSecret: auth.jwtSecret,
       jwtExpiresIn: auth.jwtExpiresIn,
       sessionSecret: auth.sessionSecret,
+      issuer: auth.issuer,
+      resourcePath: auth.resourcePath,
       allowedUsers: auth.allowedUsers || [],
       logger: this.logger
     });
 
-    const allowlistInfo =
-      auth.allowedUsers?.length > 0
-        ? { allowedUserCount: auth.allowedUsers.length }
-        : { allowlist: 'open' };
-
-    this.logger.info(
-      { providers: enabledProviders, ...allowlistInfo },
-      'OAuth authentication enabled for MCP routes'
-    );
   }
 
   /**
@@ -129,6 +127,17 @@ export class ExpressMcp {
    */
   isAuthEnabled() {
     return Boolean(this.authManager);
+  }
+
+  /**
+   * Revoke a JWT session by its jti claim.
+   * @param {string} jti
+   */
+  revokeSession(jti) {
+    if (!this.authManager) {
+      throw new Error('Auth is not enabled');
+    }
+    this.authManager.revokeToken(jti);
   }
 
   /**
@@ -142,6 +151,63 @@ export class ExpressMcp {
       throw new Error('Auth is not enabled. Set options.auth.enabled to true.');
     }
     return this.authManager.createAuthRouter(sessionOptions);
+  }
+
+  /**
+   * Express router for MCP OAuth authorization server (DCR, PKCE, metadata).
+   * Mount at `/` when auth is enabled.
+   * @param {Object} [sessionOptions] - Options passed to express-session
+   * @returns {import('express').Router}
+   */
+  mcpOAuthRouter(sessionOptions = {}) {
+    if (!this.authManager) {
+      throw new Error('Auth is not enabled. Set options.auth.enabled to true.');
+    }
+    return this.authManager.createMcpOAuthRouter(sessionOptions);
+  }
+
+  /**
+   * Combined HTTP router for MCP OAuth, IdP login, and MCP protocol.
+   * Mount once on the host app (e.g. `app.use(expressMcp.httpRouter())`).
+   * @param {Object} [options]
+   * @param {string} [options.mcpPath='/mcp'] - Mount path for MCP OAuth, IdP login, and JSON-RPC
+   * @param {Object} [options.sessionOptions] - Options passed to express-session
+   * @returns {import('express').Router}
+   */
+  httpRouter(options = {}) {
+    const mcpPath = options.mcpPath || '/mcp';
+
+    if (!this.authManager) {
+      const router = Router();
+      router.use(mcpPath, this.router());
+      return router;
+    }
+
+    const auth = this.options.auth;
+    const allowlistInfo =
+      auth.allowedUsers?.length > 0
+        ? { allowedUserCount: auth.allowedUsers.length }
+        : { allowlist: 'open' };
+
+    this.logger.info(
+      {
+        issuer: auth.issuer,
+        origin: this.authManager.origin,
+        callbackUrl: auth.callbackUrl,
+        resourcePath: auth.resourcePath || mcpPath,
+        mcpPath,
+        authPath: this.authManager.authPath,
+        providers: this.enabledAuthProviders,
+        ...allowlistInfo
+      },
+      'MCP auth enabled'
+    );
+
+    return this.authManager.createHttpRouter({
+      mcpRouter: this.router(),
+      mcpPath,
+      sessionOptions: options.sessionOptions || {}
+    });
   }
 
   /**
@@ -306,12 +372,41 @@ export class ExpressMcp {
   }
 
   /**
+   * Build an SDK McpServer with tools registered from ToolRegistry.
+   * @param {{ user?: Object|null }} [context]
+   * @returns {import('@modelcontextprotocol/sdk/server/mcp.js').McpServer}
+   * @private
+   */
+  _buildMcpServer(context = {}) {
+    const serverName = this.name || '@express-mcp/express-mcp';
+    const serverOptions = {
+      capabilities: {
+        tools: {}
+      }
+    };
+    if (typeof this.description === 'string' && this.description.trim().length > 0) {
+      serverOptions.instructions = this.description.trim();
+    }
+
+    const mcpServer = new McpServer(
+      {
+        name: serverName,
+        version: packageVersion
+      },
+      serverOptions
+    );
+
+    this.toolRegistry.registerOnMcpServer(mcpServer, context);
+    return mcpServer;
+  }
+
+  /**
    * Creates an Express router with MCP protocol routes
    * @returns {Router} Express router configured for MCP
    */
   router() {
     const router = Router();
-    const toolRegistry = this.toolRegistry;
+    const sessions = new Map();
 
     if (this.authManager) {
       for (const middleware of this.authManager.protectedMiddleware()) {
@@ -319,164 +414,101 @@ export class ExpressMcp {
       }
     }
 
-    // MCP Streamable HTTP endpoint for Cursor
-    router.post('/', async (req, res) => {
-      const requestId = req.body?.id || 'unknown';
+    const handlePost = async (req, res) => {
       const requestLogger = this.logger.child({
-        requestId,
+        requestId: req.body?.id || 'unknown',
         ...userLogFields(req.mcpUser)
       });
-      
+
+      const sessionId = req.headers['mcp-session-id'];
+      let transport;
+      let mcpServer;
+
+      if (sessionId) {
+        const session = sessions.get(sessionId);
+        if (!session) {
+          if (!res.headersSent) {
+            res.status(404).json({
+              jsonrpc: '2.0',
+              error: { code: -32000, message: 'Session not found' },
+              id: req.body?.id ?? null
+            });
+          }
+          return;
+        }
+        ({ transport, mcpServer } = session);
+      } else {
+        let sessionEntry;
+        transport = new StreamableHTTPServerTransport({
+          sessionIdGenerator: () => randomUUID(),
+          enableJsonResponse: true,
+          onsessioninitialized: (sid) => {
+            sessions.set(sid, sessionEntry);
+          }
+        });
+        transport.onclose = () => {
+          if (transport.sessionId) {
+            sessions.delete(transport.sessionId);
+          }
+        };
+        transport.onerror = (error) => {
+          requestLogger.error({ error: error.message, stack: error.stack }, 'MCP transport error');
+        };
+        mcpServer = this._buildMcpServer({ user: req.mcpUser ?? null });
+        sessionEntry = { transport, mcpServer };
+        await mcpServer.connect(transport);
+      }
+
       try {
-        const { jsonrpc, method, params, id } = req.body;
-        
-        // Validate JSON-RPC 2.0 format
-        if (jsonrpc !== '2.0') {
-          requestLogger.warn({ jsonrpc }, 'Invalid JSON-RPC version');
-          return res.status(400).json({
+        await transport.handleRequest(req, res, req.body);
+      } catch (error) {
+        requestLogger.error({ error: error.message, stack: error.stack }, 'MCP request failed');
+        if (!res.headersSent) {
+          res.status(500).json({
             jsonrpc: '2.0',
-            error: { code: -32600, message: 'Invalid Request - jsonrpc must be "2.0"' },
-            id: id ?? null
+            error: { code: -32603, message: error.message },
+            id: req.body?.id ?? null
           });
         }
-        
-        // Handle MCP protocol messages
-        switch (method) {
-          case 'notifications/initialized':
-            // Cursor sends this after initialization - just acknowledge it
-            res.json({
-              jsonrpc: '2.0',
-              result: null,
-              id: id ?? null
-            });
-            break;
-            
-          case 'initialize':
-            requestLogger.info('MCP client initialized');
-            {
-              const serverName = this.name || '@express-mcp/express-mcp';
-              const result = {
-                protocolVersion: '2024-11-05',
-                capabilities: {
-                  tools: {}
-                },
-                serverInfo: {
-                  name: serverName,
-                  version: packageVersion,
-                  ...(this.authManager
-                    ? { auth: authServerInfo(this.enabledAuthProviders) }
-                    : {})
-                }
-              };
-              if (typeof this.description === 'string' && this.description.trim().length > 0) {
-                result.instructions = this.description.trim();
-              }
-              res.json({
-                jsonrpc: '2.0',
-                result,
-                id: id ?? null
-              });
-            }
-            break;
-            
-          case 'tools/list': {
-            const tools = toolRegistry.getToolDefinitions();
-            res.json({
-              jsonrpc: '2.0',
-              result: {
-                tools
-              },
-              id: id ?? null
-            });
-            break;
-          }
-            
-          case 'tools/call': {
-            const { name, arguments: args } = params;
-            
-            // Create ToolExecution instance for this tool call
-            const toolExecution = new ToolExecution(name, id, args);
-            
-            const toolContext = {
-              execution: toolExecution,
-              user: req.mcpUser ?? null
-            };
-            
-            try {
-              const execution = await toolRegistry.executeTool(name, args, toolContext);
-              
-              // Get execution data for logging
-              const executionData = execution.getLogData();
-              
-              // Create JSON-RPC response based on execution status
-              let response;
-              if (execution.status === 'error') {
-                const errorData = execution.getErrorData();
-                response = {
-                  jsonrpc: '2.0',
-                  error: {
-                    code: errorData.errorCode || -32603,
-                    message: errorData.error || 'Tool execution failed'
-                  },
-                  id: id
-                };
-                
-                if (errorData.errorData) {
-                  response.error.data = errorData.errorData;
-                }
-                
-                requestLogger.warn({ ...executionData, errorDetails: errorData }, 'Tool call failed');
-              } else {
-                response = {
-                  jsonrpc: '2.0',
-                  result: {
-                    content: [
-                      {
-                        type: 'text',
-                        text: typeof execution.result === 'string' ? execution.result : JSON.stringify(execution.result, null, 2)
-                      }
-                    ]
-                  },
-                  id: id
-                };
-                
-                requestLogger.info({ 
-                  ...executionData
-                }, 'Tool call succeeded');
-              }
-              
-              res.json(response);
-            } catch (error) {
-              // Get execution data even on exception
-              const executionData = toolExecution.getLogData();
-              
-              requestLogger.warn({ 
-                ...executionData,
-                error: error.message, 
-                stack: error.stack 
-              }, 'Tool execution failed with exception');
-              throw error;
-            }
-            break;
-          }
-            
-          default:
-            requestLogger.warn({ method }, 'Unknown method called');
-            res.status(400).json({
-              jsonrpc: '2.0',
-              error: { code: -32601, message: `Unknown method: ${method}` },
-              id: id ?? null
-            });
-        }
-      } catch (error) {
-        requestLogger.error({ error: error.message, stack: error.stack }, 'Request processing failed');
-        res.status(500).json({
-          jsonrpc: '2.0',
-          error: { code: -32603, message: error.message },
-          id: req.body?.id ?? null
-        });
       }
-    });
+    };
+
+    const handleSessionRequest = async (req, res) => {
+      const sessionId = req.headers['mcp-session-id'];
+      if (!sessionId) {
+        if (!res.headersSent) {
+          res.status(400).json({
+            jsonrpc: '2.0',
+            error: { code: -32000, message: 'Mcp-Session-Id header is required' }
+          });
+        }
+        return;
+      }
+
+      const session = sessions.get(sessionId);
+      if (!session) {
+        if (!res.headersSent) {
+          res.status(404).end();
+        }
+        return;
+      }
+
+      try {
+        await session.transport.handleRequest(req, res);
+      } catch (error) {
+        this.logger.error({ error: error.message, stack: error.stack }, 'MCP session request failed');
+        if (!res.headersSent) {
+          res.status(500).json({
+            jsonrpc: '2.0',
+            error: { code: -32603, message: error.message }
+          });
+        }
+      }
+    };
+
+    router.post('/', handlePost);
+    router.get('/', handleSessionRequest);
+    router.delete('/', handleSessionRequest);
 
     return router;
   }

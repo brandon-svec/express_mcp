@@ -7,19 +7,23 @@ import { strict as assert } from 'assert';
 import express from 'express';
 import request from 'supertest';
 import { ExpressMcp } from '../../src/classes/expressMcp.js';
-import { getTestExpressMcpOptions } from '../config.js';
+import { getTestExpressMcpOptions, createMcpSession, mcpPostWithSession } from '../config.js';
 
 describe('FlexSearch MCP Integration Tests', () => {
   let app;
   let expressMcp;
   let agent;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     expressMcp = new ExpressMcp(getTestExpressMcpOptions());
     app = express();
     app.use(express.json());
     app.use('/mcp', expressMcp.router());
-    agent = request(app);
+    const baseAgent = request(app);
+    const sessionId = await createMcpSession(baseAgent);
+    agent = {
+      post: (path) => mcpPostWithSession(baseAgent, sessionId, path)
+    };
 
     // Pre-populate with test documents for search testing
     expressMcp.addDocument('flexsearch-doc1', {

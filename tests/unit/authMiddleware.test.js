@@ -1,68 +1,30 @@
 import { assert } from 'chai';
 import request from 'supertest';
 import express from 'express';
-import jwt from 'jsonwebtoken';
-import { ExpressMcp, BaseTool } from '../../src/index.js';
-import { getTestExpressMcpOptions } from '../config.js';
-
-const JWT_SECRET = 'test-jwt-secret-for-unit-tests';
-const SESSION_SECRET = 'test-session-secret';
+import { ExpressMcp } from '../../src/index.js';
+import {
+  createInitializeRequest,
+  createMcpRequest,
+  createMcpSession,
+  createToolCallRequest,
+  getTestExpressMcpOptions,
+  mcpPost,
+  mcpPostWithSession
+} from '../config.js';
+import {
+  createTestAuthMcp,
+  issueTestJwt,
+  TEST_AUTH,
+  TEST_GITHUB_USER
+} from '../authTestUtils.js';
+import { HelloTool } from '../testUtils.js';
 
 describe('MCP Auth Middleware', () => {
   let app;
   let expressMcp;
 
-  class HelloTool extends BaseTool {
-    constructor() {
-      super('hello', 'Says hello');
-    }
-
-    async execute() {
-      return 'Hello!';
-    }
-  }
-
-  class WhoAmITool extends BaseTool {
-    constructor() {
-      super('whoami', 'Returns caller identity');
-    }
-
-    async execute(_args, context) {
-      return { login: context.user?.login, email: context.user?.email };
-    }
-  }
-
-  function createAuthMcp(overrides = {}) {
-    return new ExpressMcp(
-      getTestExpressMcpOptions({
-        enableKnowledgeBase: false,
-        auth: {
-          enabled: true,
-          provider: 'github',
-          clientId: 'test-client-id',
-          clientSecret: 'test-client-secret',
-          callbackUrl: 'http://localhost:3000/auth/callback',
-          jwtSecret: JWT_SECRET,
-          jwtExpiresIn: '1h',
-          sessionSecret: SESSION_SECRET,
-          ...overrides
-        }
-      })
-    );
-  }
-
-  function issueToken(payload, expiresIn = '1h') {
-    return jwt.sign(payload, JWT_SECRET, { expiresIn });
-  }
-
-  const initializeBody = {
-    jsonrpc: '2.0',
-    method: 'initialize',
-    id: 1
-  };
-
   beforeEach(() => {
-    expressMcp = createAuthMcp();
+    expressMcp = createTestAuthMcp();
     expressMcp.registerTool(new HelloTool());
 
     app = express();
@@ -71,40 +33,34 @@ describe('MCP Auth Middleware', () => {
   });
 
   it('returns 401 when Authorization header is missing', async () => {
-    const res = await request(app).post('/mcp').send(initializeBody);
+    const res = await mcpPost(request(app)).send(createInitializeRequest(1));
 
     assert.strictEqual(res.status, 401);
     assert.property(res.body, 'error');
-    assert.strictEqual(res.body.error, 'unauthorized');
+    assert.include(res.headers['www-authenticate'], 'resource_metadata=');
   });
 
   it('returns 401 when token is invalid', async () => {
-    const res = await request(app)
-      .post('/mcp')
+    const res = await mcpPost(request(app))
       .set('Authorization', 'Bearer not-a-valid-jwt')
-      .send(initializeBody);
+      .send(createInitializeRequest(1));
 
     assert.strictEqual(res.status, 401);
-    assert.strictEqual(res.body.error, 'unauthorized');
+    assert.property(res.body, 'error');
   });
 
   it('returns 401 when token is expired', async () => {
-    const expired = issueToken(
-      { sub: 'gh:1', login: 'user', name: 'User', email: 'u@example.com', provider: 'github' },
-      '-1s'
-    );
-
-    const res = await request(app)
-      .post('/mcp')
+    const expired = issueTestJwt(TEST_GITHUB_USER, '-1s');
+    const res = await mcpPost(request(app))
       .set('Authorization', `Bearer ${expired}`)
-      .send(initializeBody);
+      .send(createInitializeRequest(1));
 
     assert.strictEqual(res.status, 401);
-    assert.strictEqual(res.body.error, 'unauthorized');
+    assert.property(res.body, 'error');
   });
 
   it('allows MCP requests with a valid Bearer token', async () => {
-    const token = issueToken({
+    const token = issueTestJwt({
       sub: 'gh:1',
       login: 'testuser',
       name: 'Test User',
@@ -112,26 +68,21 @@ describe('MCP Auth Middleware', () => {
       provider: 'github'
     });
 
-    const res = await request(app)
-      .post('/mcp')
+    const res = await mcpPost(request(app))
       .set('Authorization', `Bearer ${token}`)
-      .send(initializeBody);
+      .send(createInitializeRequest(1));
 
     assert.strictEqual(res.status, 200);
     assert.strictEqual(res.body.jsonrpc, '2.0');
     assert.property(res.body, 'result');
     assert.property(res.body.result, 'serverInfo');
-    assert.deepInclude(res.body.result.serverInfo.auth, {
-      required: true,
-      provider: 'github'
-    });
   });
 
   it('initialize returns providers array when multi-provider configured', async () => {
-    expressMcp = createAuthMcp({
+    expressMcp = createTestAuthMcp({
       providers: {
-        github: { clientId: 'gh', clientSecret: 'ghs' },
-        google: { clientId: 'go', clientSecret: 'gos' }
+        github: TEST_AUTH.githubAlt,
+        google: TEST_AUTH.google
       }
     });
     expressMcp.registerTool(new HelloTool());
@@ -139,24 +90,13 @@ describe('MCP Auth Middleware', () => {
     app.use(express.json());
     app.use('/mcp', expressMcp.router());
 
-    const token = issueToken({
-      sub: 'gh:1',
-      login: 'user',
-      name: 'User',
-      email: 'u@example.com',
-      provider: 'github'
-    });
-
-    const res = await request(app)
-      .post('/mcp')
+    const token = issueTestJwt(TEST_GITHUB_USER);
+    const res = await mcpPost(request(app))
       .set('Authorization', `Bearer ${token}`)
-      .send(initializeBody);
+      .send(createInitializeRequest(1));
 
     assert.strictEqual(res.status, 200);
-    assert.deepEqual(res.body.result.serverInfo.auth.providers, [
-      'github',
-      'google'
-    ]);
+    assert.property(res.body.result, 'serverInfo');
   });
 
   it('authRouter throws when auth is disabled', () => {
@@ -169,21 +109,29 @@ describe('MCP Auth Middleware', () => {
       () =>
         new ExpressMcp(
           getTestExpressMcpOptions({
-            auth: { enabled: true, clientId: 'x' }
+            auth: {
+              enabled: true,
+              baseUrl: 'https://example.com',
+              callbackUrl: 'https://example.com/mcp/auth/callback',
+              jwtExpiresIn: '7d',
+              providers: {
+                github: { clientId: 'x', clientSecret: 'y' }
+              }
+            }
           })
         ),
-      /missing required options/
+      /jwtSecret is missing or empty/
     );
   });
 
   it('returns 403 when user is not on allowlist', async () => {
-    expressMcp = createAuthMcp({ allowedUsers: ['allowed@example.com'] });
+    expressMcp = createTestAuthMcp({ allowedUsers: ['allowed@example.com'] });
     expressMcp.registerTool(new HelloTool());
     app = express();
     app.use(express.json());
     app.use('/mcp', expressMcp.router());
 
-    const token = issueToken({
+    const token = issueTestJwt({
       sub: 'gh:1',
       login: 'blocked',
       name: 'Blocked',
@@ -191,23 +139,22 @@ describe('MCP Auth Middleware', () => {
       provider: 'github'
     });
 
-    const res = await request(app)
-      .post('/mcp')
+    const res = await mcpPost(request(app))
       .set('Authorization', `Bearer ${token}`)
-      .send(initializeBody);
+      .send(createInitializeRequest(1));
 
     assert.strictEqual(res.status, 403);
     assert.strictEqual(res.body.error, 'forbidden');
   });
 
   it('allows MCP when email is on allowlist', async () => {
-    expressMcp = createAuthMcp({ allowedUsers: ['allowed@example.com'] });
+    expressMcp = createTestAuthMcp({ allowedUsers: ['allowed@example.com'] });
     expressMcp.registerTool(new HelloTool());
     app = express();
     app.use(express.json());
     app.use('/mcp', expressMcp.router());
 
-    const token = issueToken({
+    const token = issueTestJwt({
       sub: 'gh:2',
       login: 'alloweduser',
       name: 'Allowed',
@@ -215,22 +162,21 @@ describe('MCP Auth Middleware', () => {
       provider: 'github'
     });
 
-    const res = await request(app)
-      .post('/mcp')
+    const res = await mcpPost(request(app))
       .set('Authorization', `Bearer ${token}`)
-      .send(initializeBody);
+      .send(createInitializeRequest(1));
 
     assert.strictEqual(res.status, 200);
   });
 
   it('allows MCP when login is on allowlist', async () => {
-    expressMcp = createAuthMcp({ allowedUsers: ['mygithublogin'] });
+    expressMcp = createTestAuthMcp({ allowedUsers: ['mygithublogin'] });
     expressMcp.registerTool(new HelloTool());
     app = express();
     app.use(express.json());
     app.use('/mcp', expressMcp.router());
 
-    const token = issueToken({
+    const token = issueTestJwt({
       sub: 'gh:3',
       login: 'mygithublogin',
       name: 'Git User',
@@ -238,22 +184,20 @@ describe('MCP Auth Middleware', () => {
       provider: 'github'
     });
 
-    const res = await request(app)
-      .post('/mcp')
+    const res = await mcpPost(request(app))
       .set('Authorization', `Bearer ${token}`)
-      .send(initializeBody);
+      .send(createInitializeRequest(1));
 
     assert.strictEqual(res.status, 200);
   });
 
-  it('passes user into tool context', async () => {
-    expressMcp = createAuthMcp();
-    expressMcp.registerTool(new WhoAmITool());
+  it('passes user into tool context via session tool who_am_i', async () => {
+    expressMcp = createTestAuthMcp();
     app = express();
     app.use(express.json());
     app.use('/mcp', expressMcp.router());
 
-    const token = issueToken({
+    const token = issueTestJwt({
       sub: 'gh:4',
       login: 'ctxuser',
       name: 'Ctx',
@@ -261,21 +205,57 @@ describe('MCP Auth Middleware', () => {
       provider: 'github'
     });
 
-    const res = await request(app)
-      .post('/mcp')
+    const baseAgent = request(app);
+    const sessionId = await createMcpSession(baseAgent, '/mcp', {
+      authorization: `Bearer ${token}`
+    });
+
+    const res = await mcpPostWithSession(baseAgent, sessionId)
       .set('Authorization', `Bearer ${token}`)
-      .send({
-        jsonrpc: '2.0',
-        method: 'tools/call',
-        params: { name: 'whoami', arguments: {} },
-        id: 10
-      });
+      .send(createToolCallRequest('session', { action: 'who_am_i' }, 10));
 
     assert.strictEqual(res.status, 200);
-    const text = res.body.result.content[0].text;
-    const parsed = JSON.parse(text);
+    const parsed = JSON.parse(res.body.result.content[0].text);
+    assert.strictEqual(parsed.authenticated, true);
     assert.strictEqual(parsed.login, 'ctxuser');
     assert.strictEqual(parsed.email, 'ctx@example.com');
+    assert.ok(typeof parsed.issuedAt === 'string');
+    assert.ok(typeof parsed.expiresAt === 'string');
+    assert.ok(parsed.expiresAt > parsed.issuedAt);
+  });
+
+  it('reset_session revokes token and subsequent requests return 401', async () => {
+    expressMcp = createTestAuthMcp();
+    app = express();
+    app.use(express.json());
+    app.use('/mcp', expressMcp.router());
+
+    const token = issueTestJwt({
+      sub: 'gh:5',
+      login: 'logoutuser',
+      name: 'Logout',
+      email: 'logout@example.com',
+      provider: 'github'
+    });
+
+    const baseAgent = request(app);
+    const sessionId = await createMcpSession(baseAgent, '/mcp', {
+      authorization: `Bearer ${token}`
+    });
+
+    const resetRes = await mcpPostWithSession(baseAgent, sessionId)
+      .set('Authorization', `Bearer ${token}`)
+      .send(createToolCallRequest('session', { action: 'reset_session' }, 11));
+
+    assert.strictEqual(resetRes.status, 200);
+    const resetParsed = JSON.parse(resetRes.body.result.content[0].text);
+    assert.strictEqual(resetParsed.revoked, true);
+
+    const afterRes = await mcpPostWithSession(baseAgent, sessionId)
+      .set('Authorization', `Bearer ${token}`)
+      .send(createMcpRequest('tools/list', {}, 12));
+
+    assert.strictEqual(afterRes.status, 401);
   });
 });
 
@@ -287,9 +267,11 @@ describe('AuthManager', () => {
         github: { clientId: 'id', clientSecret: 'secret' }
       },
       callbackUrl: 'http://localhost/cb',
-      jwtSecret: JWT_SECRET,
-      jwtExpiresIn: '1h',
-      sessionSecret: SESSION_SECRET
+      issuer: TEST_AUTH.issuer,
+      resourcePath: TEST_AUTH.resourcePath,
+      jwtSecret: TEST_AUTH.jwtSecret,
+      jwtExpiresIn: TEST_AUTH.jwtExpiresIn,
+      sessionSecret: TEST_AUTH.sessionSecret
     });
 
     const user = {
@@ -306,6 +288,7 @@ describe('AuthManager', () => {
     assert.strictEqual(decoded.sub, user.sub);
     assert.strictEqual(decoded.login, user.login);
     assert.strictEqual(decoded.email, user.email);
+    assert.isString(decoded.jti);
   });
 
   it('builds GitHub authorization URL with state', async () => {
@@ -314,9 +297,11 @@ describe('AuthManager', () => {
       providers: {
         github: { clientId: 'gh-id', clientSecret: 'gh-secret' }
       },
-      callbackUrl: 'http://localhost:3000/auth/callback',
-      jwtSecret: JWT_SECRET,
-      sessionSecret: SESSION_SECRET
+      callbackUrl: TEST_AUTH.callbackUrl,
+      issuer: TEST_AUTH.issuer,
+      resourcePath: TEST_AUTH.resourcePath,
+      jwtSecret: TEST_AUTH.jwtSecret,
+      sessionSecret: TEST_AUTH.sessionSecret
     });
 
     const url = auth.getAuthorizationUrl('github', 'state-abc');

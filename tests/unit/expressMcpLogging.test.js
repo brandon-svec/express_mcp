@@ -4,9 +4,11 @@
  */
 
 import { strict as assert } from 'assert';
+import express from 'express';
+import request from 'supertest';
 import { ExpressMcp } from '../../src/classes/expressMcp.js';
 import { BaseTool } from '../../src/classes/baseTool.js';
-import { ToolExecution } from '../../src/classes/toolExecution.js';
+import { MCP_STREAMABLE_HTTP_ACCEPT, createInitializeRequest, createMcpSession, mcpPostWithSession } from '../config.js';
 
 describe('ExpressMcp Logging Tests', () => {
   let logs;
@@ -222,11 +224,7 @@ describe('ExpressMcp Logging Tests', () => {
 
   describe('Tool Execution Error Handling', () => {
     let expressMcp;
-    let router;
-    let mockRes;
-    let responses;
 
-    // Tool that throws an exception during execution
     class ExceptionTool extends BaseTool {
       constructor() {
         super('exception-tool', 'A tool that throws exceptions');
@@ -244,34 +242,21 @@ describe('ExpressMcp Logging Tests', () => {
       });
 
       expressMcp.registerTool(new ExceptionTool());
-      router = expressMcp.router();
-      
-      responses = [];
-      mockRes = {
-        json: (data) => responses.push(data),
-        status: () => mockRes
-      };
     });
 
-    it('should log error when tool execution throws exception', async () => {
-      // Mock the toolRegistry.executeTool to throw an exception (simulating system error)
-      const originalExecuteTool = expressMcp.toolRegistry.executeTool;
+    it('should return JSON-RPC error when tool execution throws exception', async () => {
       expressMcp.toolRegistry.executeTool = async () => {
         throw new Error('System error during tool execution');
       };
 
-      // Mock response that captures status calls
-      let statusCode;
-      const mockResWithStatus = {
-        json: (data) => responses.push(data),
-        status: (code) => {
-          statusCode = code;
-          return mockResWithStatus;
-        }
-      };
+      const app = express();
+      app.use(express.json());
+      app.use('/mcp', expressMcp.router());
 
-      const mockReq = {
-        body: {
+      const baseAgent = request(app);
+      const sessionId = await createMcpSession(baseAgent);
+      const response = await mcpPostWithSession(baseAgent, sessionId)
+        .send({
           jsonrpc: '2.0',
           method: 'tools/call',
           params: {
@@ -279,57 +264,23 @@ describe('ExpressMcp Logging Tests', () => {
             arguments: {}
           },
           id: 'test-exception'
-        }
-      };
+        });
 
-      // Find the POST handler
-      const postHandler = router.stack.find(layer => layer.route?.methods?.post)?.route?.stack?.[0]?.handle;
-      assert.ok(postHandler, 'POST handler should exist');
-
-      try {
-        await postHandler(mockReq, mockResWithStatus);
-        
-        // Check that error was logged (should be "Request processing failed" from outer catch)
-        const errorLog = logs.find(log => 
-          log.level === 'error' && 
-          log.message === 'Request processing failed'
-        );
-        assert.ok(errorLog, 'Should have logged request processing failure');
-        assert.strictEqual(errorLog.data.requestId, 'test-exception');
-        assert.strictEqual(errorLog.data.error, 'System error during tool execution');
-        assert.ok(errorLog.data.stack, 'Should include stack trace');
-        
-        // Should have sent 500 error response
-        assert.strictEqual(statusCode, 500);
-        assert.ok(responses.length > 0);
-        assert.strictEqual(responses[0].jsonrpc, '2.0');
-        assert.ok(responses[0].error);
-      } finally {
-        // Restore original method
-        expressMcp.toolRegistry.executeTool = originalExecuteTool;
-      }
+      assert.strictEqual(response.status, 200);
+      assert.strictEqual(response.body.jsonrpc, '2.0');
+      assert.strictEqual(response.body.error.code, -32603);
+      assert.ok(response.body.error.message.includes('System error during tool execution'));
     });
 
-    it('should log error when response processing throws exception', async () => {
-      // Mock the toolRegistry.executeTool to return success but then mock res.json to throw
-      const originalExecuteTool = expressMcp.toolRegistry.executeTool;
-      expressMcp.toolRegistry.executeTool = async () => {
-        const execution = new ToolExecution('exception-tool', 'test-response', {});
-        execution.setStatus('success');
-        execution.setResult('success');
-        return execution;
-      };
+    it('should return JSON-RPC error when tool handler throws during execution', async () => {
+      const app = express();
+      app.use(express.json());
+      app.use('/mcp', expressMcp.router());
 
-      // Mock response that throws when json is called
-      const mockResWithError = {
-        json: () => {
-          throw new Error('Response serialization failed');
-        },
-        status: () => mockResWithError
-      };
-
-      const mockReq = {
-        body: {
+      const baseAgent = request(app);
+      const sessionId = await createMcpSession(baseAgent);
+      const response = await mcpPostWithSession(baseAgent, sessionId)
+        .send({
           jsonrpc: '2.0',
           method: 'tools/call',
           params: {
@@ -337,88 +288,56 @@ describe('ExpressMcp Logging Tests', () => {
             arguments: {}
           },
           id: 'test-response'
-        }
-      };
+        });
 
-      // Find the POST handler
-      const postHandler = router.stack.find(layer => layer.route?.methods?.post)?.route?.stack?.[0]?.handle;
-      assert.ok(postHandler, 'POST handler should exist');
-
-      try {
-        await postHandler(mockReq, mockResWithError);
-        assert.fail('Should have thrown an error');
-      } catch (error) {
-        assert.strictEqual(error.message, 'Response serialization failed');
-        
-        // Check that the inner catch block error was logged (at warn level)
-        const errorLog = logs.find(log => 
-          log.level === 'warn' && 
-          log.message === 'Tool execution failed with exception'
-        );
-        assert.ok(errorLog, 'Should have logged tool execution exception');
-        assert.strictEqual(errorLog.data.requestId, 'test-response');
-        assert.strictEqual(errorLog.data.toolName, 'exception-tool');
-        assert.strictEqual(errorLog.data.error, 'Response serialization failed');
-        assert.ok(errorLog.data.durationMs >= 1, 'Should have timing information');
-        assert.ok(errorLog.data.stack, 'Should include stack trace');
-      } finally {
-        // Restore original method
-        expressMcp.toolRegistry.executeTool = originalExecuteTool;
-      }
+      assert.strictEqual(response.status, 200);
+      assert.strictEqual(response.body.error.code, -32603);
+      assert.ok(response.body.error.message.includes('Tool execution exception'));
     });
   });
 
-  describe('Child Logger Usage', () => {
+  describe('MCP request handling', () => {
     let expressMcp;
-    let router;
-    let mockRes;
 
     beforeEach(() => {
       expressMcp = new ExpressMcp({
         logger: mockLogger,
         enableKnowledgeBase: false
       });
-
-      router = expressMcp.router();
-      mockRes = {
-        json: () => {},
-        status: () => mockRes
-      };
     });
 
-    it('should log initialize on child logger with requestId', async () => {
-      const mockReq = {
-        body: {
-          jsonrpc: '2.0',
-          method: 'initialize',
-          id: 'init-test'
-        }
-      };
+    it('should handle initialize requests via SDK transport', async () => {
+      const app = express();
+      app.use(express.json());
+      app.use('/mcp', expressMcp.router());
 
-      const postHandler = router.stack.find(layer => layer.route?.methods?.post)?.route?.stack?.[0]?.handle;
-      await postHandler(mockReq, mockRes);
+      const response = await request(app)
+        .post('/mcp')
+        .set('Accept', MCP_STREAMABLE_HTTP_ACCEPT)
+        .send(createInitializeRequest('init-test'));
 
-      const initLog = logs.find(log => log.message === 'MCP client initialized');
-      assert.ok(initLog);
-      assert.strictEqual(initLog.data.requestId, 'init-test');
+      assert.strictEqual(response.status, 200);
+      assert.ok(response.body.result);
+      assert.ok(response.body.result.serverInfo);
     });
 
-    it('should handle unknown method with child logger', async () => {
-      const mockReq = {
-        body: {
+    it('should return SDK error response for unknown methods', async () => {
+      const app = express();
+      app.use(express.json());
+      app.use('/mcp', expressMcp.router());
+
+      const baseAgent = request(app);
+      const sessionId = await createMcpSession(baseAgent);
+      const response = await mcpPostWithSession(baseAgent, sessionId)
+        .send({
           jsonrpc: '2.0',
           method: 'unknown-method',
           id: 'unknown-test'
-        }
-      };
+        });
 
-      const postHandler = router.stack.find(layer => layer.route?.methods?.post)?.route?.stack?.[0]?.handle;
-      await postHandler(mockReq, mockRes);
-
-      const warnLog = logs.find(log => log.message === 'Unknown method called');
-      assert.ok(warnLog);
-      assert.strictEqual(warnLog.data.requestId, 'unknown-test');
-      assert.strictEqual(warnLog.data.method, 'unknown-method');
+      assert.strictEqual(response.status, 200);
+      assert.ok(response.body.error);
+      assert.strictEqual(logs.find((log) => log.message === 'Unknown method called'), undefined);
     });
   });
 });
