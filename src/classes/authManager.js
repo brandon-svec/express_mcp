@@ -87,7 +87,7 @@ export class AuthManager {
    * @param {string} [options.loginStateExpiresIn='10m'] - TTL for pending standalone login sessions
    * @param {function(user: Object, jwt: string, context: Object): (void|Promise<void>)} [options.onTokenIssued]
    * @param {string} [options.postLoginRedirectUrl] - Redirect browser after standalone OAuth (not MCP PKCE flow)
-   * @param {import('../stores/inMemoryStandaloneSessionStore.js').InMemoryStandaloneSessionStore|import('../stores/redisStandaloneSessionStore.js').RedisStandaloneSessionStore} [options.sessionStore]
+   * @param {import('../stores/inMemoryStandaloneSessionStore.js').InMemoryStandaloneSessionStore|import('../stores/redisStandaloneSessionStore.js').RedisStandaloneSessionStore} options.sessionStore
    */
   constructor(options) {
     this.providers = options.providers || {};
@@ -132,7 +132,10 @@ export class AuthManager {
     this.loginStateExpiresIn = options.loginStateExpiresIn || '10m';
     this.onTokenIssued =
       typeof options.onTokenIssued === 'function' ? options.onTokenIssued : null;
-    this.sessionStore = options.sessionStore || null;
+    if (!options.sessionStore) {
+      throw new Error('sessionStore is required for AuthManager');
+    }
+    this.sessionStore = options.sessionStore;
     this.postLoginRedirectUrl =
       typeof options.postLoginRedirectUrl === 'string' && options.postLoginRedirectUrl.trim()
         ? options.postLoginRedirectUrl.trim()
@@ -140,7 +143,6 @@ export class AuthManager {
     this.oauthClients = new OAuthClientRegistry();
     this.authorizationCodes = new AuthorizationCodeStore();
     this.pendingAuthStore = new PendingAuthStore();
-    this._revokedTokens = new Set();
   }
 
   /**
@@ -314,14 +316,40 @@ export class AuthManager {
   }
 
   /**
-   * Revoke a JWT by its jti claim.
-   * @param {string} jti
+   * Persist Bearer access token as active standalone session keyed by JWT jti.
+   * @param {string} accessToken
+   * @param {Record<string, string>} [context]
+   * @returns {Promise<void>}
    */
-  revokeToken(jti) {
-    if (!jti) {
-      throw new Error('jti is required to revoke a token');
+  async persistAccessTokenSession(accessToken, context = {}) {
+    if (typeof accessToken !== 'string' || !accessToken) {
+      throw new Error('accessToken is required');
     }
-    this._revokedTokens.add(jti);
+    const payload = this.verifyJwt(accessToken);
+    if (!payload.jti) {
+      throw new Error('JWT payload missing jti claim');
+    }
+    assertValidSessionId(payload.jti);
+    const sanitized = sanitizeHostContext(context);
+    await this.sessionStore.activate(
+      payload.jti,
+      payload,
+      this._activeSessionTtlSeconds(),
+      sanitized
+    );
+  }
+
+  /**
+   * Remove active standalone session for JWT jti (Cursor Bearer sign-out).
+   * @param {string} jti
+   * @returns {Promise<boolean>}
+   */
+  async deactivateVerifiedSessionByJti(jti) {
+    if (!jti) {
+      throw new Error('jti is required to deactivate a session');
+    }
+    assertValidSessionId(jti);
+    return this.sessionStore.deactivate(jti);
   }
 
   /**
@@ -346,9 +374,6 @@ export class AuthManager {
    * @returns {Promise<{ user: Object, context: Record<string, string> }>}
    */
   async getVerifiedSession(sessionId) {
-    if (!this.sessionStore) {
-      throw new Error('sessionStore is not configured');
-    }
     assertValidSessionId(sessionId);
     const active = await this.sessionStore.findActive(sessionId);
     if (!active) {
@@ -363,9 +388,6 @@ export class AuthManager {
    * @returns {Promise<{ user: Object, context: Record<string, string> }>}
    */
   async getVerifiedSessionByContext(context) {
-    if (!this.sessionStore) {
-      throw new Error('sessionStore is not configured');
-    }
     const sanitized = sanitizeHostContext(context);
     if (Object.keys(sanitized).length === 0) {
       throw new Error('context must be a non-empty object for session lookup');
@@ -383,9 +405,6 @@ export class AuthManager {
    * @returns {Promise<boolean>} true when a session was removed
    */
   async deactivateVerifiedSessionByContext(context) {
-    if (!this.sessionStore) {
-      throw new Error('sessionStore is not configured');
-    }
     const sanitized = sanitizeHostContext(context);
     if (Object.keys(sanitized).length === 0) {
       throw new Error('context must be a non-empty object for session deactivation');
@@ -559,8 +578,12 @@ export class AuthManager {
             } catch (error) {
               throw new InvalidTokenError(error.message);
             }
-            if (payload.jti && this._revokedTokens.has(payload.jti)) {
-              throw new InvalidTokenError('Token has been revoked');
+            if (!payload.jti) {
+              throw new InvalidTokenError('JWT payload missing jti claim');
+            }
+            const active = await this.sessionStore.findActive(payload.jti);
+            if (!active) {
+              throw new InvalidTokenError('Session expired or revoked');
             }
             if (typeof payload.exp !== 'number') {
               throw new InvalidTokenError('JWT payload missing exp claim');
@@ -736,7 +759,7 @@ export class AuthManager {
       return res.redirect(`${this.authPath}/login?pending=${idpState}`);
     });
 
-    router.post('/token', (req, res) => {
+    router.post('/token', async (req, res) => {
       const {
         grant_type: grantType,
         code,
@@ -773,6 +796,21 @@ export class AuthManager {
       }
 
       const accessToken = this.issueJwt(authCode.user);
+      try {
+        await this.persistAccessTokenSession(accessToken, {
+          oauth_client_id: clientId,
+          oauth_sub: authCode.user.sub
+        });
+      } catch (persistErr) {
+        this.logger.error?.(
+          { err: persistErr.message, clientId },
+          'persistAccessTokenSession failed'
+        );
+        return res.status(500).json({
+          error: 'server_error',
+          error_description: 'Failed to persist access token session'
+        });
+      }
       const expiresIn = jwtExpiresInSeconds(accessToken);
 
       return res.json({
@@ -838,13 +876,6 @@ export class AuthManager {
     });
 
     router.post('/login-url', async (req, res) => {
-      if (!this.sessionStore) {
-        return res.status(500).json({
-          error: 'server_error',
-          error_description: 'sessionStore is not configured'
-        });
-      }
-
       const { provider, context } = req.body || {};
       let sanitized;
       try {
@@ -916,11 +947,6 @@ export class AuthManager {
       const sessionId =
         typeof req.query.session_id === 'string' ? req.query.session_id : null;
       if (sessionId) {
-        if (!this.sessionStore) {
-          return res.status(500).send(
-            '<html><body><h1>Server error</h1><p>Session store is not configured.</p></body></html>'
-          );
-        }
         try {
           assertValidSessionId(sessionId);
           const pending = await this.sessionStore.peekPending(sessionId);
@@ -1031,7 +1057,7 @@ export class AuthManager {
           : req.session.loginContext || {};
         delete req.session.loginContext;
 
-        if (standalonePending && this.sessionStore) {
+        if (standalonePending) {
           try {
             await this.sessionStore.activate(
               state,

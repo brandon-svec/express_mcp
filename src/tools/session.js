@@ -63,41 +63,33 @@ export class SessionTool extends BaseTool {
     }
 
     if (args.action === 'reset_session') {
-      const jti = context?.user?.jti;
-      let revoked = false;
-      if (jti) {
-        this._authManager.revokeToken(jti);
-        revoked = true;
-      }
-
       const hostContext = context?.hostContext;
-      let standaloneDeactivated = false;
       if (hostContext && typeof hostContext === 'object' && !Array.isArray(hostContext)) {
-        standaloneDeactivated = await this._authManager.deactivateVerifiedSessionByContext(hostContext);
+        const standaloneDeactivated = await this._authManager.deactivateVerifiedSessionByContext(hostContext);
+        if (typeof hostContext.telegram_chat_id === 'string' && hostContext.telegram_chat_id) {
+          return {
+            standaloneDeactivated,
+            message: standaloneDeactivated
+              ? 'Telegram sign-in cleared. Send another message to receive a new sign-in link.'
+              : 'No active Telegram sign-in session was found.',
+          };
+        }
       }
 
-      if (hostContext && typeof hostContext.telegram_chat_id === 'string' && hostContext.telegram_chat_id) {
-        return {
-          revoked,
-          standaloneDeactivated,
-          message: standaloneDeactivated
-            ? 'Telegram sign-in cleared. Send another message to receive a new sign-in link.'
-            : 'No active Telegram sign-in session was found.',
-        };
-      }
-
+      const jti = context?.user?.jti;
       if (!jti) {
         return {
           revoked: false,
-          standaloneDeactivated,
-          error: 'No jti in current session token; cannot revoke.',
+          error: 'No jti in current session token; cannot deactivate.',
         };
       }
 
+      const revoked = await this._authManager.deactivateVerifiedSessionByJti(jti);
       return {
-        revoked: true,
-        standaloneDeactivated,
-        message: 'Session token invalidated. Reconnect your MCP server in Cursor to re-authenticate.',
+        revoked,
+        message: revoked
+          ? 'Session cleared. Reconnect your MCP server in Cursor to re-authenticate.'
+          : 'No active session found for this token.',
       };
     }
 

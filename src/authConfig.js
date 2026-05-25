@@ -27,6 +27,10 @@ export function validateAuthOptions(auth) {
   requireNonEmptyString(auth.issuer, 'issuer');
   requireNonEmptyString(auth.jwtExpiresIn, 'jwtExpiresIn');
 
+  if (!auth.sessionStore) {
+    throw new Error('Auth enabled but sessionStore is required.');
+  }
+
   if (auth.resourcePath !== undefined) {
     requireNonEmptyString(auth.resourcePath, 'resourcePath');
   }

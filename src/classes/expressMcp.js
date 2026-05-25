@@ -215,14 +215,15 @@ export class ExpressMcp {
   }
 
   /**
-   * Revoke a JWT session by its jti claim.
+   * Deactivate Bearer access token session by JWT jti.
    * @param {string} jti
+   * @returns {Promise<boolean>}
    */
   revokeSession(jti) {
     if (!this.authManager) {
       throw new Error('Auth is not enabled');
     }
-    this.authManager.revokeToken(jti);
+    return this.authManager.deactivateVerifiedSessionByJti(jti);
   }
 
   /**

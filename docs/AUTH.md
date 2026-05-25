@@ -48,7 +48,7 @@ app.listen(3000);
 | `loginStateExpiresIn` | No | TTL for pending standalone login sessions (default `10m`) |
 | `onTokenIssued` | No | `async (user, jwt, context) => {}` after standalone OAuth (not MCP PKCE) |
 | `postLoginRedirectUrl` | No | Browser redirect after standalone OAuth (e.g. `https://t.me/YourBot`) |
-| `sessionStore` | No | `InMemoryStandaloneSessionStore` or `RedisStandaloneSessionStore` — pending + active standalone sessions |
+| `sessionStore` | Yes | `InMemoryStandaloneSessionStore` or `RedisStandaloneSessionStore` — pending + active standalone sessions; PKCE Bearer tokens keyed by JWT `jti` |
 
 ### Derived values (normally do not set manually)
 
@@ -169,7 +169,7 @@ When auth is enabled, `{name}_session` is registered (e.g. `echoharvest_session`
 | Action | Behavior |
 |--------|----------|
 | `who_am_i` | Returns identity and token `issuedAt` / `expiresAt` from `context.user` |
-| `reset_session` | Revokes token by `jti` via in-memory denylist; when `context.hostContext` is set (e.g. Telegram), also removes the Redis/in-memory standalone session for that context |
+| `reset_session` | Deactivates Redis/in-memory standalone session: by `context.hostContext` (Telegram) or by JWT `jti` (Cursor Bearer) |
 
 On the HTTP MCP path, `context.user` comes from Bearer middleware. Host apps that call `Agent.processMessage` in-process must pass `{ user }` themselves (see below).
 
@@ -189,7 +189,9 @@ flowchart LR
   end
 ```
 
-When `auth.enabled` is true, `ExpressMcp` sets `requireUser: true` on the internal `Agent`. `processMessage(historyKey, text, { user, hostContext })` throws immediately if `user` is missing—before any model or tool call. Pass `hostContext` (e.g. `{ telegram_chat_id, telegram_user_id }`) so `reset_session` can clear standalone OAuth sessions, not only the in-memory JWT denylist:
+When `auth.enabled` is true, `ExpressMcp` sets `requireUser: true` on the internal `Agent`. `processMessage(historyKey, text, { user, hostContext })` throws immediately if `user` is missing—before any model or tool call. Pass `hostContext` (e.g. `{ telegram_chat_id, telegram_user_id }`) so `reset_session` can clear Telegram standalone sessions by context alias.
+
+**sessionStore is required** when auth is enabled. PKCE `POST /token` persists each Bearer JWT under `mcp:session:{jti}`; Bearer middleware rejects tokens with no active session row (logout = `deactivate(jti)`).
 
 ```text
 Agent requires an authenticated user but none was provided.

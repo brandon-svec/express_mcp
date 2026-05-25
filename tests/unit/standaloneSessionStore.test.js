@@ -134,14 +134,12 @@ describe('AuthManager getVerifiedSession', () => {
     expect(session.context).to.deep.equal(context);
   });
 
-  it('throws when sessionStore is not configured', async () => {
-    const authManager = createTestAuthManager();
-
+  it('throws when AuthManager is constructed without sessionStore', () => {
     try {
-      await authManager.getVerifiedSession(SESSION_ID);
+      createTestAuthManager({ sessionStore: undefined });
       expect.fail('expected Error');
     } catch (err) {
-      expect(err.message).to.include('sessionStore is not configured');
+      expect(err.message).to.include('sessionStore is required');
     }
   });
 });

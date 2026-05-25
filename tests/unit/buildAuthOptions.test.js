@@ -14,6 +14,7 @@ function validInput(overrides = {}) {
     providers: {
       google: TEST_AUTH.google
     },
+    sessionStore: { createPending: async () => {} },
     ...overrides
   };
 }
@@ -72,7 +73,8 @@ describe('buildAuthOptions', () => {
       jwtExpiresIn: TEST_AUTH.jwtExpiresIn,
       provider: 'github',
       clientId: TEST_AUTH.github.clientId,
-      clientSecret: TEST_AUTH.github.clientSecret
+      clientSecret: TEST_AUTH.github.clientSecret,
+      sessionStore: { createPending: async () => {} }
     });
 
     assert.strictEqual(auth.provider, 'github');
@@ -105,6 +107,14 @@ describe('buildAuthOptions', () => {
     assert.strictEqual(auth.loginStateExpiresIn, '10m');
     assert.strictEqual(auth.onTokenIssued, onTokenIssued);
     assert.strictEqual(auth.sessionStore, sessionStore);
+  });
+
+  it('throws when auth enabled but sessionStore missing', () => {
+    const { sessionStore: _removed, ...withoutStore } = validInput();
+    assert.throws(
+      () => buildAuthOptions(withoutStore),
+      /sessionStore is required/
+    );
   });
 
   it('preserves postLoginRedirectUrl for standalone OAuth', () => {
