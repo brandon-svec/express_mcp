@@ -34,6 +34,10 @@ function requireNonEmptyString(value, label) {
  * @param {string} [input.issuer] - Override derived issuer (normally `{baseUrl}{resourcePath}`)
  * @param {string} [input.resourcePath] - MCP mount path (default `/mcp`)
  * @param {string} [input.mcpPath] - Alias for resourcePath
+ * @param {string[]} [input.loginContextParams] - Whitelist for POST /auth/login-url context
+ * @param {string} [input.loginStateExpiresIn] - Signed login state JWT lifetime (e.g. `10m`)
+ * @param {Function} [input.onTokenIssued] - Callback after standalone OAuth (user, jwt, context)
+ * @param {string} [input.postLoginRedirectUrl] - HTTP redirect after standalone OAuth (e.g. https://t.me/BotName)
  * @returns {{ enabled: false } | Object} Normalized auth options for ExpressMcp
  */
 export function buildAuthOptions(input = {}) {
@@ -68,6 +72,19 @@ export function buildAuthOptions(input = {}) {
     auth.provider = input.provider;
     auth.clientId = input.clientId;
     auth.clientSecret = input.clientSecret;
+  }
+
+  if (Array.isArray(input.loginContextParams)) {
+    auth.loginContextParams = input.loginContextParams;
+  }
+  if (typeof input.loginStateExpiresIn === 'string' && input.loginStateExpiresIn.trim()) {
+    auth.loginStateExpiresIn = input.loginStateExpiresIn.trim();
+  }
+  if (typeof input.onTokenIssued === 'function') {
+    auth.onTokenIssued = input.onTokenIssued;
+  }
+  if (typeof input.postLoginRedirectUrl === 'string' && input.postLoginRedirectUrl.trim()) {
+    auth.postLoginRedirectUrl = input.postLoginRedirectUrl.trim();
   }
 
   validateAuthOptions(auth);

@@ -81,6 +81,10 @@ export class AuthManager {
    * @param {string} [options.origin] - Site origin for PRM discovery; derived from issuer when omitted
    * @param {Object} [options.logger] - Logger with info, warn, error, debug
    * @param {string[]} [options.allowedUsers] - Optional email/login allowlist (empty = allow all)
+   * @param {string[]} [options.loginContextParams] - Whitelist of keys allowed in POST /auth/login-url context
+   * @param {string} [options.loginStateExpiresIn='10m'] - TTL for signed login state JWTs
+   * @param {function(user: Object, jwt: string, context: Object): (void|Promise<void>)} [options.onTokenIssued]
+   * @param {string} [options.postLoginRedirectUrl] - Redirect browser after standalone OAuth (not MCP PKCE flow)
    */
   constructor(options) {
     this.providers = options.providers || {};
@@ -122,6 +126,16 @@ export class AuthManager {
       throw new Error('origin could not be derived from issuer and resourcePath');
     }
     this.authPath = options.authPath || '/auth';
+    this.loginContextParams = Array.isArray(options.loginContextParams)
+      ? options.loginContextParams
+      : [];
+    this.loginStateExpiresIn = options.loginStateExpiresIn || '10m';
+    this.onTokenIssued =
+      typeof options.onTokenIssued === 'function' ? options.onTokenIssued : null;
+    this.postLoginRedirectUrl =
+      typeof options.postLoginRedirectUrl === 'string' && options.postLoginRedirectUrl.trim()
+        ? options.postLoginRedirectUrl.trim()
+        : null;
     this.oauthClients = new OAuthClientRegistry();
     this.authorizationCodes = new AuthorizationCodeStore();
     this.pendingAuthStore = new PendingAuthStore();
@@ -296,6 +310,67 @@ export class AuthManager {
     return jwt.sign(payload, this.jwtSecret, {
       expiresIn: this.jwtExpiresIn
     });
+  }
+
+  /**
+   * @param {Object} context
+   * @returns {string} Signed login state JWT
+   */
+  issueLoginStateToken(context) {
+    return jwt.sign(
+      { context, purpose: 'login_state' },
+      this.jwtSecret,
+      { expiresIn: this.loginStateExpiresIn }
+    );
+  }
+
+  /**
+   * @param {string} token
+   * @returns {Object} Sanitized context object
+   */
+  verifyLoginStateToken(token) {
+    const payload = jwt.verify(token, this.jwtSecret);
+    if (payload.purpose !== 'login_state') {
+      throw new Error('Invalid login state token purpose');
+    }
+    const raw = payload.context;
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+      return {};
+    }
+    const context = {};
+    for (const key of this.loginContextParams) {
+      if (typeof raw[key] === 'string' && raw[key]) {
+        context[key] = raw[key];
+      }
+    }
+    return context;
+  }
+
+  /**
+   * @param {unknown} context
+   * @returns {Object}
+   */
+  validateLoginContextInput(context) {
+    if (!context || typeof context !== 'object' || Array.isArray(context)) {
+      throw new Error('context must be a non-null object');
+    }
+    const keys = Object.keys(context);
+    if (keys.length === 0 && this.loginContextParams.length > 0) {
+      throw new Error('context must not be empty when loginContextParams is configured');
+    }
+    for (const key of keys) {
+      if (!this.loginContextParams.includes(key)) {
+        throw new Error(`context key not allowed: ${key}`);
+      }
+      if (typeof context[key] !== 'string' || !context[key].trim()) {
+        throw new Error(`context.${key} must be a non-empty string`);
+      }
+    }
+    const sanitized = {};
+    for (const key of keys) {
+      sanitized[key] = context[key].trim();
+    }
+    return sanitized;
   }
 
   /**
@@ -753,6 +828,33 @@ export class AuthManager {
       res.send(this._renderLoginPicker(pendingQuery));
     });
 
+    router.post('/login-url', (req, res) => {
+      const { provider, context } = req.body || {};
+      let sanitized;
+      try {
+        sanitized = this.validateLoginContextInput(context);
+      } catch (err) {
+        return res.status(400).json({
+          error: 'invalid_request',
+          error_description: err.message
+        });
+      }
+
+      const oauthProvider =
+        typeof provider === 'string' && this.enabledProviders.includes(provider)
+          ? provider
+          : this.enabledProviders[0];
+
+      const stateToken = this.issueLoginStateToken(sanitized);
+      const loginUrl = new URL(
+        `${this.origin}${this.authPath}/login/${oauthProvider}`,
+        this.origin
+      );
+      loginUrl.searchParams.set('state', stateToken);
+
+      return res.json({ login_url: loginUrl.toString() });
+    });
+
     router.get('/login/:provider', (req, res) => {
       const { provider } = req.params;
       if (!this.enabledProviders.includes(provider)) {
@@ -777,6 +879,19 @@ export class AuthManager {
         });
         return res.redirect(this.getAuthorizationUrl(provider, idpState));
       }
+
+      let loginContext = {};
+      const stateToken = typeof req.query.state === 'string' ? req.query.state : null;
+      if (stateToken) {
+        try {
+          loginContext = this.verifyLoginStateToken(stateToken);
+        } catch (err) {
+          return res.status(400).send(
+            '<html><body><h1>Invalid or expired login link</h1><p>Request a new one.</p></body></html>'
+          );
+        }
+      }
+      req.session.loginContext = loginContext;
 
       const state = randomBytes(16).toString('hex');
       req.session.oauthProvider = provider;
@@ -855,6 +970,21 @@ export class AuthManager {
         }
 
         const token = this.issueJwt(user);
+        if (this.onTokenIssued) {
+          const ctx = req.session.loginContext || {};
+          delete req.session.loginContext;
+          try {
+            await this.onTokenIssued(user, token, ctx);
+          } catch (callbackErr) {
+            this.logger.error?.(
+              { err: callbackErr.message, provider: oauthProvider },
+              'onTokenIssued callback failed'
+            );
+          }
+        }
+        if (this.postLoginRedirectUrl) {
+          return res.redirect(this.postLoginRedirectUrl);
+        }
         res.send(this._renderSuccessPage(user, token));
       } catch (err) {
         this.logger.error?.({ err: err.message, provider: oauthProvider }, 'OAuth callback failed');
