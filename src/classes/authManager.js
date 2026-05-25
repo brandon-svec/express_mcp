@@ -885,7 +885,7 @@ export class AuthManager {
       if (stateToken) {
         try {
           loginContext = this.verifyLoginStateToken(stateToken);
-        } catch (err) {
+        } catch {
           return res.status(400).send(
             '<html><body><h1>Invalid or expired login link</h1><p>Request a new one.</p></body></html>'
           );
