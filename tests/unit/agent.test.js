@@ -250,6 +250,50 @@ describe('Agent', () => {
     assert.deepStrictEqual(history.get('chat:1'), []);
   });
 
+  it('throws before adapter when requireUser is true and user is missing', async () => {
+    const adapter = new FakeAdapter([
+      { text: 'should not run', functionCalls: null },
+    ]);
+    const agent = new Agent({
+      adapter,
+      toolRegistry: registry,
+      systemInstruction: 'test',
+      maxToolRounds: 8,
+      requireUser: true,
+    });
+
+    try {
+      await agent.processMessage('k', 'hello');
+      assert.fail('expected processMessage to throw');
+    } catch (err) {
+      assert.strictEqual(
+        err.message,
+        'Agent requires an authenticated user but none was provided.',
+      );
+      assert.strictEqual(adapter.callIndex, 0);
+    }
+  });
+
+  it('succeeds when requireUser is true and user is provided', async () => {
+    const adapter = new FakeAdapter([
+      { text: 'authenticated reply', functionCalls: null },
+    ]);
+    const agent = new Agent({
+      adapter,
+      toolRegistry: registry,
+      systemInstruction: 'test',
+      maxToolRounds: 8,
+      requireUser: true,
+    });
+
+    const reply = await agent.processMessage('k', 'hello', {
+      user: { sub: 'user:1', email: 'a@example.com', jti: 'jti-1' },
+    });
+
+    assert.strictEqual(reply, 'authenticated reply');
+    assert.strictEqual(adapter.callIndex, 1);
+  });
+
   it('appends turns to history store', async () => {
     const history = new InMemoryHistoryStore({ windowMinutes: 60 });
     const adapter = new FakeAdapter([
