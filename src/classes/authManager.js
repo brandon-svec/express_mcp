@@ -16,6 +16,7 @@ import {
   jwtExpiresInSeconds,
   verifyPkceChallenge
 } from '../mcpOAuth.js';
+import { ContextAuthRequiredError } from '../stores/errors.js';
 
 export const SUPPORTED_OAUTH_PROVIDERS = ['github', 'google'];
 
@@ -85,6 +86,7 @@ export class AuthManager {
    * @param {string} [options.loginStateExpiresIn='10m'] - TTL for signed login state JWTs
    * @param {function(user: Object, jwt: string, context: Object): (void|Promise<void>)} [options.onTokenIssued]
    * @param {string} [options.postLoginRedirectUrl] - Redirect browser after standalone OAuth (not MCP PKCE flow)
+   * @param {import('../stores/inMemoryContextTokenStore.js').InMemoryContextTokenStore|import('../stores/redisContextTokenStore.js').RedisContextTokenStore} [options.contextTokenStore]
    */
   constructor(options) {
     this.providers = options.providers || {};
@@ -132,6 +134,7 @@ export class AuthManager {
     this.loginStateExpiresIn = options.loginStateExpiresIn || '10m';
     this.onTokenIssued =
       typeof options.onTokenIssued === 'function' ? options.onTokenIssued : null;
+    this.contextTokenStore = options.contextTokenStore || null;
     this.postLoginRedirectUrl =
       typeof options.postLoginRedirectUrl === 'string' && options.postLoginRedirectUrl.trim()
         ? options.postLoginRedirectUrl.trim()
@@ -382,6 +385,22 @@ export class AuthManager {
       throw new Error('jti is required to revoke a token');
     }
     this._revokedTokens.add(jti);
+  }
+
+  /**
+   * Load JWT for a login context, verify it, and return the decoded user payload.
+   * @param {Record<string, unknown>} context
+   * @returns {Promise<Object>}
+   */
+  async getVerifiedContextUser(context) {
+    if (!this.contextTokenStore) {
+      throw new Error('contextTokenStore is not configured');
+    }
+    const storedJwt = await this.contextTokenStore.find(context);
+    if (!storedJwt) {
+      throw new ContextAuthRequiredError('No active session for the given login context');
+    }
+    return this.verifyJwt(storedJwt);
   }
 
   /**
@@ -970,9 +989,21 @@ export class AuthManager {
         }
 
         const token = this.issueJwt(user);
+        const ctx = req.session.loginContext || {};
+        delete req.session.loginContext;
+
+        if (this.contextTokenStore && Object.keys(ctx).length > 0) {
+          try {
+            await this.contextTokenStore.upsert(ctx, user, token);
+          } catch (storeErr) {
+            this.logger.error?.(
+              { err: storeErr.message, provider: oauthProvider },
+              'contextTokenStore upsert failed'
+            );
+          }
+        }
+
         if (this.onTokenIssued) {
-          const ctx = req.session.loginContext || {};
-          delete req.session.loginContext;
           try {
             await this.onTokenIssued(user, token, ctx);
           } catch (callbackErr) {

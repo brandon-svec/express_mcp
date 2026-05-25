@@ -38,6 +38,7 @@ function requireNonEmptyString(value, label) {
  * @param {string} [input.loginStateExpiresIn] - Signed login state JWT lifetime (e.g. `10m`)
  * @param {Function} [input.onTokenIssued] - Callback after standalone OAuth (user, jwt, context)
  * @param {string} [input.postLoginRedirectUrl] - HTTP redirect after standalone OAuth (e.g. https://t.me/BotName)
+ * @param {Object} [input.contextTokenStore] - Store for context-keyed JWTs (InMemory or Redis)
  * @returns {{ enabled: false } | Object} Normalized auth options for ExpressMcp
  */
 export function buildAuthOptions(input = {}) {
@@ -85,6 +86,9 @@ export function buildAuthOptions(input = {}) {
   }
   if (typeof input.postLoginRedirectUrl === 'string' && input.postLoginRedirectUrl.trim()) {
     auth.postLoginRedirectUrl = input.postLoginRedirectUrl.trim();
+  }
+  if (input.contextTokenStore) {
+    auth.contextTokenStore = input.contextTokenStore;
   }
 
   validateAuthOptions(auth);

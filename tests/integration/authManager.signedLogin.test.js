@@ -10,6 +10,7 @@ import {
   registerOAuthTestClient,
   TEST_AUTH
 } from '../authTestUtils.js';
+import { InMemoryContextTokenStore } from '../../src/stores/inMemoryContextTokenStore.js';
 
 function createAuthRouterApp(authManager) {
   const app = express();
@@ -167,6 +168,38 @@ describe('AuthManager signed login state', () => {
   });
 
   describe('onTokenIssued callback', () => {
+    it('persists JWT to contextTokenStore on standalone OAuth success', async () => {
+      const store = new InMemoryContextTokenStore();
+      const authManager = createTestAuthManager({
+        loginContextParams: ['telegram_chat_id', 'telegram_user_id'],
+        contextTokenStore: store
+      });
+      mockExchangeCodeForUser(authManager);
+
+      const app = createAuthRouterApp(authManager);
+      const agent = request.agent(app);
+      const stateToken = authManager.issueLoginStateToken({
+        telegram_chat_id: '12345',
+        telegram_user_id: '67890'
+      });
+
+      const loginRes = await agent
+        .get(`/mcp/auth/login/github?state=${encodeURIComponent(stateToken)}`)
+        .redirects(0);
+
+      const oauthState = new URL(loginRes.headers.location).searchParams.get('state');
+      await agent
+        .get('/mcp/auth/callback')
+        .query({ code: 'github-auth-code', state: oauthState });
+
+      const user = await authManager.getVerifiedContextUser({
+        telegram_chat_id: '12345',
+        telegram_user_id: '67890'
+      });
+
+      expect(user.email).to.equal('test@example.com');
+    });
+
     it('invokes callback with context on standalone OAuth success', async () => {
       let callbackCalls = 0;
       let capturedContext = null;

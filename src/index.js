@@ -28,3 +28,7 @@ export {
   GeminiAdapter,
   InMemoryHistoryStore
 } from './agents/index.js';
+
+export { InMemoryContextTokenStore } from './stores/inMemoryContextTokenStore.js';
+export { RedisContextTokenStore } from './stores/redisContextTokenStore.js';
+export { ContextAuthRequiredError } from './stores/errors.js';

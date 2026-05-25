@@ -201,6 +201,7 @@ export class ExpressMcp {
       loginStateExpiresIn: auth.loginStateExpiresIn,
       onTokenIssued: auth.onTokenIssued,
       postLoginRedirectUrl: auth.postLoginRedirectUrl,
+      contextTokenStore: auth.contextTokenStore,
       logger: this.logger
     });
 
@@ -223,6 +224,18 @@ export class ExpressMcp {
       throw new Error('Auth is not enabled');
     }
     this.authManager.revokeToken(jti);
+  }
+
+  /**
+   * Verify a stored JWT for the given login context (e.g. Telegram chat/user ids).
+   * @param {Record<string, unknown>} context
+   * @returns {Promise<Object>}
+   */
+  getVerifiedContextUser(context) {
+    if (!this.authManager) {
+      throw new Error('Auth is not enabled. Set options.auth.enabled to true.');
+    }
+    return this.authManager.getVerifiedContextUser(context);
   }
 
   /**

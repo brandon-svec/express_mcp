@@ -49,6 +49,7 @@ app.listen(3000);
 | `loginStateExpiresIn` | No | Lifetime of signed login-state JWT (default `10m`) |
 | `onTokenIssued` | No | `async (user, jwt, context) => {}` after standalone OAuth (not MCP PKCE) |
 | `postLoginRedirectUrl` | No | Browser redirect after standalone OAuth (e.g. `https://t.me/YourBot`) |
+| `contextTokenStore` | No | `InMemoryContextTokenStore` or `RedisContextTokenStore` — persists JWT by login context after standalone OAuth |
 
 ### Derived values (normally do not set manually)
 
@@ -142,7 +143,8 @@ Rules:
 
 - Every key in `context` must appear in `loginContextParams` configured at construction time.
 - If `loginContextParams` is non-empty, `context` must be non-empty.
-- After OAuth, `onTokenIssued(user, jwt, context)` runs with the same context (host can persist the JWT).
+- After OAuth, `contextTokenStore.upsert(context, user, jwt)` runs when configured; `onTokenIssued(user, jwt, context)` runs for host-specific side effects (e.g. Telegram notification).
+- `expressMcp.getVerifiedContextUser(context)` loads the stored JWT, verifies it, and returns the decoded user payload (throws `ContextAuthRequiredError` when missing).
 - If `postLoginRedirectUrl` is set, the browser is redirected there instead of the default success HTML page.
 
 `onTokenIssued` is **not** called for the MCP PKCE authorize flow used by Cursor.
@@ -184,9 +186,39 @@ The optional `agent_ask` MCP tool forwards `context.user` from the HTTP request 
 
 Hosts may exclude tools from the agent via `agent.excludeTools` or by mutating `expressMcp.getAgent().excludeTools` after construction (e.g. exclude `{name}_session` so the model cannot revoke tokens from chat).
 
+## Context token stores
+
+```javascript
+import {
+  ExpressMcp,
+  InMemoryContextTokenStore,
+  RedisContextTokenStore
+} from '@brandon-svec/express_mcp';
+import Redis from 'ioredis';
+
+const redis = new Redis(process.env.REDIS_URL);
+
+const expressMcp = new ExpressMcp({
+  auth: {
+    enabled: true,
+    // ...
+    contextTokenStore: new RedisContextTokenStore(redis)
+  }
+});
+
+// After Telegram OAuth, verify session for agent:
+const user = await expressMcp.getVerifiedContextUser({
+  telegram_chat_id: '12345',
+  telegram_user_id: '67890'
+});
+```
+
+Use `InMemoryContextTokenStore` for local dev or single-process tests. Use `RedisContextTokenStore` for multi-worker deployments (`ioredis` is an optional peer dependency).
+
 ## API exports
 
 - `buildAuthOptions(input)` — normalize and validate auth config (also called by constructor)
+- `InMemoryContextTokenStore`, `RedisContextTokenStore`, `ContextAuthRequiredError`
 - `buildAuthOptionsFromEnv(overrides)` — build from `process.env`
 - `validateAuthOptions(auth)` — validate only (throws when invalid)
 - `isOAuthConfigured()` — check if env has minimum OAuth credentials
