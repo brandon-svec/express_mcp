@@ -65,7 +65,10 @@ export class SessionTool extends BaseTool {
     if (args.action === 'reset_session') {
       const jti = context?.user?.jti;
       if (!jti) {
-        throw new Error('No jti in current session token; cannot revoke.');
+        return {
+          revoked: false,
+          error: 'No jti in current session token; cannot revoke.',
+        };
       }
       this._authManager.revokeToken(jti);
       return {

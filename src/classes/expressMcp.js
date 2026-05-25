@@ -155,6 +155,7 @@ export class ExpressMcp {
       history,
       maxToolRounds,
       excludeTools: exposeTool ? ['agent_ask'] : [],
+      requireUser: this.options.auth?.enabled === true,
       logger: this.logger,
     });
 

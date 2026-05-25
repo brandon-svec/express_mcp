@@ -45,6 +45,10 @@ app.listen(3000);
 | `allowedUsers` | No | Email/login allowlist; omit or `[]` = any authenticated user |
 | `providers` | Yes | Map of `github` / `google` with `clientId` + `clientSecret` |
 | `resourcePath` | No | Default `/mcp`; mount path for MCP + OAuth metadata |
+| `loginContextParams` | No | Whitelist of keys allowed in `POST /mcp/auth/login-url` body `context` (e.g. Telegram ids) |
+| `loginStateExpiresIn` | No | Lifetime of signed login-state JWT (default `10m`) |
+| `onTokenIssued` | No | `async (user, jwt, context) => {}` after standalone OAuth (not MCP PKCE) |
+| `postLoginRedirectUrl` | No | Browser redirect after standalone OAuth (e.g. `https://t.me/YourBot`) |
 
 ### Derived values (normally do not set manually)
 
@@ -111,9 +115,74 @@ Mount once with `app.use(expressMcp.httpRouter())`:
 | `GET /mcp/auth/login/google` | Google sign-in |
 | `GET /mcp/auth/callback` | OAuth callback; issues JWT |
 | `GET /mcp/auth/me` | Current user (Bearer token) |
+| `POST /mcp/auth/login-url` | Returns `{ login_url }` for signed-context standalone login (see below) |
 | `POST /mcp` | MCP JSON-RPC (requires Bearer token) |
 
-Tool handlers receive `context.user` (`sub`, `login`, `email`, `provider`).
+Tool handlers receive `context.user` (JWT payload: `sub`, `login`, `email`, `provider`, `jti`, `iat`, `exp`).
+
+## Standalone login URL (Telegram and other clients)
+
+Hosts that cannot run the MCP PKCE browser flow (e.g. a mobile chat bot) can obtain a Google login link with arbitrary context embedded in signed state:
+
+```http
+POST /mcp/auth/login-url
+Content-Type: application/json
+
+{
+  "context": {
+    "telegram_chat_id": "8556339345",
+    "telegram_user_id": "8556339345"
+  }
+}
+```
+
+Response: `{ "login_url": "https://host/mcp/auth/login/google?state=..." }`.
+
+Rules:
+
+- Every key in `context` must appear in `loginContextParams` configured at construction time.
+- If `loginContextParams` is non-empty, `context` must be non-empty.
+- After OAuth, `onTokenIssued(user, jwt, context)` runs with the same context (host can persist the JWT).
+- If `postLoginRedirectUrl` is set, the browser is redirected there instead of the default success HTML page.
+
+`onTokenIssued` is **not** called for the MCP PKCE authorize flow used by Cursor.
+
+## Session tool
+
+When auth is enabled, `{name}_session` is registered (e.g. `echoharvest_session`):
+
+| Action | Behavior |
+|--------|----------|
+| `who_am_i` | Returns identity and token `issuedAt` / `expiresAt` from `context.user` |
+| `reset_session` | Revokes token by `jti` via in-memory denylist; requires `context.user.jti` |
+
+On the HTTP MCP path, `context.user` comes from Bearer middleware. Host apps that call `Agent.processMessage` in-process must pass `{ user }` themselves (see below).
+
+## In-process Agent vs HTTP middleware
+
+`ExpressMcp` can run a Gemini (or custom) **Agent** over the same tool registry. Two enforcement layers exist:
+
+```mermaid
+flowchart LR
+  subgraph http [HTTP POST /mcp]
+    bearer[Bearer middleware] --> reqUser[req.mcpUser]
+    reqUser --> mcpTools[tools/call context.user]
+  end
+
+  subgraph agentPath [Agent.processMessage]
+    opts[options.user required when requireUser] --> agentTools[toolRegistry.executeTool]
+  end
+```
+
+When `auth.enabled` is true, `ExpressMcp` sets `requireUser: true` on the internal `Agent`. `processMessage(historyKey, text, { user })` throws immediately if `user` is missing—before any model or tool call:
+
+```text
+Agent requires an authenticated user but none was provided.
+```
+
+The optional `agent_ask` MCP tool forwards `context.user` from the HTTP request into the agent. Host integrations (e.g. echoHarvest Telegram) must verify their own stored JWT and pass the decoded payload as `user`.
+
+Hosts may exclude tools from the agent via `agent.excludeTools` or by mutating `expressMcp.getAgent().excludeTools` after construction (e.g. exclude `{name}_session` so the model cannot revoke tokens from chat).
 
 ## API exports
 

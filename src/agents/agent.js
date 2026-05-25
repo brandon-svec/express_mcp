@@ -12,6 +12,7 @@ export class Agent {
    * @param {import('./historyStore.js').InMemoryHistoryStore|{ get: Function, append: Function }} [options.history]
    * @param {number} [options.maxToolRounds]
    * @param {string[]} [options.excludeTools]
+   * @param {boolean} [options.requireUser]
    * @param {import('pino').Logger} [options.logger]
    */
   constructor (options) {
@@ -36,6 +37,7 @@ export class Agent {
     this.history = options.history;
     this.maxToolRounds = maxToolRounds;
     this.excludeTools = new Set(options.excludeTools || []);
+    this.requireUser = options.requireUser === true;
     this.logger = options.logger;
   }
 
@@ -67,6 +69,10 @@ export class Agent {
     }
 
     const user = options.user ?? null;
+    if (this.requireUser && !user) {
+      throw new Error('Agent requires an authenticated user but none was provided.');
+    }
+
     const priorHistory = this.history ? this.history.get(historyKey) : [];
     const turnContents = [
       { role: 'user', parts: [{ text }] },
