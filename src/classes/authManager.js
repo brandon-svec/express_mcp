@@ -378,6 +378,22 @@ export class AuthManager {
   }
 
   /**
+   * Remove active standalone session for host context (e.g. Telegram sign-out).
+   * @param {unknown} context
+   * @returns {Promise<boolean>} true when a session was removed
+   */
+  async deactivateVerifiedSessionByContext(context) {
+    if (!this.sessionStore) {
+      throw new Error('sessionStore is not configured');
+    }
+    const sanitized = sanitizeHostContext(context);
+    if (Object.keys(sanitized).length === 0) {
+      throw new Error('context must be a non-empty object for session deactivation');
+    }
+    return this.sessionStore.deactivateByContext(sanitized);
+  }
+
+  /**
    * Verify and decode a JWT.
    * @param {string} token
    * @returns {Object} Decoded payload

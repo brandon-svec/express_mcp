@@ -64,16 +64,40 @@ export class SessionTool extends BaseTool {
 
     if (args.action === 'reset_session') {
       const jti = context?.user?.jti;
+      let revoked = false;
+      if (jti) {
+        this._authManager.revokeToken(jti);
+        revoked = true;
+      }
+
+      const hostContext = context?.hostContext;
+      let standaloneDeactivated = false;
+      if (hostContext && typeof hostContext === 'object' && !Array.isArray(hostContext)) {
+        standaloneDeactivated = await this._authManager.deactivateVerifiedSessionByContext(hostContext);
+      }
+
+      if (hostContext && typeof hostContext.telegram_chat_id === 'string' && hostContext.telegram_chat_id) {
+        return {
+          revoked,
+          standaloneDeactivated,
+          message: standaloneDeactivated
+            ? 'Telegram sign-in cleared. Send another message to receive a new sign-in link.'
+            : 'No active Telegram sign-in session was found.',
+        };
+      }
+
       if (!jti) {
         return {
           revoked: false,
+          standaloneDeactivated,
           error: 'No jti in current session token; cannot revoke.',
         };
       }
-      this._authManager.revokeToken(jti);
+
       return {
         revoked: true,
-        message: 'Session token invalidated. Reconnect your MCP server in Cursor to re-authenticate.'
+        standaloneDeactivated,
+        message: 'Session token invalidated. Reconnect your MCP server in Cursor to re-authenticate.',
       };
     }
 

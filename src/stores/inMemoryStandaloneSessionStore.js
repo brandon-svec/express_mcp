@@ -119,9 +119,44 @@ export class InMemoryStandaloneSessionStore {
     const nowSeconds = Math.floor(Date.now() / 1000);
     if (entry.expiresAt <= nowSeconds) {
       this._active.delete(sessionId);
+      if (entry.context && Object.keys(entry.context).length > 0) {
+        this._contextAlias.delete(contextAliasKey(entry.context));
+      }
       return null;
     }
     return { user: entry.user, context: entry.context };
+  }
+
+  /**
+   * @param {string} sessionId
+   * @returns {Promise<boolean>}
+   */
+  async deactivate(sessionId) {
+    assertValidSessionId(sessionId);
+    const entry = this._active.get(sessionId);
+    if (!entry) {
+      return false;
+    }
+    this._active.delete(sessionId);
+    if (entry.context && Object.keys(entry.context).length > 0) {
+      this._contextAlias.delete(contextAliasKey(entry.context));
+    }
+    return true;
+  }
+
+  /**
+   * @param {Record<string, string>} context
+   * @returns {Promise<boolean>}
+   */
+  async deactivateByContext(context) {
+    if (!context || Object.keys(context).length === 0) {
+      return false;
+    }
+    const sessionId = this._contextAlias.get(contextAliasKey(context));
+    if (!sessionId) {
+      return false;
+    }
+    return this.deactivate(sessionId);
   }
 
   /**

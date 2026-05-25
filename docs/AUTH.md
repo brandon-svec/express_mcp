@@ -169,7 +169,7 @@ When auth is enabled, `{name}_session` is registered (e.g. `echoharvest_session`
 | Action | Behavior |
 |--------|----------|
 | `who_am_i` | Returns identity and token `issuedAt` / `expiresAt` from `context.user` |
-| `reset_session` | Revokes token by `jti` via in-memory denylist; requires `context.user.jti` |
+| `reset_session` | Revokes token by `jti` via in-memory denylist; when `context.hostContext` is set (e.g. Telegram), also removes the Redis/in-memory standalone session for that context |
 
 On the HTTP MCP path, `context.user` comes from Bearer middleware. Host apps that call `Agent.processMessage` in-process must pass `{ user }` themselves (see below).
 
@@ -189,7 +189,7 @@ flowchart LR
   end
 ```
 
-When `auth.enabled` is true, `ExpressMcp` sets `requireUser: true` on the internal `Agent`. `processMessage(historyKey, text, { user })` throws immediately if `user` is missing—before any model or tool call:
+When `auth.enabled` is true, `ExpressMcp` sets `requireUser: true` on the internal `Agent`. `processMessage(historyKey, text, { user, hostContext })` throws immediately if `user` is missing—before any model or tool call. Pass `hostContext` (e.g. `{ telegram_chat_id, telegram_user_id }`) so `reset_session` can clear standalone OAuth sessions, not only the in-memory JWT denylist:
 
 ```text
 Agent requires an authenticated user but none was provided.

@@ -250,6 +250,18 @@ export class ExpressMcp {
   }
 
   /**
+   * Remove active standalone session for host context (e.g. Telegram sign-out).
+   * @param {unknown} context
+   * @returns {Promise<boolean>}
+   */
+  deactivateVerifiedSessionByContext(context) {
+    if (!this.authManager) {
+      throw new Error('Auth is not enabled. Set options.auth.enabled to true.');
+    }
+    return this.authManager.deactivateVerifiedSessionByContext(context);
+  }
+
+  /**
    * Express router for OAuth login, callback, logout, and /me.
    * Mount at `/auth` when auth is enabled.
    * @param {Object} [sessionOptions] - Options passed to express-session

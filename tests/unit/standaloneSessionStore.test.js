@@ -146,6 +146,52 @@ describe('AuthManager getVerifiedSession', () => {
   });
 });
 
+describe('standalone session deactivation', () => {
+  it('deactivateByContext removes active session in InMemoryStandaloneSessionStore', async () => {
+    const store = new InMemoryStandaloneSessionStore();
+    const context = { telegram_chat_id: 'c1', telegram_user_id: 'u1' };
+    await store.activate(SESSION_ID, { sub: 'google:1' }, 3600, context);
+
+    const removed = await store.deactivateByContext(context);
+    expect(removed).to.equal(true);
+    expect(await store.findActiveByContext(context)).to.equal(null);
+  });
+
+  it('deactivateByContext removes active session in RedisStandaloneSessionStore', async () => {
+    const storage = new Map();
+    const redis = {
+      async set(key, value, flag, ttl) {
+        storage.set(key, { value, flag, ttl });
+      },
+      async get(key) {
+        const entry = storage.get(key);
+        return entry ? entry.value : null;
+      },
+      async getdel(key) {
+        const entry = storage.get(key);
+        if (!entry) {
+          return null;
+        }
+        storage.delete(key);
+        return entry.value;
+      },
+      async del(key) {
+        storage.delete(key);
+      },
+      async exists(key) {
+        return storage.has(key) ? 1 : 0;
+      },
+    };
+    const store = new RedisStandaloneSessionStore(redis);
+    const context = { telegram_chat_id: 'c2', telegram_user_id: 'u2' };
+    await store.activate(SESSION_ID, { sub: 'google:2' }, 3600, context);
+
+    const removed = await store.deactivateByContext(context);
+    expect(removed).to.equal(true);
+    expect(await store.findActiveByContext(context)).to.equal(null);
+  });
+});
+
 describe('AuthManager getVerifiedSessionByContext', () => {
   it('returns user and context for active session by context alias', async () => {
     const store = new InMemoryStandaloneSessionStore();

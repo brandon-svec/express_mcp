@@ -165,4 +165,39 @@ export class RedisStandaloneSessionStore {
     }
     return { user: parsed.user, context };
   }
+
+  /**
+   * @param {string} sessionId
+   * @returns {Promise<boolean>}
+   */
+  async deactivate(sessionId) {
+    assertValidSessionId(sessionId);
+    const raw = await this._redis.get(activeKey(sessionId));
+    if (raw === null) {
+      return false;
+    }
+    const parsed = JSON.parse(raw);
+    const context = parsed?.context;
+    await this._redis.del(activeKey(sessionId));
+    await this._redis.del(pendingKey(sessionId));
+    if (context && typeof context === 'object' && !Array.isArray(context) && Object.keys(context).length > 0) {
+      await this._redis.del(contextAliasKey(context));
+    }
+    return true;
+  }
+
+  /**
+   * @param {Record<string, string>} context
+   * @returns {Promise<boolean>}
+   */
+  async deactivateByContext(context) {
+    if (!context || Object.keys(context).length === 0) {
+      return false;
+    }
+    const sessionId = await this._redis.get(contextAliasKey(context));
+    if (sessionId === null || typeof sessionId !== 'string' || !sessionId) {
+      return false;
+    }
+    return this.deactivate(sessionId);
+  }
 }
