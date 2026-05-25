@@ -3,6 +3,7 @@ dist/
 *.log
 .env
 .cursor.env
+tests/live/config.js
 .cursor/
 .DS_Store
 *.tgz
