@@ -1,6 +1,7 @@
 {
   "name": "@brandon-svec/express_mcp",
   "version": "0.0.6",
+  "//": "Do not bump version manually in PRs; change only when publishing to npm.",
   "description": "Express Router and middleware for integrating MCP (Model Context Protocol) functionality into existing Express servers",
   "main": "src/index.js",
   "type": "module",
