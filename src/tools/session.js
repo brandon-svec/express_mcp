@@ -64,9 +64,13 @@ export class SessionTool extends BaseTool {
 
     if (args.action === 'reset_session') {
       const hostContext = context?.hostContext;
+      const jti = context?.user?.jti;
       if (hostContext && typeof hostContext === 'object' && !Array.isArray(hostContext)) {
         const standaloneDeactivated = await this._authManager.deactivateVerifiedSessionByContext(hostContext);
         if (typeof hostContext.telegram_chat_id === 'string' && hostContext.telegram_chat_id) {
+          if (jti) {
+            await this._authManager.deactivateVerifiedSessionByJti(jti);
+          }
           return {
             standaloneDeactivated,
             message: standaloneDeactivated
@@ -76,7 +80,6 @@ export class SessionTool extends BaseTool {
         }
       }
 
-      const jti = context?.user?.jti;
       if (!jti) {
         return {
           revoked: false,
