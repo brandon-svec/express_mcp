@@ -29,6 +29,7 @@ export {
   InMemoryHistoryStore
 } from './agents/index.js';
 
-export { InMemoryContextTokenStore } from './stores/inMemoryContextTokenStore.js';
-export { RedisContextTokenStore } from './stores/redisContextTokenStore.js';
+export { InMemoryStandaloneSessionStore } from './stores/inMemoryStandaloneSessionStore.js';
+export { RedisStandaloneSessionStore } from './stores/redisStandaloneSessionStore.js';
 export { ContextAuthRequiredError } from './stores/errors.js';
+export { sanitizeHostContext } from './stores/sessionContext.js';

@@ -45,11 +45,10 @@ app.listen(3000);
 | `allowedUsers` | No | Email/login allowlist; omit or `[]` = any authenticated user |
 | `providers` | Yes | Map of `github` / `google` with `clientId` + `clientSecret` |
 | `resourcePath` | No | Default `/mcp`; mount path for MCP + OAuth metadata |
-| `loginContextParams` | No | Whitelist of keys allowed in `POST /mcp/auth/login-url` body `context` (e.g. Telegram ids) |
-| `loginStateExpiresIn` | No | Lifetime of signed login-state JWT (default `10m`) |
+| `loginStateExpiresIn` | No | TTL for pending standalone login sessions (default `10m`) |
 | `onTokenIssued` | No | `async (user, jwt, context) => {}` after standalone OAuth (not MCP PKCE) |
 | `postLoginRedirectUrl` | No | Browser redirect after standalone OAuth (e.g. `https://t.me/YourBot`) |
-| `contextTokenStore` | No | `InMemoryContextTokenStore` or `RedisContextTokenStore` — persists JWT by login context after standalone OAuth |
+| `sessionStore` | No | `InMemoryStandaloneSessionStore` or `RedisStandaloneSessionStore` — pending + active standalone sessions |
 
 ### Derived values (normally do not set manually)
 
@@ -116,14 +115,14 @@ Mount once with `app.use(expressMcp.httpRouter())`:
 | `GET /mcp/auth/login/google` | Google sign-in |
 | `GET /mcp/auth/callback` | OAuth callback; issues JWT |
 | `GET /mcp/auth/me` | Current user (Bearer token) |
-| `POST /mcp/auth/login-url` | Returns `{ login_url }` for signed-context standalone login (see below) |
+| `POST /mcp/auth/login-url` | Returns `{ session_id, login_url }` for standalone login (see below) |
 | `POST /mcp` | MCP JSON-RPC (requires Bearer token) |
 
 Tool handlers receive `context.user` (JWT payload: `sub`, `login`, `email`, `provider`, `jti`, `iat`, `exp`).
 
 ## Standalone login URL (Telegram and other clients)
 
-Hosts that cannot run the MCP PKCE browser flow (e.g. a mobile chat bot) can obtain a Google login link with arbitrary context embedded in signed state:
+Hosts that cannot run the MCP PKCE browser flow (e.g. a mobile chat bot) obtain a provider login link with a library-generated session id:
 
 ```http
 POST /mcp/auth/login-url
@@ -137,15 +136,29 @@ Content-Type: application/json
 }
 ```
 
-Response: `{ "login_url": "https://host/mcp/auth/login/google?state=..." }`.
+Response:
 
-Rules:
+```json
+{
+  "session_id": "550e8400-e29b-41d4-a716-446655440000",
+  "login_url": "https://host/mcp/auth/login/google?session_id=550e8400-e29b-41d4-a716-446655440000"
+}
+```
 
-- Every key in `context` must appear in `loginContextParams` configured at construction time.
-- If `loginContextParams` is non-empty, `context` must be non-empty.
-- After OAuth, `contextTokenStore.upsert(context, user, jwt)` runs when configured; `onTokenIssued(user, jwt, context)` runs for host-specific side effects (e.g. Telegram notification).
-- `expressMcp.getVerifiedContextUser(context)` loads the stored JWT, verifies it, and returns the decoded user payload (throws `ContextAuthRequiredError` when missing).
-- If `postLoginRedirectUrl` is set, the browser is redirected there instead of the default success HTML page.
+The login URL does **not** embed a signed JWT. Optional `context` values are stored with the session (string keys and non-empty string values only).
+
+### Session lifecycle
+
+1. `POST /login-url` creates a **pending** session (`session_id`, optional `context`, provider).
+2. Browser opens `login_url`; OAuth `state` is the same `session_id` (UUID).
+3. Callback **consumes** the pending record (one-time), issues JWT, and **activates** the session with user + context until `jwtExpiresIn` elapses.
+4. `expressMcp.getVerifiedSession(sessionId)` returns `{ user, context }` for active sessions (throws `ContextAuthRequiredError` when missing or expired).
+5. On `activate`, a **context alias** is written: `mcp:ctxalias:{sha256(sorted context)}` → `session_id` with the same TTL as the active session.
+6. `expressMcp.getVerifiedSessionByContext(context)` hashes the context, resolves the alias, and returns `{ user, context }` (throws `ContextAuthRequiredError` when missing or expired).
+
+Host apps pass the same `context` object they sent to `POST /login-url` for lookup — no separate mapping store required.
+
+If `postLoginRedirectUrl` is set, the browser is redirected there instead of the default success HTML page.
 
 `onTokenIssued` is **not** called for the MCP PKCE authorize flow used by Cursor.
 
@@ -182,17 +195,17 @@ When `auth.enabled` is true, `ExpressMcp` sets `requireUser: true` on the intern
 Agent requires an authenticated user but none was provided.
 ```
 
-The optional `agent_ask` MCP tool forwards `context.user` from the HTTP request into the agent. Host integrations (e.g. echoHarvest Telegram) must verify their own stored JWT and pass the decoded payload as `user`.
+The optional `agent_ask` MCP tool forwards `context.user` from the HTTP request into the agent. Host integrations (e.g. echoHarvest Telegram) must resolve `session_id`, call `getVerifiedSession`, verify returned context, and pass the user payload as `user`.
 
 Hosts may exclude tools from the agent via `agent.excludeTools` or by mutating `expressMcp.getAgent().excludeTools` after construction (e.g. exclude `{name}_session` so the model cannot revoke tokens from chat).
 
-## Context token stores
+## Standalone session stores
 
 ```javascript
 import {
   ExpressMcp,
-  InMemoryContextTokenStore,
-  RedisContextTokenStore
+  InMemoryStandaloneSessionStore,
+  RedisStandaloneSessionStore
 } from '@brandon-svec/express_mcp';
 import Redis from 'ioredis';
 
@@ -202,23 +215,25 @@ const expressMcp = new ExpressMcp({
   auth: {
     enabled: true,
     // ...
-    contextTokenStore: new RedisContextTokenStore(redis)
+    sessionStore: new RedisStandaloneSessionStore(redis)
   }
 });
 
-// After Telegram OAuth, verify session for agent:
-const user = await expressMcp.getVerifiedContextUser({
+const { user, context } = await expressMcp.getVerifiedSession(sessionId);
+
+// Or lookup by host context (Telegram chat/user, etc.):
+const session = await expressMcp.getVerifiedSessionByContext({
   telegram_chat_id: '12345',
   telegram_user_id: '67890'
 });
 ```
 
-Use `InMemoryContextTokenStore` for local dev or single-process tests. Use `RedisContextTokenStore` for multi-worker deployments (`ioredis` is an optional peer dependency).
+Use `InMemoryStandaloneSessionStore` for local dev or single-process tests. Use `RedisStandaloneSessionStore` for multi-worker deployments (`ioredis` is an optional peer dependency).
 
 ## API exports
 
 - `buildAuthOptions(input)` — normalize and validate auth config (also called by constructor)
-- `InMemoryContextTokenStore`, `RedisContextTokenStore`, `ContextAuthRequiredError`
+- `InMemoryStandaloneSessionStore`, `RedisStandaloneSessionStore`, `ContextAuthRequiredError`, `sanitizeHostContext`
 - `buildAuthOptionsFromEnv(overrides)` — build from `process.env`
 - `validateAuthOptions(auth)` — validate only (throws when invalid)
 - `isOAuthConfigured()` — check if env has minimum OAuth credentials

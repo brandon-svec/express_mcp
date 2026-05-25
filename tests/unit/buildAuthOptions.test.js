@@ -91,22 +91,20 @@ describe('buildAuthOptions', () => {
     assert.strictEqual(auth.issuer, 'https://custom.example.com/mcp');
   });
 
-  it('preserves Telegram login context and onTokenIssued callback', () => {
+  it('preserves sessionStore and onTokenIssued callback', () => {
     const onTokenIssued = async () => {};
+    const sessionStore = { createPending: async () => {} };
     const auth = buildAuthOptions(
       validInput({
-        loginContextParams: ['telegram_chat_id', 'telegram_user_id'],
         loginStateExpiresIn: '10m',
-        onTokenIssued
+        onTokenIssued,
+        sessionStore
       })
     );
 
-    assert.deepStrictEqual(auth.loginContextParams, [
-      'telegram_chat_id',
-      'telegram_user_id'
-    ]);
     assert.strictEqual(auth.loginStateExpiresIn, '10m');
     assert.strictEqual(auth.onTokenIssued, onTokenIssued);
+    assert.strictEqual(auth.sessionStore, sessionStore);
   });
 
   it('preserves postLoginRedirectUrl for standalone OAuth', () => {

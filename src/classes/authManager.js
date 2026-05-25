@@ -17,6 +17,8 @@ import {
   verifyPkceChallenge
 } from '../mcpOAuth.js';
 import { ContextAuthRequiredError } from '../stores/errors.js';
+import { assertValidSessionId, isUuidV4SessionId, sanitizeHostContext } from '../stores/sessionContext.js';
+import { parseDurationToSeconds } from '../stores/sessionTtl.js';
 
 export const SUPPORTED_OAUTH_PROVIDERS = ['github', 'google'];
 
@@ -82,11 +84,10 @@ export class AuthManager {
    * @param {string} [options.origin] - Site origin for PRM discovery; derived from issuer when omitted
    * @param {Object} [options.logger] - Logger with info, warn, error, debug
    * @param {string[]} [options.allowedUsers] - Optional email/login allowlist (empty = allow all)
-   * @param {string[]} [options.loginContextParams] - Whitelist of keys allowed in POST /auth/login-url context
-   * @param {string} [options.loginStateExpiresIn='10m'] - TTL for signed login state JWTs
+   * @param {string} [options.loginStateExpiresIn='10m'] - TTL for pending standalone login sessions
    * @param {function(user: Object, jwt: string, context: Object): (void|Promise<void>)} [options.onTokenIssued]
    * @param {string} [options.postLoginRedirectUrl] - Redirect browser after standalone OAuth (not MCP PKCE flow)
-   * @param {import('../stores/inMemoryContextTokenStore.js').InMemoryContextTokenStore|import('../stores/redisContextTokenStore.js').RedisContextTokenStore} [options.contextTokenStore]
+   * @param {import('../stores/inMemoryStandaloneSessionStore.js').InMemoryStandaloneSessionStore|import('../stores/redisStandaloneSessionStore.js').RedisStandaloneSessionStore} [options.sessionStore]
    */
   constructor(options) {
     this.providers = options.providers || {};
@@ -128,13 +129,10 @@ export class AuthManager {
       throw new Error('origin could not be derived from issuer and resourcePath');
     }
     this.authPath = options.authPath || '/auth';
-    this.loginContextParams = Array.isArray(options.loginContextParams)
-      ? options.loginContextParams
-      : [];
     this.loginStateExpiresIn = options.loginStateExpiresIn || '10m';
     this.onTokenIssued =
       typeof options.onTokenIssued === 'function' ? options.onTokenIssued : null;
-    this.contextTokenStore = options.contextTokenStore || null;
+    this.sessionStore = options.sessionStore || null;
     this.postLoginRedirectUrl =
       typeof options.postLoginRedirectUrl === 'string' && options.postLoginRedirectUrl.trim()
         ? options.postLoginRedirectUrl.trim()
@@ -316,67 +314,6 @@ export class AuthManager {
   }
 
   /**
-   * @param {Object} context
-   * @returns {string} Signed login state JWT
-   */
-  issueLoginStateToken(context) {
-    return jwt.sign(
-      { context, purpose: 'login_state' },
-      this.jwtSecret,
-      { expiresIn: this.loginStateExpiresIn }
-    );
-  }
-
-  /**
-   * @param {string} token
-   * @returns {Object} Sanitized context object
-   */
-  verifyLoginStateToken(token) {
-    const payload = jwt.verify(token, this.jwtSecret);
-    if (payload.purpose !== 'login_state') {
-      throw new Error('Invalid login state token purpose');
-    }
-    const raw = payload.context;
-    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
-      return {};
-    }
-    const context = {};
-    for (const key of this.loginContextParams) {
-      if (typeof raw[key] === 'string' && raw[key]) {
-        context[key] = raw[key];
-      }
-    }
-    return context;
-  }
-
-  /**
-   * @param {unknown} context
-   * @returns {Object}
-   */
-  validateLoginContextInput(context) {
-    if (!context || typeof context !== 'object' || Array.isArray(context)) {
-      throw new Error('context must be a non-null object');
-    }
-    const keys = Object.keys(context);
-    if (keys.length === 0 && this.loginContextParams.length > 0) {
-      throw new Error('context must not be empty when loginContextParams is configured');
-    }
-    for (const key of keys) {
-      if (!this.loginContextParams.includes(key)) {
-        throw new Error(`context key not allowed: ${key}`);
-      }
-      if (typeof context[key] !== 'string' || !context[key].trim()) {
-        throw new Error(`context.${key} must be a non-empty string`);
-      }
-    }
-    const sanitized = {};
-    for (const key of keys) {
-      sanitized[key] = context[key].trim();
-    }
-    return sanitized;
-  }
-
-  /**
    * Revoke a JWT by its jti claim.
    * @param {string} jti
    */
@@ -388,19 +325,56 @@ export class AuthManager {
   }
 
   /**
-   * Load JWT for a login context, verify it, and return the decoded user payload.
-   * @param {Record<string, unknown>} context
-   * @returns {Promise<Object>}
+   * @returns {number}
+   * @private
    */
-  async getVerifiedContextUser(context) {
-    if (!this.contextTokenStore) {
-      throw new Error('contextTokenStore is not configured');
+  _activeSessionTtlSeconds() {
+    return parseDurationToSeconds(this.jwtExpiresIn);
+  }
+
+  /**
+   * @returns {number}
+   * @private
+   */
+  _pendingSessionTtlSeconds() {
+    return parseDurationToSeconds(this.loginStateExpiresIn);
+  }
+
+  /**
+   * Load active standalone session by id.
+   * @param {string} sessionId
+   * @returns {Promise<{ user: Object, context: Record<string, string> }>}
+   */
+  async getVerifiedSession(sessionId) {
+    if (!this.sessionStore) {
+      throw new Error('sessionStore is not configured');
     }
-    const storedJwt = await this.contextTokenStore.find(context);
-    if (!storedJwt) {
-      throw new ContextAuthRequiredError('No active session for the given login context');
+    assertValidSessionId(sessionId);
+    const active = await this.sessionStore.findActive(sessionId);
+    if (!active) {
+      throw new ContextAuthRequiredError(`No active session for session_id ${sessionId}`);
     }
-    return this.verifyJwt(storedJwt);
+    return active;
+  }
+
+  /**
+   * Load active standalone session by host context (alias lookup).
+   * @param {unknown} context
+   * @returns {Promise<{ user: Object, context: Record<string, string> }>}
+   */
+  async getVerifiedSessionByContext(context) {
+    if (!this.sessionStore) {
+      throw new Error('sessionStore is not configured');
+    }
+    const sanitized = sanitizeHostContext(context);
+    if (Object.keys(sanitized).length === 0) {
+      throw new Error('context must be a non-empty object for session lookup');
+    }
+    const active = await this.sessionStore.findActiveByContext(sanitized);
+    if (!active) {
+      throw new ContextAuthRequiredError('No active session for the given context');
+    }
+    return active;
   }
 
   /**
@@ -847,11 +821,18 @@ export class AuthManager {
       res.send(this._renderLoginPicker(pendingQuery));
     });
 
-    router.post('/login-url', (req, res) => {
+    router.post('/login-url', async (req, res) => {
+      if (!this.sessionStore) {
+        return res.status(500).json({
+          error: 'server_error',
+          error_description: 'sessionStore is not configured'
+        });
+      }
+
       const { provider, context } = req.body || {};
       let sanitized;
       try {
-        sanitized = this.validateLoginContextInput(context);
+        sanitized = sanitizeHostContext(context);
       } catch (err) {
         return res.status(400).json({
           error: 'invalid_request',
@@ -864,17 +845,34 @@ export class AuthManager {
           ? provider
           : this.enabledProviders[0];
 
-      const stateToken = this.issueLoginStateToken(sanitized);
+      const sessionId = randomUUID();
+      try {
+        await this.sessionStore.createPending(
+          sessionId,
+          sanitized,
+          oauthProvider,
+          this._pendingSessionTtlSeconds()
+        );
+      } catch (err) {
+        return res.status(400).json({
+          error: 'invalid_request',
+          error_description: err.message
+        });
+      }
+
       const loginUrl = new URL(
         `${this.origin}${this.authPath}/login/${oauthProvider}`,
         this.origin
       );
-      loginUrl.searchParams.set('state', stateToken);
+      loginUrl.searchParams.set('session_id', sessionId);
 
-      return res.json({ login_url: loginUrl.toString() });
+      return res.json({
+        session_id: sessionId,
+        login_url: loginUrl.toString()
+      });
     });
 
-    router.get('/login/:provider', (req, res) => {
+    router.get('/login/:provider', async (req, res) => {
       const { provider } = req.params;
       if (!this.enabledProviders.includes(provider)) {
         return res.status(404).send(
@@ -899,22 +897,34 @@ export class AuthManager {
         return res.redirect(this.getAuthorizationUrl(provider, idpState));
       }
 
-      let loginContext = {};
-      const stateToken = typeof req.query.state === 'string' ? req.query.state : null;
-      if (stateToken) {
+      const sessionId =
+        typeof req.query.session_id === 'string' ? req.query.session_id : null;
+      if (sessionId) {
+        if (!this.sessionStore) {
+          return res.status(500).send(
+            '<html><body><h1>Server error</h1><p>Session store is not configured.</p></body></html>'
+          );
+        }
         try {
-          loginContext = this.verifyLoginStateToken(stateToken);
+          assertValidSessionId(sessionId);
+          const pending = await this.sessionStore.peekPending(sessionId);
+          if (!pending || pending.provider !== provider) {
+            return res.status(400).send(
+              '<html><body><h1>Invalid or expired login link</h1><p>Request a new one.</p></body></html>'
+            );
+          }
+          return res.redirect(this.getAuthorizationUrl(provider, sessionId));
         } catch {
           return res.status(400).send(
             '<html><body><h1>Invalid or expired login link</h1><p>Request a new one.</p></body></html>'
           );
         }
       }
-      req.session.loginContext = loginContext;
 
       const state = randomBytes(16).toString('hex');
       req.session.oauthProvider = provider;
       req.session.oauthState = state;
+      req.session.loginContext = {};
       const url = this.getAuthorizationUrl(provider, state);
       res.redirect(url);
     });
@@ -944,6 +954,8 @@ export class AuthManager {
       let oauthProvider;
       let mcpAuthFlow = false;
       let mcpAuthPending = null;
+      /** @type {{ context: Record<string, string>, provider: string }|null} */
+      let standalonePending = null;
 
       if (pending) {
         if (!pending.provider || !this.enabledProviders.includes(pending.provider)) {
@@ -954,6 +966,14 @@ export class AuthManager {
         oauthProvider = pending.provider;
         mcpAuthFlow = pending.mcpAuthFlow === true;
         mcpAuthPending = pending.mcpAuthPending || null;
+      } else if (this.sessionStore && isUuidV4SessionId(state)) {
+        standalonePending = await this.sessionStore.consumePending(state);
+        if (!standalonePending) {
+          return res.status(400).send(
+            '<html><body><h1>Invalid callback</h1><p>Login session expired or already used. Request a new login link.</p></body></html>'
+          );
+        }
+        oauthProvider = standalonePending.provider;
       } else {
         oauthProvider = req.session.oauthProvider;
         if (!oauthProvider || !this.enabledProviders.includes(oauthProvider)) {
@@ -989,16 +1009,24 @@ export class AuthManager {
         }
 
         const token = this.issueJwt(user);
-        const ctx = req.session.loginContext || {};
+        const sessionUser = this.verifyJwt(token);
+        const ctx = standalonePending
+          ? standalonePending.context
+          : req.session.loginContext || {};
         delete req.session.loginContext;
 
-        if (this.contextTokenStore && Object.keys(ctx).length > 0) {
+        if (standalonePending && this.sessionStore) {
           try {
-            await this.contextTokenStore.upsert(ctx, user, token);
+            await this.sessionStore.activate(
+              state,
+              sessionUser,
+              this._activeSessionTtlSeconds(),
+              ctx
+            );
           } catch (storeErr) {
             this.logger.error?.(
               { err: storeErr.message, provider: oauthProvider },
-              'contextTokenStore upsert failed'
+              'sessionStore activate failed'
             );
           }
         }

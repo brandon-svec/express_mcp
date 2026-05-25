@@ -197,11 +197,10 @@ export class ExpressMcp {
       issuer: auth.issuer,
       resourcePath: auth.resourcePath,
       allowedUsers: auth.allowedUsers || [],
-      loginContextParams: auth.loginContextParams,
       loginStateExpiresIn: auth.loginStateExpiresIn,
       onTokenIssued: auth.onTokenIssued,
       postLoginRedirectUrl: auth.postLoginRedirectUrl,
-      contextTokenStore: auth.contextTokenStore,
+      sessionStore: auth.sessionStore,
       logger: this.logger
     });
 
@@ -227,15 +226,27 @@ export class ExpressMcp {
   }
 
   /**
-   * Verify a stored JWT for the given login context (e.g. Telegram chat/user ids).
-   * @param {Record<string, unknown>} context
-   * @returns {Promise<Object>}
+   * Load active standalone session by library-generated session id.
+   * @param {string} sessionId
+   * @returns {Promise<{ user: Object, context: Record<string, string> }>}
    */
-  getVerifiedContextUser(context) {
+  getVerifiedSession(sessionId) {
     if (!this.authManager) {
       throw new Error('Auth is not enabled. Set options.auth.enabled to true.');
     }
-    return this.authManager.getVerifiedContextUser(context);
+    return this.authManager.getVerifiedSession(sessionId);
+  }
+
+  /**
+   * Load active standalone session by host context (alias lookup).
+   * @param {unknown} context
+   * @returns {Promise<{ user: Object, context: Record<string, string> }>}
+   */
+  getVerifiedSessionByContext(context) {
+    if (!this.authManager) {
+      throw new Error('Auth is not enabled. Set options.auth.enabled to true.');
+    }
+    return this.authManager.getVerifiedSessionByContext(context);
   }
 
   /**
