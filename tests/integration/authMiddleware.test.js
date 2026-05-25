@@ -302,7 +302,6 @@ describe('MCP Auth Middleware', () => {
 
 describe('AuthManager', () => {
   it('issues and verifies JWT with user claims', async () => {
-    const { AuthManager } = await import('../../src/classes/authManager.js');
     const auth = createTestAuthManager({
       providers: {
         github: { clientId: 'id', clientSecret: 'secret' }

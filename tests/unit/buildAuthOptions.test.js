@@ -110,7 +110,8 @@ describe('buildAuthOptions', () => {
   });
 
   it('throws when auth enabled but sessionStore missing', () => {
-    const { sessionStore: _removed, ...withoutStore } = validInput();
+    const withoutStore = { ...validInput() };
+    delete withoutStore.sessionStore;
     assert.throws(
       () => buildAuthOptions(withoutStore),
       /sessionStore is required/

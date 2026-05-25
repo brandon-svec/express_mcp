@@ -68,7 +68,8 @@ describe('validateAuthOptions', () => {
   });
 
   it('throws when sessionStore is missing', () => {
-    const { sessionStore: _removed, ...withoutStore } = validAuth();
+    const withoutStore = { ...validAuth() };
+    delete withoutStore.sessionStore;
     assert.throws(
       () => validateAuthOptions(withoutStore),
       /sessionStore is required/

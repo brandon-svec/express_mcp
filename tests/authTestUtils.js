@@ -56,7 +56,8 @@ export function createTestAuthManager(overrides = {}) {
   const sessionStore = Object.hasOwn(overrides, 'sessionStore')
     ? overrides.sessionStore
     : new InMemoryStandaloneSessionStore();
-  const { sessionStore: _sessionStoreOverride, ...rest } = overrides;
+  const rest = { ...overrides };
+  delete rest.sessionStore;
   return new AuthManager({
     providers: {
       github: TEST_AUTH.githubAlt
