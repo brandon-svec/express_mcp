@@ -18,13 +18,16 @@ export class GeminiAdapter extends ModelAdapter {
     }
     this.apiKey = options.apiKey.trim();
     this.model = options.model.trim();
+    this.createClient = options.createClient;
   }
 
   /**
    * @inheritdoc
    */
   async generate ({ contents, systemInstruction, toolDeclarations }) {
-    const ai = new GoogleGenAI({ apiKey: this.apiKey });
+    const ai = this.createClient
+      ? this.createClient(this.apiKey)
+      : new GoogleGenAI({ apiKey: this.apiKey });
     const response = await ai.models.generateContent({
       model: this.model,
       contents,

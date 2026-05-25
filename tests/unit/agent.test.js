@@ -126,6 +126,130 @@ describe('Agent', () => {
     }
   });
 
+  it('throws when adapter is missing', () => {
+    assert.throws(
+      () => new Agent({
+        toolRegistry: registry,
+        systemInstruction: 'test',
+        maxToolRounds: 8,
+      }),
+      /adapter is required/,
+    );
+  });
+
+  it('throws when toolRegistry is missing', () => {
+    assert.throws(
+      () => new Agent({
+        adapter: new FakeAdapter([]),
+        systemInstruction: 'test',
+        maxToolRounds: 8,
+      }),
+      /toolRegistry is required/,
+    );
+  });
+
+  it('throws when systemInstruction is empty', () => {
+    assert.throws(
+      () => new Agent({
+        adapter: new FakeAdapter([]),
+        toolRegistry: registry,
+        systemInstruction: '   ',
+        maxToolRounds: 8,
+      }),
+      /systemInstruction is required/,
+    );
+  });
+
+  it('throws when maxToolRounds is omitted', () => {
+    assert.throws(
+      () => new Agent({
+        adapter: new FakeAdapter([]),
+        toolRegistry: registry,
+        systemInstruction: 'test',
+      }),
+      /Invalid maxToolRounds: undefined/,
+    );
+  });
+
+  it('throws when historyKey is empty', async () => {
+    const agent = new Agent({
+      adapter: new FakeAdapter([]),
+      toolRegistry: registry,
+      systemInstruction: 'test',
+      maxToolRounds: 8,
+    });
+
+    try {
+      await agent.processMessage('', 'hello');
+      assert.fail('expected processMessage to throw');
+    } catch (err) {
+      assert.strictEqual(err.message, 'historyKey is required');
+    }
+  });
+
+  it('throws when text is whitespace only', async () => {
+    const agent = new Agent({
+      adapter: new FakeAdapter([]),
+      toolRegistry: registry,
+      systemInstruction: 'test',
+      maxToolRounds: 8,
+    });
+
+    try {
+      await agent.processMessage('k', '   ');
+      assert.fail('expected processMessage to throw');
+    } catch (err) {
+      assert.strictEqual(err.message, 'text is required');
+    }
+  });
+
+  it('throws when model function call has no name', async () => {
+    const adapter = new FakeAdapter([
+      { text: null, functionCalls: [{ name: undefined, args: {} }] },
+    ]);
+    const agent = new Agent({
+      adapter,
+      toolRegistry: registry,
+      systemInstruction: 'test',
+      maxToolRounds: 8,
+    });
+
+    try {
+      await agent.processMessage('k', 'go');
+      assert.fail('expected processMessage to throw');
+    } catch (err) {
+      assert.strictEqual(err.message, 'Model function call missing name');
+    }
+  });
+
+  it('clearHistory is a no-op when agent has no history store', () => {
+    const agent = new Agent({
+      adapter: new FakeAdapter([]),
+      toolRegistry: registry,
+      systemInstruction: 'test',
+      maxToolRounds: 8,
+    });
+
+    assert.doesNotThrow(() => agent.clearHistory('k'));
+    assert.doesNotThrow(() => agent.clearHistory());
+  });
+
+  it('clearHistory clears a specific key in the history store', async () => {
+    const history = new InMemoryHistoryStore({ windowMinutes: 60 });
+    const agent = new Agent({
+      adapter: new FakeAdapter([{ text: 'reply', functionCalls: null }]),
+      toolRegistry: registry,
+      systemInstruction: 'test',
+      history,
+      maxToolRounds: 8,
+    });
+
+    await agent.processMessage('chat:1', 'hello');
+    agent.clearHistory('chat:1');
+
+    assert.deepStrictEqual(history.get('chat:1'), []);
+  });
+
   it('appends turns to history store', async () => {
     const history = new InMemoryHistoryStore({ windowMinutes: 60 });
     const adapter = new FakeAdapter([

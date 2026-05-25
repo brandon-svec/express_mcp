@@ -57,8 +57,8 @@
     }
   },
   "devDependencies": {
-    "@google/genai": "^1.52.0",
     "@eslint/js": "^9.33.0",
+    "@google/genai": "^1.52.0",
     "c8": "^8.0.1",
     "chai": "^4.3.10",
     "eslint": "^9.33.0",

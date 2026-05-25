@@ -11,6 +11,46 @@ class ReplyAdapter extends ModelAdapter {
 }
 
 describe('AgentTool', () => {
+  it('throws when agent is null', () => {
+    assert.throws(() => new AgentTool(null), /agent is required/);
+  });
+
+  it('throws when prompt is empty', async () => {
+    const registry = new ToolRegistry({ loggerOptions: { enabled: false } });
+    const agent = new Agent({
+      adapter: new ReplyAdapter(),
+      toolRegistry: registry,
+      systemInstruction: 'test',
+      maxToolRounds: 8,
+    });
+    const tool = new AgentTool(agent);
+
+    try {
+      await tool.execute({ prompt: '' }, { user: null });
+      assert.fail('expected execute to throw');
+    } catch (err) {
+      assert.strictEqual(err.message, 'prompt is required and must be a non-empty string');
+    }
+  });
+
+  it('throws when prompt is whitespace only', async () => {
+    const registry = new ToolRegistry({ loggerOptions: { enabled: false } });
+    const agent = new Agent({
+      adapter: new ReplyAdapter(),
+      toolRegistry: registry,
+      systemInstruction: 'test',
+      maxToolRounds: 8,
+    });
+    const tool = new AgentTool(agent);
+
+    try {
+      await tool.execute({ prompt: '   ' }, { user: null });
+      assert.fail('expected execute to throw');
+    } catch (err) {
+      assert.strictEqual(err.message, 'prompt is required and must be a non-empty string');
+    }
+  });
+
   it('returns reply from one-shot processMessage', async () => {
     const registry = new ToolRegistry({ loggerOptions: { enabled: false } });
     const agent = new Agent({

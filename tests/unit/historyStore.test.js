@@ -35,6 +35,29 @@ describe('InMemoryHistoryStore', () => {
     assert.strictEqual(history[0].parts[0].text, 'fresh');
   });
 
+  it('get throws for empty key', () => {
+    const store = new InMemoryHistoryStore({ windowMinutes: 60 });
+    assert.throws(() => store.get(''), /history key is required/);
+  });
+
+  it('append throws for empty key', () => {
+    const store = new InMemoryHistoryStore({ windowMinutes: 60 });
+    assert.throws(
+      () => store.append('', [{ role: 'user', parts: [{ text: 'x' }] }]),
+      /history key is required/,
+    );
+  });
+
+  it('append throws when contents is not an array', () => {
+    const store = new InMemoryHistoryStore({ windowMinutes: 60 });
+    assert.throws(() => store.append('k', 'not-array'), /contents must be an array/);
+  });
+
+  it('clear throws for empty key', () => {
+    const store = new InMemoryHistoryStore({ windowMinutes: 60 });
+    assert.throws(() => store.clear(''), /history key is required/);
+  });
+
   it('clear removes one key or all keys', () => {
     const store = new InMemoryHistoryStore({ windowMinutes: 60 });
     store.append('a', [{ role: 'user', parts: [{ text: 'a' }] }]);
