@@ -1,5 +1,4 @@
 import { expect } from 'chai';
-import jwt from 'jsonwebtoken';
 import { InMemoryStandaloneSessionStore } from '../../src/stores/inMemoryStandaloneSessionStore.js';
 import { RedisStandaloneSessionStore } from '../../src/stores/redisStandaloneSessionStore.js';
 import { ContextAuthRequiredError } from '../../src/stores/errors.js';
