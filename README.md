@@ -650,10 +650,14 @@ npm run example               # Run example application
 npm run example:auth          # Run OAuth SSO example
 
 # Testing
-npm test                      # Run all tests
-npm run test:unit            # Run unit tests only
-npm run coverage             # Run tests with coverage
-npm run test:coverage        # Run tests with LCOV coverage
+npm test                      # Run unit then integration tests
+npm run test:unit            # In-process unit tests (tests/unit)
+npm run test:integration     # HTTP/MCP supertest tests (tests/integration)
+npm run test:live            # Live Gemini API — intentional; needs tests/live/config.js (see tests/live/README.md)
+npm run coverage             # Coverage for full test suite
+npm run coverage:unit        # Coverage for unit tests only
+npm run coverage:integration # Coverage for integration tests only
+npm run test:coverage        # LCOV coverage for full test suite
 
 # Code Quality
 npm run lint                  # Run ESLint
@@ -678,16 +682,25 @@ src/
 ├── tools/
 │   └── knowledgeBase.js    # Knowledge base MCP tools
 tests/
-├── unit/                   # Unit tests
+├── unit/                   # In-process unit tests (npm run test:unit)
 │   ├── expressMcp.test.js
 │   ├── toolRegistry.test.js
-│   ├── baseTool.test.js
-│   ├── knowledgeBase.test.js
+│   ├── agent.test.js
+│   └── knowledgeBase.test.js
+├── integration/            # HTTP/MCP supertest tests (npm run test:integration)
+│   ├── mcpProtocol.test.js
+│   ├── agent.mcp.integration.test.js
 │   ├── expressMcpKnowledgeBase.test.js
-│   ├── flexsearchIntegration.test.js
-│   ├── flexsearchMcpIntegration.test.js
-│   └── mcpProtocol.test.js
-└── testUtils.js           # Test utilities
+│   └── authMiddleware.test.js
+├── live/                   # Live Gemini API (npm run test:live; copy config.example.js → config.js)
+│   ├── README.md
+│   ├── config.example.js
+│   ├── liveConfig.js
+│   ├── geminiAdapter.live.test.js
+│   └── agent.live.test.js
+├── config.js               # Shared MCP test helpers
+├── testUtils.js            # Test utilities
+└── authTestUtils.js        # OAuth test helpers
 examples/
 └── example.js             # Example application with knowledge base
 ```
