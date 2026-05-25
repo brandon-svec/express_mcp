@@ -116,6 +116,10 @@ export class ExpressMcp {
       issuer: auth.issuer,
       resourcePath: auth.resourcePath,
       allowedUsers: auth.allowedUsers || [],
+      loginContextParams: auth.loginContextParams,
+      loginStateExpiresIn: auth.loginStateExpiresIn,
+      onTokenIssued: auth.onTokenIssued,
+      postLoginRedirectUrl: auth.postLoginRedirectUrl,
       logger: this.logger
     });
 

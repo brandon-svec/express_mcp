@@ -90,4 +90,32 @@ describe('buildAuthOptions', () => {
 
     assert.strictEqual(auth.issuer, 'https://custom.example.com/mcp');
   });
+
+  it('preserves Telegram login context and onTokenIssued callback', () => {
+    const onTokenIssued = async () => {};
+    const auth = buildAuthOptions(
+      validInput({
+        loginContextParams: ['telegram_chat_id', 'telegram_user_id'],
+        loginStateExpiresIn: '10m',
+        onTokenIssued
+      })
+    );
+
+    assert.deepStrictEqual(auth.loginContextParams, [
+      'telegram_chat_id',
+      'telegram_user_id'
+    ]);
+    assert.strictEqual(auth.loginStateExpiresIn, '10m');
+    assert.strictEqual(auth.onTokenIssued, onTokenIssued);
+  });
+
+  it('preserves postLoginRedirectUrl for standalone OAuth', () => {
+    const auth = buildAuthOptions(
+      validInput({
+        postLoginRedirectUrl: 'https://t.me/echoharvest_bot'
+      })
+    );
+
+    assert.strictEqual(auth.postLoginRedirectUrl, 'https://t.me/echoharvest_bot');
+  });
 });
