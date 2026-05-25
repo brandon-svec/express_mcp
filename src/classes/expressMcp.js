@@ -16,6 +16,10 @@ import {
   KnowledgeBaseGetTool
 } from '../tools/knowledgeBase.js';
 import { SessionTool } from '../tools/session.js';
+import { Agent } from '../agents/agent.js';
+import { GeminiAdapter } from '../agents/geminiAdapter.js';
+import { InMemoryHistoryStore } from '../agents/historyStore.js';
+import { AgentTool } from '../tools/agent.js';
 
 const packageVersion = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')).version;
 
@@ -47,6 +51,15 @@ export class ExpressMcp {
    * @param {string} [options.auth.issuer] - Override derived issuer
    * @param {string} [options.auth.resourcePath] - MCP mount path (default `/mcp`)
    * @param {string[]} [options.auth.allowedUsers] - Optional allowlist; `[]` = any authenticated user
+   * @param {Object} [options.agent] - Optional generic LLM agent over the tool registry
+   * @param {boolean} [options.agent.enabled=false] - Enable the in-process agent
+   * @param {boolean} [options.agent.exposeTool=true] - Register agent_ask MCP tool when enabled
+   * @param {string} [options.agent.systemInstruction] - System prompt for the agent
+   * @param {import('../agents/modelAdapter.js').ModelAdapter} [options.agent.adapter] - Custom model adapter
+   * @param {{ apiKey: string, model: string }} [options.agent.gemini] - Gemini config when adapter omitted
+   * @param {import('../agents/historyStore.js').InMemoryHistoryStore} [options.agent.history] - Custom history store
+   * @param {number} [options.agent.historyWindowMinutes=60] - TTL for default in-memory history
+   * @param {number} [options.agent.maxToolRounds=8] - Max tool-call rounds per message
    */
   constructor(options = {}) {
     this.options = Object.assign({
@@ -92,8 +105,75 @@ export class ExpressMcp {
       this._initializeAuth();
       this.toolRegistry.register(new SessionTool(this.authManager), this.name);
     }
-    
+
+    this.agent = null;
+    this._initializeAgent();
+
     this.logger.info('ExpressMcp instance initialized successfully');
+  }
+
+  /**
+   * Initialize Agent when agent.enabled is true.
+   * @private
+   */
+  _initializeAgent() {
+    const agentOpts = this.options.agent;
+    if (!agentOpts || agentOpts.enabled !== true) {
+      return;
+    }
+
+    if (typeof agentOpts.systemInstruction !== 'string' || !agentOpts.systemInstruction.trim()) {
+      throw new Error('agent.systemInstruction is required when agent is enabled');
+    }
+
+    let adapter = agentOpts.adapter;
+    if (!adapter) {
+      if (!agentOpts.gemini) {
+        throw new Error('agent.gemini is required when agent is enabled without agent.adapter');
+      }
+      adapter = new GeminiAdapter(agentOpts.gemini);
+    }
+
+    const historyWindowMinutes = agentOpts.historyWindowMinutes ?? 60;
+    if (typeof historyWindowMinutes !== 'number' || !Number.isInteger(historyWindowMinutes) || historyWindowMinutes <= 0) {
+      throw new Error(`Invalid agent.historyWindowMinutes: ${historyWindowMinutes}`);
+    }
+
+    const history = agentOpts.history ?? new InMemoryHistoryStore({ windowMinutes: historyWindowMinutes });
+
+    const maxToolRounds = agentOpts.maxToolRounds ?? 8;
+    if (typeof maxToolRounds !== 'number' || !Number.isInteger(maxToolRounds) || maxToolRounds < 1) {
+      throw new Error(`Invalid agent.maxToolRounds: ${maxToolRounds}`);
+    }
+
+    const exposeTool = agentOpts.exposeTool !== false;
+
+    this.agent = new Agent({
+      adapter,
+      toolRegistry: this.toolRegistry,
+      systemInstruction: agentOpts.systemInstruction,
+      history,
+      maxToolRounds,
+      excludeTools: exposeTool ? ['agent_ask'] : [],
+      logger: this.logger,
+    });
+
+    if (exposeTool) {
+      this.toolRegistry.register(new AgentTool(this.agent), this.name);
+      this.logger.info({ toolName: 'agent_ask' }, 'Agent MCP tool registered');
+    }
+
+    this.logger.info('Agent enabled');
+  }
+
+  /**
+   * @returns {import('../agents/agent.js').Agent}
+   */
+  getAgent() {
+    if (!this.agent) {
+      throw new Error('Agent is not enabled. Set options.agent.enabled to true.');
+    }
+    return this.agent;
   }
 
   /**

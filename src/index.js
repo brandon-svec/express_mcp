@@ -21,3 +21,10 @@ export {
   validateAuthOptions
 } from './authConfig.js';
 export { SUPPORTED_OAUTH_PROVIDERS } from './classes/authManager.js';
+
+export {
+  Agent,
+  ModelAdapter,
+  GeminiAdapter,
+  InMemoryHistoryStore
+} from './agents/index.js';
