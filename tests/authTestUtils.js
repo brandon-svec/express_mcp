@@ -7,6 +7,7 @@ import jwt from 'jsonwebtoken';
 import express, { Router } from 'express';
 import { AuthManager } from '../src/classes/authManager.js';
 import { ExpressMcp } from '../src/index.js';
+import { InMemoryStandaloneSessionStore } from '../src/stores/inMemoryStandaloneSessionStore.js';
 import { getTestExpressMcpOptions } from './config.js';
 
 export const TEST_AUTH = {
@@ -52,6 +53,11 @@ export const silentTestLogger = {
  * @returns {AuthManager}
  */
 export function createTestAuthManager(overrides = {}) {
+  const sessionStore = Object.hasOwn(overrides, 'sessionStore')
+    ? overrides.sessionStore
+    : new InMemoryStandaloneSessionStore();
+  const rest = { ...overrides };
+  delete rest.sessionStore;
   return new AuthManager({
     providers: {
       github: TEST_AUTH.githubAlt
@@ -64,7 +70,8 @@ export function createTestAuthManager(overrides = {}) {
     sessionSecret: TEST_AUTH.sessionSecret,
     jwtExpiresIn: TEST_AUTH.jwtExpiresIn,
     logger: silentTestLogger,
-    ...overrides
+    sessionStore,
+    ...rest
   });
 }
 
@@ -87,6 +94,7 @@ export function createTestAuthMcp(authOverrides = {}) {
         jwtSecret: TEST_AUTH.jwtSecret,
         jwtExpiresIn: TEST_AUTH.jwtExpiresIn,
         sessionSecret: TEST_AUTH.sessionSecret,
+        sessionStore: authOverrides.sessionStore || new InMemoryStandaloneSessionStore(),
         ...authOverrides
       }
     })
@@ -100,6 +108,19 @@ export function createTestAuthMcp(authOverrides = {}) {
  */
 export function issueTestJwt(payload, expiresIn = TEST_AUTH.jwtExpiresIn) {
   return jwt.sign({ jti: randomUUID(), ...payload }, TEST_AUTH.jwtSecret, { expiresIn });
+}
+
+/**
+ * Issue a test JWT and persist it in the auth manager session store (required for Bearer auth).
+ * @param {AuthManager} authManager
+ * @param {Object} payload
+ * @param {string} [expiresIn]
+ * @returns {Promise<string>}
+ */
+export async function issueTestJwtWithSession(authManager, payload, expiresIn = TEST_AUTH.jwtExpiresIn) {
+  const token = issueTestJwt(payload, expiresIn);
+  await authManager.persistAccessTokenSession(token, {});
+  return token;
 }
 
 /**

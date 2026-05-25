@@ -15,6 +15,7 @@ function validAuth(overrides = {}) {
     providers: {
       google: TEST_AUTH.google
     },
+    sessionStore: { createPending: async () => {} },
     ...overrides
   };
 }
@@ -63,6 +64,15 @@ describe('validateAuthOptions', () => {
           })
         ),
       /google clientId is missing or empty/
+    );
+  });
+
+  it('throws when sessionStore is missing', () => {
+    const withoutStore = { ...validAuth() };
+    delete withoutStore.sessionStore;
+    assert.throws(
+      () => validateAuthOptions(withoutStore),
+      /sessionStore is required/
     );
   });
 

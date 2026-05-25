@@ -28,3 +28,8 @@ export {
   GeminiAdapter,
   InMemoryHistoryStore
 } from './agents/index.js';
+
+export { InMemoryStandaloneSessionStore } from './stores/inMemoryStandaloneSessionStore.js';
+export { RedisStandaloneSessionStore } from './stores/redisStandaloneSessionStore.js';
+export { ContextAuthRequiredError } from './stores/errors.js';
+export { sanitizeHostContext } from './stores/sessionContext.js';

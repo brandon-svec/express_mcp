@@ -209,5 +209,11 @@ describe('MCP OAuth authorization server', () => {
     const payload = jwt.verify(res.body.access_token, TEST_AUTH.jwtSecret);
     assert.strictEqual(payload.login, TEST_GITHUB_USER.login);
     assert.isString(payload.jti);
+
+    const active = await authManager.sessionStore.findActive(payload.jti);
+    assert.isNotNull(active);
+    assert.strictEqual(active.user.login, TEST_GITHUB_USER.login);
+    assert.strictEqual(active.context.oauth_client_id, client.client_id);
+    assert.strictEqual(active.context.oauth_sub, TEST_GITHUB_USER.sub);
   });
 });

@@ -57,7 +57,7 @@ export class Agent {
   /**
    * @param {string} historyKey
    * @param {string} text
-   * @param {{ user?: Object|null }} [options]
+   * @param {{ user?: Object|null, hostContext?: Record<string, string>|null }} [options]
    * @returns {Promise<string>}
    */
   async processMessage (historyKey, text, options = {}) {
@@ -69,8 +69,12 @@ export class Agent {
     }
 
     const user = options.user ?? null;
+    const hostContext = options.hostContext ?? null;
     if (this.requireUser && !user) {
       throw new Error('Agent requires an authenticated user but none was provided.');
+    }
+    if (hostContext !== null && (typeof hostContext !== 'object' || Array.isArray(hostContext))) {
+      throw new Error('hostContext must be a plain object when provided');
     }
 
     const priorHistory = this.history ? this.history.get(historyKey) : [];
@@ -112,6 +116,7 @@ export class Agent {
           {
             execution: new ToolExecution(fc.name, null, fc.args || {}),
             user,
+            hostContext,
           },
         );
 

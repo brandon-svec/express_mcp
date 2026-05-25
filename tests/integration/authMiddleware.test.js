@@ -13,7 +13,9 @@ import {
 } from '../config.js';
 import {
   createTestAuthMcp,
+  createTestAuthManager,
   issueTestJwt,
+  issueTestJwtWithSession,
   TEST_AUTH,
   TEST_GITHUB_USER
 } from '../authTestUtils.js';
@@ -59,8 +61,25 @@ describe('MCP Auth Middleware', () => {
     assert.property(res.body, 'error');
   });
 
-  it('allows MCP requests with a valid Bearer token', async () => {
+  it('returns 401 when valid JWT has no Redis session', async () => {
     const token = issueTestJwt({
+      sub: 'gh:1',
+      login: 'testuser',
+      name: 'Test User',
+      email: 'test@example.com',
+      provider: 'github'
+    });
+
+    const res = await mcpPost(request(app))
+      .set('Authorization', `Bearer ${token}`)
+      .send(createInitializeRequest(1));
+
+    assert.strictEqual(res.status, 401);
+    assert.property(res.body, 'error');
+  });
+
+  it('allows MCP requests with a valid Bearer token', async () => {
+    const token = await issueTestJwtWithSession(expressMcp.authManager, {
       sub: 'gh:1',
       login: 'testuser',
       name: 'Test User',
@@ -90,7 +109,7 @@ describe('MCP Auth Middleware', () => {
     app.use(express.json());
     app.use('/mcp', expressMcp.router());
 
-    const token = issueTestJwt(TEST_GITHUB_USER);
+    const token = await issueTestJwtWithSession(expressMcp.authManager, TEST_GITHUB_USER);
     const res = await mcpPost(request(app))
       .set('Authorization', `Bearer ${token}`)
       .send(createInitializeRequest(1));
@@ -124,6 +143,28 @@ describe('MCP Auth Middleware', () => {
     );
   });
 
+  it('constructor throws when auth enabled but sessionStore missing', () => {
+    assert.throws(
+      () =>
+        new ExpressMcp(
+          getTestExpressMcpOptions({
+            auth: {
+              enabled: true,
+              baseUrl: 'https://example.com',
+              callbackUrl: 'https://example.com/mcp/auth/callback',
+              jwtSecret: 'secret',
+              sessionSecret: 'session-secret',
+              jwtExpiresIn: '7d',
+              providers: {
+                github: { clientId: 'x', clientSecret: 'y' }
+              }
+            }
+          })
+        ),
+      /sessionStore is required/
+    );
+  });
+
   it('returns 403 when user is not on allowlist', async () => {
     expressMcp = createTestAuthMcp({ allowedUsers: ['allowed@example.com'] });
     expressMcp.registerTool(new HelloTool());
@@ -131,7 +172,7 @@ describe('MCP Auth Middleware', () => {
     app.use(express.json());
     app.use('/mcp', expressMcp.router());
 
-    const token = issueTestJwt({
+    const token = await issueTestJwtWithSession(expressMcp.authManager, {
       sub: 'gh:1',
       login: 'blocked',
       name: 'Blocked',
@@ -154,7 +195,7 @@ describe('MCP Auth Middleware', () => {
     app.use(express.json());
     app.use('/mcp', expressMcp.router());
 
-    const token = issueTestJwt({
+    const token = await issueTestJwtWithSession(expressMcp.authManager, {
       sub: 'gh:2',
       login: 'alloweduser',
       name: 'Allowed',
@@ -176,7 +217,7 @@ describe('MCP Auth Middleware', () => {
     app.use(express.json());
     app.use('/mcp', expressMcp.router());
 
-    const token = issueTestJwt({
+    const token = await issueTestJwtWithSession(expressMcp.authManager, {
       sub: 'gh:3',
       login: 'mygithublogin',
       name: 'Git User',
@@ -197,7 +238,7 @@ describe('MCP Auth Middleware', () => {
     app.use(express.json());
     app.use('/mcp', expressMcp.router());
 
-    const token = issueTestJwt({
+    const token = await issueTestJwtWithSession(expressMcp.authManager, {
       sub: 'gh:4',
       login: 'ctxuser',
       name: 'Ctx',
@@ -230,7 +271,7 @@ describe('MCP Auth Middleware', () => {
     app.use(express.json());
     app.use('/mcp', expressMcp.router());
 
-    const token = issueTestJwt({
+    const token = await issueTestJwtWithSession(expressMcp.authManager, {
       sub: 'gh:5',
       login: 'logoutuser',
       name: 'Logout',
@@ -261,17 +302,11 @@ describe('MCP Auth Middleware', () => {
 
 describe('AuthManager', () => {
   it('issues and verifies JWT with user claims', async () => {
-    const { AuthManager } = await import('../../src/classes/authManager.js');
-    const auth = new AuthManager({
+    const auth = createTestAuthManager({
       providers: {
         github: { clientId: 'id', clientSecret: 'secret' }
       },
-      callbackUrl: 'http://localhost/cb',
-      issuer: TEST_AUTH.issuer,
-      resourcePath: TEST_AUTH.resourcePath,
-      jwtSecret: TEST_AUTH.jwtSecret,
-      jwtExpiresIn: TEST_AUTH.jwtExpiresIn,
-      sessionSecret: TEST_AUTH.sessionSecret
+      callbackUrl: 'http://localhost/cb'
     });
 
     const user = {
@@ -292,17 +327,7 @@ describe('AuthManager', () => {
   });
 
   it('builds GitHub authorization URL with state', async () => {
-    const { AuthManager } = await import('../../src/classes/authManager.js');
-    const auth = new AuthManager({
-      providers: {
-        github: { clientId: 'gh-id', clientSecret: 'gh-secret' }
-      },
-      callbackUrl: TEST_AUTH.callbackUrl,
-      issuer: TEST_AUTH.issuer,
-      resourcePath: TEST_AUTH.resourcePath,
-      jwtSecret: TEST_AUTH.jwtSecret,
-      sessionSecret: TEST_AUTH.sessionSecret
-    });
+    const auth = createTestAuthManager();
 
     const url = auth.getAuthorizationUrl('github', 'state-abc');
     assert.include(url, 'github.com/login/oauth/authorize');
