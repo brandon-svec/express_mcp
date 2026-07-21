@@ -1,13 +1,19 @@
 {
   "name": "@brandon-svec/express_mcp",
   "version": "0.0.8",
-  "description": "Express Router and middleware for integrating MCP (Model Context Protocol) functionality into existing Express servers",
+  "description": "Add MCP tools, OAuth, and a knowledge base to any Express app so AI clients can call your APIs",
   "main": "src/index.js",
   "type": "module",
   "engines": {
     "node": ">=20",
     "npm": ">=10"
   },
+  "files": [
+    "src",
+    "docs/AUTH.md",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "example": "node examples/example.js",
     "example:auth": "node examples/example-with-auth.js",
@@ -33,11 +39,15 @@
     "mcp",
     "model-context-protocol",
     "express",
-    "api",
-    "generic"
+    "oauth",
+    "sse",
+    "tools",
+    "cursor",
+    "ai-agents",
+    "knowledge-base"
   ],
-  "author": "Express MCP",
-  "license": "UNLICENSED",
+  "author": "Brandon Svec",
+  "license": "MIT",
   "publishConfig": {
     "access": "restricted",
     "registry": "https://registry.npmjs.org/"

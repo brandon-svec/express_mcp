@@ -12,6 +12,7 @@ export class Agent {
    * @param {import('./historyStore.js').InMemoryHistoryStore|{ get: Function, append: Function }} [options.history]
    * @param {number} [options.maxToolRounds]
    * @param {string[]} [options.excludeTools]
+   * @param {string[]} [options.toolAllowlist] - When set, only these tool names are available
    * @param {boolean} [options.requireUser]
    * @param {import('pino').Logger} [options.logger]
    */
@@ -37,8 +38,26 @@ export class Agent {
     this.history = options.history;
     this.maxToolRounds = maxToolRounds;
     this.excludeTools = new Set(options.excludeTools || []);
+    this.toolAllowlist = Array.isArray(options.toolAllowlist)
+      ? new Set(options.toolAllowlist)
+      : null;
     this.requireUser = options.requireUser === true;
     this.logger = options.logger;
+  }
+
+  /**
+   * @param {string} toolName
+   * @returns {boolean}
+   * @private
+   */
+  _isToolAvailable (toolName) {
+    if (this.excludeTools.has(toolName)) {
+      return false;
+    }
+    if (this.toolAllowlist && !this.toolAllowlist.has(toolName)) {
+      return false;
+    }
+    return true;
   }
 
   /**
@@ -46,7 +65,7 @@ export class Agent {
    */
   buildToolDeclarations () {
     return this.toolRegistry.getTools()
-      .filter((tool) => !this.excludeTools.has(tool.name))
+      .filter((tool) => this._isToolAvailable(tool.name))
       .map((tool) => ({
         name: tool.name,
         description: tool.description,
@@ -107,7 +126,7 @@ export class Agent {
         if (!fc.name) {
           throw new Error('Model function call missing name');
         }
-        if (this.excludeTools.has(fc.name)) {
+        if (!this._isToolAvailable(fc.name)) {
           throw new Error(`Tool is not available to the agent: ${fc.name}`);
         }
         const execution = await this.toolRegistry.executeTool(

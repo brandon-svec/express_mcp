@@ -154,6 +154,33 @@ describe('MCP OAuth authorization server', () => {
     assert.deepEqual(res.body.redirect_uris, ['cursor://anysphere.cursor-mcp/oauth/callback']);
   });
 
+  it('rejects non-loopback http(s) redirect_uris unless allowlisted', async () => {
+    const app = createOAuthTestApp(createTestAuthManager());
+    const rejected = await request(app)
+      .post('/mcp/register')
+      .send({
+        client_name: 'Evil',
+        redirect_uris: ['https://evil.example/cb'],
+        grant_types: ['authorization_code'],
+        response_types: ['code']
+      });
+    assert.strictEqual(rejected.status, 400);
+    assert.strictEqual(rejected.body.error, 'invalid_redirect_uri');
+
+    const allowed = createOAuthTestApp(
+      createTestAuthManager({ allowedRedirectUris: ['https://app.example/cb'] })
+    );
+    const ok = await request(allowed)
+      .post('/mcp/register')
+      .send({
+        client_name: 'App',
+        redirect_uris: ['https://app.example/cb'],
+        grant_types: ['authorization_code'],
+        response_types: ['code']
+      });
+    assert.strictEqual(ok.status, 201);
+  });
+
   it('returns protected resource and authorization server metadata', async () => {
     const app = createOAuthTestApp(createTestAuthManager());
 

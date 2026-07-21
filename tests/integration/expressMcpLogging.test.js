@@ -292,7 +292,7 @@ describe('ExpressMcp Logging Tests', () => {
 
       assert.strictEqual(response.status, 200);
       assert.strictEqual(response.body.error.code, -32603);
-      assert.ok(response.body.error.message.includes('Tool execution exception'));
+      assert.ok(response.body.error.message.includes('Tool execution failed'));
     });
   });
 

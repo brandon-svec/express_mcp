@@ -206,8 +206,7 @@ export class ToolRegistry {
         }));
         
         errorData = {
-          validationErrors: ajvErrors,
-          rejectedValue: args
+          validationErrors: ajvErrors
         };
         
         // Create a more user-friendly message
@@ -235,9 +234,11 @@ export class ToolRegistry {
       
       return execution;
     } catch (executionError) {
-      execution.setError(`Tool execution failed: ${executionError.message}`, -32603, {
-        stack: executionError.stack
-      });
+      this.logger?.error?.(
+        { toolName: finalName, error: executionError.message, stack: executionError.stack },
+        'Tool execution failed'
+      );
+      execution.setError('Tool execution failed', -32603, null);
       return execution;
     }
   }

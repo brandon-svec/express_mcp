@@ -86,6 +86,18 @@ export function buildAuthOptions(input = {}) {
   if (input.sessionStore) {
     auth.sessionStore = input.sessionStore;
   }
+  if (Array.isArray(input.allowedRedirectUris)) {
+    auth.allowedRedirectUris = input.allowedRedirectUris;
+  }
+  if (input.showTokenOnSuccessPage === true) {
+    auth.showTokenOnSuccessPage = true;
+  }
+  if (input.enableDebugEndpoint === true) {
+    auth.enableDebugEndpoint = true;
+  }
+  if (input.enableLoginUrlEndpoint === true) {
+    auth.enableLoginUrlEndpoint = true;
+  }
 
   validateAuthOptions(auth);
   return auth;

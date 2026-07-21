@@ -83,7 +83,6 @@ async function startAuthExample() {
   <p>MCP endpoint: <code>POST ${baseUrl}/mcp</code> (requires Bearer token after login)</p>
   <p><strong>OAuth redirect URI</strong> (register on each provider app):</p>
   <pre style="background:#f4f4f4;padding:0.5em;">${callbackUrl}</pre>
-  <p><a href="/mcp/auth/debug">OAuth debug JSON</a></p>
 </body>
 </html>`);
   });

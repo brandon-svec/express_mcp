@@ -13,6 +13,7 @@ import {
   PendingAuthStore,
   buildAuthorizationServerMetadata,
   buildProtectedResourceMetadata,
+  isRedirectUriAllowedByPolicy,
   jwtExpiresInSeconds,
   verifyPkceChallenge
 } from '../mcpOAuth.js';
@@ -21,6 +22,19 @@ import { assertValidSessionId, isUuidV4SessionId, sanitizeHostContext } from '..
 import { parseDurationToSeconds } from '../stores/sessionTtl.js';
 
 export const SUPPORTED_OAUTH_PROVIDERS = ['github', 'google'];
+
+/**
+ * @param {unknown} value
+ * @returns {string}
+ */
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
 
 const PROVIDER_META = {
   github: {
@@ -87,6 +101,10 @@ export class AuthManager {
    * @param {string} [options.loginStateExpiresIn='10m'] - TTL for pending standalone login sessions
    * @param {function(user: Object, jwt: string, context: Object): (void|Promise<void>)} [options.onTokenIssued]
    * @param {string} [options.postLoginRedirectUrl] - Redirect browser after standalone OAuth (not MCP PKCE flow)
+   * @param {string[]} [options.allowedRedirectUris] - Extra http(s) redirect URIs allowed for DCR
+   * @param {boolean} [options.showTokenOnSuccessPage=false] - Embed Bearer JWT in standalone success HTML (local dev only)
+   * @param {boolean} [options.enableDebugEndpoint=false] - Mount GET /auth/debug
+   * @param {boolean} [options.enableLoginUrlEndpoint=false] - Mount POST /auth/login-url
    * @param {import('../stores/inMemoryStandaloneSessionStore.js').InMemoryStandaloneSessionStore|import('../stores/redisStandaloneSessionStore.js').RedisStandaloneSessionStore} options.sessionStore
    */
   constructor(options) {
@@ -107,6 +125,12 @@ export class AuthManager {
     this.sessionSecret = options.sessionSecret;
     this.logger = options.logger || console;
     this.allowedUsers = options.allowedUsers || [];
+    this.allowedRedirectUris = Array.isArray(options.allowedRedirectUris)
+      ? options.allowedRedirectUris.filter((u) => typeof u === 'string')
+      : [];
+    this.showTokenOnSuccessPage = options.showTokenOnSuccessPage === true;
+    this.enableDebugEndpoint = options.enableDebugEndpoint === true;
+    this.enableLoginUrlEndpoint = options.enableLoginUrlEndpoint === true;
 
     if (!options.issuer || typeof options.issuer !== 'string' || !options.issuer.trim()) {
       throw new Error('issuer is required for MCP OAuth authorization server');
@@ -116,6 +140,7 @@ export class AuthManager {
     const normalizedResourcePath = this.resourcePath.startsWith('/')
       ? this.resourcePath
       : `/${this.resourcePath}`;
+    this.normalizedResourcePath = normalizedResourcePath;
     if (options.origin) {
       this.origin = options.origin.replace(/\/$/, '');
     } else if (this.issuer.endsWith(normalizedResourcePath)) {
@@ -128,6 +153,7 @@ export class AuthManager {
     if (!this.origin) {
       throw new Error('origin could not be derived from issuer and resourcePath');
     }
+    this.expectedResource = `${this.origin}${normalizedResourcePath}`;
     this.authPath = options.authPath || '/auth';
     this.loginStateExpiresIn = options.loginStateExpiresIn || '10m';
     this.onTokenIssued =
@@ -311,7 +337,8 @@ export class AuthManager {
     };
 
     return jwt.sign(payload, this.jwtSecret, {
-      expiresIn: this.jwtExpiresIn
+      expiresIn: this.jwtExpiresIn,
+      algorithm: 'HS256'
     });
   }
 
@@ -418,7 +445,7 @@ export class AuthManager {
    * @returns {Object} Decoded payload
    */
   verifyJwt(token) {
-    return jwt.verify(token, this.jwtSecret);
+    return jwt.verify(token, this.jwtSecret, { algorithms: ['HS256'] });
   }
 
   /**
@@ -430,7 +457,7 @@ export class AuthManager {
       resave: false,
       saveUninitialized: false,
       cookie: {
-        secure: process.env.NODE_ENV === 'production',
+        secure: this.origin.startsWith('https:'),
         httpOnly: true,
         maxAge: 15 * 60 * 1000
       },
@@ -608,7 +635,7 @@ export class AuthManager {
     const links = this.enabledProviders
       .map(
         (name) =>
-          `<li><a href="${this.authPath}/login/${name}${pendingQuery}">Login with ${PROVIDER_META[name].label}</a></li>`
+          `<li><a href="${escapeHtml(this.authPath)}/login/${escapeHtml(name)}${pendingQuery}">Login with ${escapeHtml(PROVIDER_META[name].label)}</a></li>`
       )
       .join('\n');
     return `<!DOCTYPE html>
@@ -621,27 +648,54 @@ export class AuthManager {
 </html>`;
   }
 
-  _renderSuccessPage(user, token) {
-    const displayName = user.name || user.login;
-    return `<!DOCTYPE html>
-<html>
-<head><title>Login successful</title></head>
-<body>
+  /**
+   * @param {Object} user
+   * @param {string} token
+   * @param {{ sessionId?: string|null }} [options]
+   * @returns {string}
+   */
+  _renderSuccessPage(user, token, options = {}) {
+    const displayName = escapeHtml(user.name || user.login);
+    const provider = escapeHtml(user.provider);
+    const sessionId =
+      typeof options.sessionId === 'string' && options.sessionId
+        ? escapeHtml(options.sessionId)
+        : null;
+
+    let body = `
   <h1>Signed in as ${displayName}</h1>
-  <p>Signed in via ${user.provider}</p>
+  <p>Signed in via ${provider}</p>`;
+
+    if (sessionId) {
+      body += `
+  <p>Session id for host apps: <code>${sessionId}</code></p>`;
+    }
+
+    if (this.showTokenOnSuccessPage && token) {
+      const safeToken = escapeHtml(token);
+      body += `
   <p>Copy this token into your MCP client configuration:</p>
-  <pre style="background:#f4f4f4;padding:1em;overflow:auto;">${token}</pre>
+  <pre style="background:#f4f4f4;padding:1em;overflow:auto;">${safeToken}</pre>
   <p>Example <code>mcp.json</code>:</p>
   <pre style="background:#f4f4f4;padding:1em;overflow:auto;">{
   "mcpServers": {
     "my-server": {
-      "url": "http://localhost:3000/mcp",
+      "url": "${escapeHtml(this.expectedResource)}",
       "headers": {
-        "Authorization": "Bearer ${token}"
+        "Authorization": "Bearer ${safeToken}"
       }
     }
   }
-}</pre>
+}</pre>`;
+    } else {
+      body += `
+  <p>You can close this tab. MCP clients should complete the OAuth token exchange; host apps can look up the session by session id.</p>`;
+    }
+
+    return `<!DOCTYPE html>
+<html>
+<head><title>Login successful</title></head>
+<body>${body}
 </body>
 </html>`;
   }
@@ -689,6 +743,17 @@ export class AuthManager {
         });
       }
 
+      const rejected = redirectUris.filter(
+        (uri) => !isRedirectUriAllowedByPolicy(uri, this.allowedRedirectUris)
+      );
+      if (rejected.length > 0) {
+        return res.status(400).json({
+          error: 'invalid_redirect_uri',
+          error_description:
+            'redirect_uris must be loopback http(s), a private-use URI scheme, or listed in auth.allowedRedirectUris'
+        });
+      }
+
       const record = this.oauthClients.register({
         client_name: clientName.trim(),
         redirect_uris: redirectUris,
@@ -733,12 +798,19 @@ export class AuthManager {
         return res.status(400).json({ error: 'invalid_request', error_description: 'redirect_uri is not registered for this client' });
       }
 
+      if (typeof resource === 'string' && resource && resource !== this.expectedResource) {
+        return res.status(400).json({
+          error: 'invalid_request',
+          error_description: 'resource does not match this server'
+        });
+      }
+
       const mcpAuthPending = {
         client_id: clientId,
         redirect_uri: redirectUri,
         code_challenge: codeChallenge,
         state,
-        resource: typeof resource === 'string' ? resource : null
+        resource: typeof resource === 'string' && resource ? resource : this.expectedResource
       };
 
       if (this.enabledProviders.length === 1) {
@@ -843,25 +915,27 @@ export class AuthManager {
    * @private
    */
   _registerAuthRoutes(router) {
-    router.get('/debug', (req, res) => {
-      const providers = this.enabledProviders.map((name) => {
-        const url = this.getAuthorizationUrl(name, 'debug');
-        const parsed = new URL(url);
-        return {
-          name,
-          label: PROVIDER_META[name].label,
-          clientId: this.providers[name].clientId,
-          redirectUri: parsed.searchParams.get('redirect_uri'),
-          authorizeUrl: url
-        };
-      });
+    if (this.enableDebugEndpoint) {
+      router.get('/debug', (req, res) => {
+        const providers = this.enabledProviders.map((name) => {
+          const url = this.getAuthorizationUrl(name, 'debug');
+          const parsed = new URL(url);
+          return {
+            name,
+            label: PROVIDER_META[name].label,
+            clientId: this.providers[name].clientId,
+            redirectUri: parsed.searchParams.get('redirect_uri'),
+            authorizeUrl: url
+          };
+        });
 
-      res.json({
-        callbackUrl: this.callbackUrl,
-        enabledProviders: this.enabledProviders,
-        providers
+        res.json({
+          callbackUrl: this.callbackUrl,
+          enabledProviders: this.enabledProviders,
+          providers
+        });
       });
-    });
+    }
 
     router.get('/login', (req, res) => {
       const pendingQuery =
@@ -875,55 +949,57 @@ export class AuthManager {
       res.send(this._renderLoginPicker(pendingQuery));
     });
 
-    router.post('/login-url', async (req, res) => {
-      const { provider, context } = req.body || {};
-      let sanitized;
-      try {
-        sanitized = sanitizeHostContext(context);
-      } catch (err) {
-        return res.status(400).json({
-          error: 'invalid_request',
-          error_description: err.message
-        });
-      }
+    if (this.enableLoginUrlEndpoint) {
+      router.post('/login-url', async (req, res) => {
+        const { provider, context } = req.body || {};
+        let sanitized;
+        try {
+          sanitized = sanitizeHostContext(context);
+        } catch (err) {
+          return res.status(400).json({
+            error: 'invalid_request',
+            error_description: err.message
+          });
+        }
 
-      const oauthProvider =
-        typeof provider === 'string' && this.enabledProviders.includes(provider)
-          ? provider
-          : this.enabledProviders[0];
+        const oauthProvider =
+          typeof provider === 'string' && this.enabledProviders.includes(provider)
+            ? provider
+            : this.enabledProviders[0];
 
-      const sessionId = randomUUID();
-      try {
-        await this.sessionStore.createPending(
-          sessionId,
-          sanitized,
-          oauthProvider,
-          this._pendingSessionTtlSeconds()
+        const sessionId = randomUUID();
+        try {
+          await this.sessionStore.createPending(
+            sessionId,
+            sanitized,
+            oauthProvider,
+            this._pendingSessionTtlSeconds()
+          );
+        } catch (err) {
+          return res.status(400).json({
+            error: 'invalid_request',
+            error_description: err.message
+          });
+        }
+
+        const loginUrl = new URL(
+          `${this.origin}${this.authPath}/login/${oauthProvider}`,
+          this.origin
         );
-      } catch (err) {
-        return res.status(400).json({
-          error: 'invalid_request',
-          error_description: err.message
+        loginUrl.searchParams.set('session_id', sessionId);
+
+        return res.json({
+          session_id: sessionId,
+          login_url: loginUrl.toString()
         });
-      }
-
-      const loginUrl = new URL(
-        `${this.origin}${this.authPath}/login/${oauthProvider}`,
-        this.origin
-      );
-      loginUrl.searchParams.set('session_id', sessionId);
-
-      return res.json({
-        session_id: sessionId,
-        login_url: loginUrl.toString()
       });
-    });
+    }
 
     router.get('/login/:provider', async (req, res) => {
       const { provider } = req.params;
       if (!this.enabledProviders.includes(provider)) {
         return res.status(404).send(
-          `<html><body><h1>Unknown provider</h1><p>Provider "${provider}" is not enabled.</p></body></html>`
+          `<html><body><h1>Unknown provider</h1><p>Provider "${escapeHtml(provider)}" is not enabled.</p></body></html>`
         );
       }
 
@@ -976,7 +1052,7 @@ export class AuthManager {
 
       if (error) {
         return res.status(400).send(
-          `<html><body><h1>Authentication failed</h1><p>${error}: ${errorDescription || ''}</p></body></html>`
+          `<html><body><h1>Authentication failed</h1><p>${escapeHtml(error)}: ${escapeHtml(errorDescription || '')}</p></body></html>`
         );
       }
 
@@ -1086,11 +1162,15 @@ export class AuthManager {
         if (this.postLoginRedirectUrl) {
           return res.redirect(this.postLoginRedirectUrl);
         }
-        res.send(this._renderSuccessPage(user, token));
+        res.send(
+          this._renderSuccessPage(user, token, {
+            sessionId: standalonePending ? state : null
+          })
+        );
       } catch (err) {
         this.logger.error?.({ err: err.message, provider: oauthProvider }, 'OAuth callback failed');
         res.status(500).send(
-          `<html><body><h1>Authentication failed</h1><p>${err.message}</p></body></html>`
+          `<html><body><h1>Authentication failed</h1><p>${escapeHtml(err.message)}</p></body></html>`
         );
       }
     });

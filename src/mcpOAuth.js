@@ -1,5 +1,7 @@
 import { createHash, randomBytes } from 'crypto';
 
+const DEFAULT_MAX_STORE_ENTRIES = 10_000;
+
 /**
  * @param {string} codeVerifier
  * @param {string} codeChallenge
@@ -14,6 +16,48 @@ export function verifyPkceChallenge(codeVerifier, codeChallenge) {
   }
   const digest = createHash('sha256').update(codeVerifier).digest('base64url');
   return digest === codeChallenge;
+}
+
+/**
+ * Whether a redirect_uri is allowed under the default DCR policy.
+ * Allows loopback http(s), private-use URI schemes, and exact matches in allowedRedirectUris.
+ * @param {string} uri
+ * @param {string[]} [allowedRedirectUris=[]]
+ * @returns {boolean}
+ */
+export function isRedirectUriAllowedByPolicy(uri, allowedRedirectUris = []) {
+  if (typeof uri !== 'string' || !uri.trim()) {
+    return false;
+  }
+  if (Array.isArray(allowedRedirectUris) && allowedRedirectUris.includes(uri)) {
+    return true;
+  }
+
+  let parsed;
+  try {
+    parsed = new URL(uri);
+  } catch {
+    return false;
+  }
+
+  if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+    const host = parsed.hostname.toLowerCase();
+    return host === '127.0.0.1' || host === 'localhost' || host === '::1';
+  }
+
+  // Private-use / custom schemes (e.g. cursor://...)
+  return /^[a-z][a-z0-9+.-]*:$/i.test(parsed.protocol);
+}
+
+/**
+ * @param {Map<string, unknown>} map
+ * @param {number} maxEntries
+ */
+function enforceMaxEntries(map, maxEntries) {
+  while (map.size >= maxEntries) {
+    const oldest = map.keys().next().value;
+    map.delete(oldest);
+  }
 }
 
 /**
@@ -54,9 +98,13 @@ export function buildAuthorizationServerMetadata(issuer) {
  * In-memory OAuth client registry for Dynamic Client Registration.
  */
 export class OAuthClientRegistry {
-  constructor() {
+  /**
+   * @param {{ maxEntries?: number }} [options]
+   */
+  constructor(options = {}) {
     /** @type {Map<string, Object>} */
     this.clients = new Map();
+    this.maxEntries = options.maxEntries ?? DEFAULT_MAX_STORE_ENTRIES;
   }
 
   /**
@@ -64,6 +112,7 @@ export class OAuthClientRegistry {
    * @returns {Object}
    */
   register(registration) {
+    enforceMaxEntries(this.clients, this.maxEntries);
     const clientId = randomBytes(16).toString('hex');
     const record = {
       client_id: clientId,
@@ -105,9 +154,13 @@ export class OAuthClientRegistry {
  * Survives MCP clients that call /authorize without a browser session cookie.
  */
 export class PendingAuthStore {
-  constructor() {
+  /**
+   * @param {{ maxEntries?: number }} [options]
+   */
+  constructor(options = {}) {
     /** @type {Map<string, Object>} */
     this.entries = new Map();
+    this.maxEntries = options.maxEntries ?? DEFAULT_MAX_STORE_ENTRIES;
   }
 
   /**
@@ -115,6 +168,7 @@ export class PendingAuthStore {
    * @returns {string} state value for IdP redirect
    */
   issue(entry) {
+    enforceMaxEntries(this.entries, this.maxEntries);
     const id = randomBytes(16).toString('hex');
     this.entries.set(id, {
       ...entry,
@@ -157,9 +211,13 @@ export class PendingAuthStore {
  * In-memory authorization code store with PKCE binding.
  */
 export class AuthorizationCodeStore {
-  constructor() {
+  /**
+   * @param {{ maxEntries?: number }} [options]
+   */
+  constructor(options = {}) {
     /** @type {Map<string, Object>} */
     this.codes = new Map();
+    this.maxEntries = options.maxEntries ?? DEFAULT_MAX_STORE_ENTRIES;
   }
 
   /**
@@ -167,6 +225,7 @@ export class AuthorizationCodeStore {
    * @returns {string}
    */
   issue(entry) {
+    enforceMaxEntries(this.codes, this.maxEntries);
     const code = randomBytes(32).toString('base64url');
     this.codes.set(code, {
       ...entry,

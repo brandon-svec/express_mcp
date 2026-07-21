@@ -152,8 +152,8 @@ describe('MCP Auth Middleware', () => {
               enabled: true,
               baseUrl: 'https://example.com',
               callbackUrl: 'https://example.com/mcp/auth/callback',
-              jwtSecret: 'secret',
-              sessionSecret: 'session-secret',
+              jwtSecret: 'secret-must-be-at-least-32-characters',
+              sessionSecret: 'session-secret-at-least-32-chars!!',
               jwtExpiresIn: '7d',
               providers: {
                 github: { clientId: 'x', clientSecret: 'y' }
@@ -162,6 +162,29 @@ describe('MCP Auth Middleware', () => {
           })
         ),
       /sessionStore is required/
+    );
+  });
+
+  it('constructor throws when auth enabled but jwtSecret is too short', () => {
+    assert.throws(
+      () =>
+        new ExpressMcp(
+          getTestExpressMcpOptions({
+            auth: {
+              enabled: true,
+              baseUrl: 'https://example.com',
+              callbackUrl: 'https://example.com/mcp/auth/callback',
+              jwtSecret: 'short',
+              sessionSecret: 'session-secret-at-least-32-chars!!',
+              jwtExpiresIn: '7d',
+              sessionStore: { createPending() {} },
+              providers: {
+                github: { clientId: 'x', clientSecret: 'y' }
+              }
+            }
+          })
+        ),
+      /jwtSecret must be at least 32 characters/
     );
   });
 

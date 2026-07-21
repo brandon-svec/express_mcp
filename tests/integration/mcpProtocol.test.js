@@ -292,7 +292,7 @@ describe('MCP Protocol Functional Tests', () => {
         assert.strictEqual(response.body.jsonrpc, '2.0');
         assert.property(response.body, 'error');
         assert.strictEqual(response.body.error.code, -32603);
-        assert.include(response.body.error.message, 'Unknown operation: invalid');
+        assert.include(response.body.error.message, 'Tool execution failed');
         assert.strictEqual(response.body.id, 9);
       });
     });
@@ -484,7 +484,7 @@ describe('MCP Protocol Functional Tests', () => {
         assert.strictEqual(response.body.jsonrpc, '2.0');
         assert.property(response.body, 'error');
         assert.strictEqual(response.body.error.code, -32603);
-        assert.include(response.body.error.message, 'Internal tool error');
+        assert.include(response.body.error.message, 'Tool execution failed');
         assert.strictEqual(response.body.id, 'error-test');
       });
 

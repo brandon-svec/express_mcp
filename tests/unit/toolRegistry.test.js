@@ -215,9 +215,9 @@ describe('ToolRegistry', () => {
       assert.strictEqual(result, execution);
       assert.strictEqual(result.status, 'error');
       const errorData = result.getErrorData();
-      assert.strictEqual(errorData.error, 'Tool execution failed: Tool execution failed');
+      assert.strictEqual(errorData.error, 'Tool execution failed');
       assert.strictEqual(errorData.errorCode, -32603);
-      assert.property(errorData.errorData, 'stack');
+      assert.notProperty(errorData, 'errorData');
     });
 
     it('should handle string results', async () => {
@@ -449,7 +449,7 @@ describe('ToolRegistry', () => {
       // Check detailed error structure
       assert.property(errorData, 'errorData');
       assert.property(errorData.errorData, 'validationErrors');
-      assert.property(errorData.errorData, 'rejectedValue');
+      assert.notProperty(errorData.errorData, 'rejectedValue');
       assert.isArray(errorData.errorData.validationErrors);
       
       // We expect exactly 4 validation errors for our test data

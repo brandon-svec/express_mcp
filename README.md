@@ -1,31 +1,32 @@
-# Express MCP Module
+# Express MCP
 
-A Node.js module that provides Express Router and middleware for integrating MCP (Model Context Protocol) functionality into existing Express servers. This module allows AI assistants to interact with your API tools through the standardized MCP protocol.
+Mount the [Model Context Protocol](https://modelcontextprotocol.io/) on any Express app so AI clients (Cursor, Claude, and other MCP-compatible tools) can call your APIs — without standing up a separate MCP server.
+
+Register tools against your existing business logic, optionally add OAuth SSO (GitHub/Google), a FlexSearch knowledge base, and an in-process LLM agent. This package ships **routers and middleware only**; your host Express app remains in control of TLS, CORS, body parsers, and rate limits.
 
 ## Features
 
-- **Express Router Integration**: Easy integration into existing Express applications
-- **Tool Registry**: Manage and register custom tools that implement the MCP protocol
-- **Built-in Knowledge Base**: Full-text search and document management powered by FlexSearch
-- **Tool Name Prefixing**: Automatic prefixing to prevent name collisions in multi-service MCP deployments
-- **JSON-RPC 2.0**: Full MCP protocol support with proper error handling
-- **Generic Framework**: Decoupled from specific APIs - bring your own tools and documentation
-- **TypeScript Support**: ES Module with full type definitions
+- **Drop-in MCP on Express** — Mount JSON-RPC MCP endpoints on the app you already run
+- **Your tools, your data** — Register custom tools that wrap existing APIs and services
+- **Optional OAuth SSO** — GitHub/Google login, Bearer JWTs, PKCE, and Dynamic Client Registration for MCP clients
+- **Built-in knowledge base** — Full-text document search via FlexSearch (`kb_search`, `kb_list`, `kb_get`)
+- **Tool name prefixing** — Avoid collisions when multiple MCP services share a client
+- **Optional agent** — Gemini-backed `agent_ask` that can call your registered tools
 
 ## Requirements
 
 - **Node.js**: Version 20 or higher
-- **Express**: Version ^4.18.0 (peer dependency)
+- **Express**: Version ^4.18.0 || ^5.0.0 (peer dependency)
 
 ## Installation
 
 ### From NPM Registry
 
 ```bash
-npm install @express-mcp/express-mcp express
+npm install @brandon-svec/express_mcp express
 ```
 
-**Note**: Express is a peer dependency. Ensure you have Express ^4.18.0 installed in your project.
+**Note**: Express is a peer dependency. Ensure you have Express ^4.18.0 or ^5.0.0 installed in your project.
 
 ### Local Development
 
@@ -48,7 +49,7 @@ npm run example
 
 ```javascript
 import express from 'express';
-import { ExpressMcp, BaseTool } from '@express-mcp/express-mcp';
+import { ExpressMcp, BaseTool } from '@brandon-svec/express_mcp';
 
 // Create Express app
 const app = express();
@@ -87,6 +88,18 @@ app.listen(3000, () => {
   console.log('MCP endpoint: http://localhost:3000/mcp');
 });
 ```
+
+## Host Security Responsibilities
+
+This package mounts routers on **your** Express app. It does not configure CORS, body size limits, rate limiting, Origin/Host checks, or TLS. For internet-facing deployments:
+
+- Prefer `auth.enabled: true` with an `allowedUsers` allowlist (see below and [docs/AUTH.md](docs/AUTH.md)).
+- Set body limits on the host (`express.json({ limit: '...' })`) and add rate limiting (e.g. `express-rate-limit`) on MCP and OAuth routes.
+- Configure CORS explicitly if browsers call your endpoints; do not default to `Access-Control-Allow-Origin: *` for authenticated MCP.
+- Validate `Origin` / `Host` when MCP is reachable from browsers (DNS-rebinding guidance in the MCP HTTP transport).
+- Terminate TLS at your reverse proxy or load balancer.
+
+When auth is disabled, the library logs a startup warning: the MCP surface is unauthenticated.
 
 ## Authentication (OAuth SSO)
 
@@ -141,7 +154,7 @@ Tool handlers receive `context.user` (`sub`, `login`, `email`, `provider`). MCP 
 The main class for managing MCP functionality:
 
 ```javascript
-import { ExpressMcp } from '@express-mcp/express-mcp';
+import { ExpressMcp } from '@brandon-svec/express_mcp';
 
 const expressMcp = new ExpressMcp();
 ```
@@ -301,7 +314,7 @@ expressMcp.toolRegistry.register(new MyTool(), 'my-service');
 Abstract base class for creating MCP tools:
 
 ```javascript
-import { BaseTool } from '@express-mcp/express-mcp';
+import { BaseTool } from '@brandon-svec/express_mcp';
 
 class MyTool extends BaseTool {
   constructor() {
@@ -328,7 +341,7 @@ Express MCP includes a built-in knowledge base system powered by FlexSearch that
 ### Quick Start with Knowledge Base
 
 ```javascript
-import { ExpressMcp } from '@express-mcp/express-mcp';
+import { ExpressMcp } from '@brandon-svec/express_mcp';
 
 // Create ExpressMcp instance with custom description
 const expressMcp = new ExpressMcp({
@@ -588,7 +601,7 @@ The knowledge base uses FlexSearch for powerful search capabilities:
 ```javascript
 import fs from 'fs/promises';
 import path from 'path';
-import { ExpressMcp } from '@express-mcp/express-mcp';
+import { ExpressMcp } from '@brandon-svec/express_mcp';
 
 const expressMcp = new ExpressMcp();
 
@@ -741,4 +754,4 @@ To create a new release:
 
 ## License
 
-UNLICENSED
+MIT

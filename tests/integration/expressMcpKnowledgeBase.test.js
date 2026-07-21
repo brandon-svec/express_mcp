@@ -281,7 +281,11 @@ describe('ExpressMcp Knowledge Base Integration', () => {
         assert.ok(response.body.error);
         // Should be either validation error (-32602) or execution error (-32603)
         assert.ok(response.body.error.code === -32602 || response.body.error.code === -32603);
-        assert.ok(response.body.error.message.includes('required') || response.body.error.message.includes('Validation failed'));
+        assert.ok(
+          response.body.error.message.includes('required') ||
+            response.body.error.message.includes('Validation failed') ||
+            response.body.error.message.includes('Tool execution failed')
+        );
       });
 
       it('should handle tool execution errors', async () => {

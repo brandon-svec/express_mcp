@@ -304,12 +304,15 @@ export class KnowledgeBase {
     let bestPosition = 0;
     let bestScore = 0;
 
+    const escapeRegExp = (value) =>
+      String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
     // Find the position with most search term matches
     for (let i = 0; i < text.length - maxLength; i += 50) {
       const snippet = text.substring(i, i + maxLength);
       let score = 0;
       for (const term of searchTerms) {
-        score += (snippet.match(new RegExp(term, 'g')) || []).length;
+        score += (snippet.match(new RegExp(escapeRegExp(term), 'g')) || []).length;
       }
       if (score > bestScore) {
         bestScore = score;

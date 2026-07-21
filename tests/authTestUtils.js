@@ -11,8 +11,8 @@ import { InMemoryStandaloneSessionStore } from '../src/stores/inMemoryStandalone
 import { getTestExpressMcpOptions } from './config.js';
 
 export const TEST_AUTH = {
-  jwtSecret: 'test-jwt-secret',
-  sessionSecret: 'test-session-secret',
+  jwtSecret: 'test-jwt-secret-at-least-32-chars!!',
+  sessionSecret: 'test-session-secret-at-least-32!!',
   origin: 'http://localhost:3000',
   issuer: 'http://localhost:3000/mcp',
   resourcePath: '/mcp',

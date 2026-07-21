@@ -21,6 +21,7 @@ describe('ExpressMcp agent option', () => {
       enableKnowledgeBase: false,
       agent: {
         enabled: true,
+        allowUnauthenticated: true,
         exposeTool: true,
         systemInstruction: 'You are a test assistant.',
         adapter: new StaticAdapter(),
@@ -41,6 +42,7 @@ describe('ExpressMcp agent option', () => {
       enableKnowledgeBase: false,
       agent: {
         enabled: true,
+        allowUnauthenticated: true,
         exposeTool: false,
         systemInstruction: 'You are a test assistant.',
         adapter: new StaticAdapter(),
@@ -51,11 +53,29 @@ describe('ExpressMcp agent option', () => {
     assert.exists(mcp.getAgent());
   });
 
+  it('requires auth or allowUnauthenticated when agent is enabled', () => {
+    assert.throws(
+      () => new ExpressMcp(getTestExpressMcpOptions({
+        enableKnowledgeBase: false,
+        agent: {
+          enabled: true,
+          systemInstruction: 'You are a test assistant.',
+          adapter: new StaticAdapter(),
+        },
+      })),
+      /agent.enabled requires auth.enabled/,
+    );
+  });
+
   it('requires systemInstruction when agent is enabled', () => {
     assert.throws(
       () => new ExpressMcp(getTestExpressMcpOptions({
         enableKnowledgeBase: false,
-        agent: { enabled: true, adapter: new StaticAdapter() },
+        agent: {
+          enabled: true,
+          allowUnauthenticated: true,
+          adapter: new StaticAdapter(),
+        },
       })),
       /agent.systemInstruction is required/,
     );

@@ -12,6 +12,23 @@ function requireNonEmptyString(value, label) {
   return value.trim();
 }
 
+const MIN_SECRET_LENGTH = 32;
+
+/**
+ * @param {unknown} value
+ * @param {string} label
+ * @returns {string}
+ */
+function requireSecret(value, label) {
+  const secret = requireNonEmptyString(value, label);
+  if (secret.length < MIN_SECRET_LENGTH) {
+    throw new Error(
+      `Auth enabled but ${label} must be at least ${MIN_SECRET_LENGTH} characters.`
+    );
+  }
+  return secret;
+}
+
 /**
  * Validate ExpressMcp auth options when auth is enabled.
  * @param {Object} auth - options.auth from ExpressMcp constructor
@@ -22,8 +39,8 @@ export function validateAuthOptions(auth) {
   }
 
   requireNonEmptyString(auth.callbackUrl, 'callbackUrl');
-  requireNonEmptyString(auth.jwtSecret, 'jwtSecret');
-  requireNonEmptyString(auth.sessionSecret, 'sessionSecret');
+  requireSecret(auth.jwtSecret, 'jwtSecret');
+  requireSecret(auth.sessionSecret, 'sessionSecret');
   requireNonEmptyString(auth.issuer, 'issuer');
   requireNonEmptyString(auth.jwtExpiresIn, 'jwtExpiresIn');
 
@@ -37,6 +54,10 @@ export function validateAuthOptions(auth) {
 
   if (auth.allowedUsers !== undefined && !Array.isArray(auth.allowedUsers)) {
     throw new Error('Auth enabled but allowedUsers must be an array.');
+  }
+
+  if (auth.allowedRedirectUris !== undefined && !Array.isArray(auth.allowedRedirectUris)) {
+    throw new Error('Auth enabled but allowedRedirectUris must be an array.');
   }
 
   normalizeAuthProviders(auth);

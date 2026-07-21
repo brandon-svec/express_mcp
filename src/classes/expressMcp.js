@@ -54,6 +54,8 @@ export class ExpressMcp {
    * @param {Object} [options.agent] - Optional generic LLM agent over the tool registry
    * @param {boolean} [options.agent.enabled=false] - Enable the in-process agent
    * @param {boolean} [options.agent.exposeTool=true] - Register agent_ask MCP tool when enabled
+   * @param {boolean} [options.agent.allowUnauthenticated=false] - Allow agent when auth is disabled (default: require auth)
+   * @param {string[]} [options.agent.toolAllowlist] - If set, agent may only call these tool names
    * @param {string} [options.agent.systemInstruction] - System prompt for the agent
    * @param {import('../agents/modelAdapter.js').ModelAdapter} [options.agent.adapter] - Custom model adapter
    * @param {{ apiKey: string, model: string }} [options.agent.gemini] - Gemini config when adapter omitted
@@ -104,6 +106,10 @@ export class ExpressMcp {
     if (this.options.auth?.enabled) {
       this._initializeAuth();
       this.toolRegistry.register(new SessionTool(this.authManager), this.name);
+    } else {
+      this.logger.warn(
+        'Auth is disabled: MCP endpoints are unauthenticated. Enable options.auth for internet-facing deployments.'
+      );
     }
 
     this.agent = null;
@@ -120,6 +126,13 @@ export class ExpressMcp {
     const agentOpts = this.options.agent;
     if (!agentOpts || agentOpts.enabled !== true) {
       return;
+    }
+
+    const authEnabled = this.options.auth?.enabled === true;
+    if (!authEnabled && agentOpts.allowUnauthenticated !== true) {
+      throw new Error(
+        'agent.enabled requires auth.enabled, or set agent.allowUnauthenticated: true'
+      );
     }
 
     if (typeof agentOpts.systemInstruction !== 'string' || !agentOpts.systemInstruction.trim()) {
@@ -148,14 +161,32 @@ export class ExpressMcp {
 
     const exposeTool = agentOpts.exposeTool !== false;
 
+    const excludeTools = new Set(exposeTool ? ['agent_ask'] : []);
+    excludeTools.add('session');
+    if (this.name) {
+      excludeTools.add(`${this.name}_session`);
+      if (exposeTool) {
+        excludeTools.add(`${this.name}_agent_ask`);
+      }
+    }
+
+    let toolAllowlist;
+    if (agentOpts.toolAllowlist !== undefined) {
+      if (!Array.isArray(agentOpts.toolAllowlist)) {
+        throw new Error('agent.toolAllowlist must be an array of tool names when provided');
+      }
+      toolAllowlist = agentOpts.toolAllowlist;
+    }
+
     this.agent = new Agent({
       adapter,
       toolRegistry: this.toolRegistry,
       systemInstruction: agentOpts.systemInstruction,
       history,
       maxToolRounds,
-      excludeTools: exposeTool ? ['agent_ask'] : [],
-      requireUser: this.options.auth?.enabled === true,
+      excludeTools: [...excludeTools],
+      toolAllowlist,
+      requireUser: authEnabled,
       logger: this.logger,
     });
 
@@ -197,9 +228,13 @@ export class ExpressMcp {
       issuer: auth.issuer,
       resourcePath: auth.resourcePath,
       allowedUsers: auth.allowedUsers || [],
+      allowedRedirectUris: auth.allowedRedirectUris || [],
       loginStateExpiresIn: auth.loginStateExpiresIn,
       onTokenIssued: auth.onTokenIssued,
       postLoginRedirectUrl: auth.postLoginRedirectUrl,
+      showTokenOnSuccessPage: auth.showTokenOnSuccessPage === true,
+      enableDebugEndpoint: auth.enableDebugEndpoint === true,
+      enableLoginUrlEndpoint: auth.enableLoginUrlEndpoint === true,
       sessionStore: auth.sessionStore,
       logger: this.logger
     });
@@ -300,6 +335,10 @@ export class ExpressMcp {
     const mcpPath = options.mcpPath || '/mcp';
 
     if (!this.authManager) {
+      this.logger.warn(
+        { mcpPath },
+        'httpRouter mounted without auth: MCP endpoints are unauthenticated'
+      );
       const router = Router();
       router.use(mcpPath, this.router());
       return router;
@@ -529,6 +568,7 @@ export class ExpressMcp {
   router() {
     const router = Router();
     const sessions = new Map();
+    const maxSessions = 1000;
 
     if (this.authManager) {
       for (const middleware of this.authManager.protectedMiddleware()) {
@@ -565,6 +605,16 @@ export class ExpressMcp {
           sessionIdGenerator: () => randomUUID(),
           enableJsonResponse: true,
           onsessioninitialized: (sid) => {
+            while (sessions.size >= maxSessions) {
+              const oldestId = sessions.keys().next().value;
+              const oldest = sessions.get(oldestId);
+              sessions.delete(oldestId);
+              try {
+                oldest?.transport?.close?.();
+              } catch {
+                // ignore close errors during eviction
+              }
+            }
             sessions.set(sid, sessionEntry);
           }
         });
@@ -588,7 +638,7 @@ export class ExpressMcp {
         if (!res.headersSent) {
           res.status(500).json({
             jsonrpc: '2.0',
-            error: { code: -32603, message: error.message },
+            error: { code: -32603, message: 'Internal server error' },
             id: req.body?.id ?? null
           });
         }
@@ -622,7 +672,7 @@ export class ExpressMcp {
         if (!res.headersSent) {
           res.status(500).json({
             jsonrpc: '2.0',
-            error: { code: -32603, message: error.message }
+            error: { code: -32603, message: 'Internal server error' }
           });
         }
       }

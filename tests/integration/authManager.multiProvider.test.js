@@ -82,8 +82,9 @@ describe('AuthManager multi-provider', () => {
     assert.include(res.headers.location, '/mcp/auth/login/github');
   });
 
-  it('GET /debug lists all enabled providers', async () => {
+  it('GET /debug lists all enabled providers when enabled', async () => {
     const auth = createMultiAuthManager();
+    auth.enableDebugEndpoint = true;
     const app = express();
     app.use('/mcp/auth', auth.createAuthRouter());
 
@@ -91,5 +92,14 @@ describe('AuthManager multi-provider', () => {
     assert.strictEqual(res.status, 200);
     assert.deepEqual(res.body.enabledProviders, ['github', 'google']);
     assert.lengthOf(res.body.providers, 2);
+  });
+
+  it('GET /debug is absent by default', async () => {
+    const auth = createMultiAuthManager();
+    const app = express();
+    app.use('/mcp/auth', auth.createAuthRouter());
+
+    const res = await request(app).get('/mcp/auth/debug');
+    assert.strictEqual(res.status, 404);
   });
 });

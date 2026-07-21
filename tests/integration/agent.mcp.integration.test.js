@@ -57,6 +57,7 @@ async function createAgentMcpApp (agentOptions, registerEcho = false) {
     enableKnowledgeBase: false,
     agent: {
       enabled: true,
+      allowUnauthenticated: true,
       systemInstruction: 'test assistant',
       maxToolRounds: 8,
       ...agentOptions,
@@ -200,14 +201,9 @@ describe('Agent MCP integration', () => {
     });
 
     assert.strictEqual(response.status, 200);
-    assert.deepStrictEqual(response.body, {
-      jsonrpc: '2.0',
-      error: {
-        code: -32603,
-        message: 'MCP error -32603: Tool execution failed: prompt is required and must be a non-empty string',
-        data: response.body.error.data,
-      },
-      id: 5,
-    });
+    assert.strictEqual(response.body.jsonrpc, '2.0');
+    assert.strictEqual(response.body.id, 5);
+    assert.strictEqual(response.body.error.code, -32603);
+    assert.strictEqual(response.body.error.message, 'MCP error -32603: Tool execution failed');
   });
 });
