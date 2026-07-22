@@ -1,0 +1,95 @@
+{
+  "name": "@brandon-svec/express_mcp",
+  "version": "0.0.9",
+  "description": "Add MCP tools, OAuth, and a knowledge base to any Express app so AI clients can call your APIs",
+  "main": "src/index.js",
+  "type": "module",
+  "engines": {
+    "node": ">=20",
+    "npm": ">=10"
+  },
+  "files": [
+    "src",
+    "docs/AUTH.md",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "example": "node examples/example.js",
+    "example:auth": "node examples/example-with-auth.js",
+    "dev": "nodemon examples/example.js",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "test": "npm run test:unit && npm run test:integration",
+    "test:unit": "mocha --exit \"tests/unit/**/*.js\" --bail",
+    "test:integration": "mocha --exit \"tests/integration/**/*.js\" --bail",
+    "pretest:live": "node scripts/assert-live-gemini-config.js",
+    "test:live": "mocha --config .mocharc.live.cjs",
+    "test:coverage": "c8 --reporter=lcov npm test",
+    "coverage": "c8 npm test",
+    "coverage:unit": "c8 npm run test:unit",
+    "coverage:integration": "c8 npm run test:integration",
+    "coverage:report": "c8 report --reporter lcov --reporter=text"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/brandon-svec/express_mcp.git"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "express",
+    "oauth",
+    "sse",
+    "tools",
+    "cursor",
+    "ai-agents",
+    "knowledge-base"
+  ],
+  "author": "Brandon Svec",
+  "license": "MIT",
+  "publishConfig": {
+    "access": "restricted",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "ajv": "^8.17.1",
+    "ajv-formats": "^3.0.1",
+    "express-session": "^1.19.0",
+    "flexsearch": "^0.8.205",
+    "jsonwebtoken": "^9.0.3",
+    "pino": "^9.9.0"
+  },
+  "peerDependencies": {
+    "@google/genai": "^1.0.0",
+    "express": "^4.18.0 || ^5.0.0",
+    "ioredis": "^5.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@google/genai": {
+      "optional": true
+    },
+    "ioredis": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.33.0",
+    "@google/genai": "^1.52.0",
+    "ioredis": "^5.6.1",
+    "c8": "^8.0.1",
+    "chai": "^4.3.10",
+    "eslint": "^9.33.0",
+    "express": "^5.2.1",
+    "globals": "^16.3.0",
+    "mocha": "^11.7.6",
+    "nodemon": "^3.1.10",
+    "supertest": "^6.3.3",
+    "timekeeper": "^2.3.1"
+  },
+  "overrides": {
+    "serialize-javascript": "^7.0.5",
+    "diff": "^8.0.3"
+  }
+}

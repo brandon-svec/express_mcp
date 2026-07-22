@@ -1,0 +1,18 @@
+{
+  "watch": [
+    "src/**/*.js",
+    "*.json"
+  ],
+  "ignore": [
+    "node_modules/**/*",
+    "dist/**/*",
+    "swagger-spec.json",
+    ".git/**/*"
+  ],
+  "ext": "js,json",
+  "env": {
+    "NODE_ENV": "development"
+  },
+  "verbose": true,
+  "delay": 1000
+}
