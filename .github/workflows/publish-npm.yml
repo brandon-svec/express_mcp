@@ -34,4 +34,4 @@ jobs:
         run: |
           npmrc="${NPM_CONFIG_USERCONFIG:-$HOME/.npmrc}"
           sed -i '/_authToken/d' "$npmrc"
-          npm publish
+          npm publish --access public
