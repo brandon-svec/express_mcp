@@ -38,6 +38,9 @@ function requireNonEmptyString(value, label) {
  * @param {Function} [input.onTokenIssued] - Callback after standalone OAuth (user, jwt, context)
  * @param {string} [input.postLoginRedirectUrl] - HTTP redirect after standalone OAuth (e.g. https://t.me/BotName)
  * @param {Object} [input.sessionStore] - Standalone session store (InMemory or Redis)
+ * @param {string[]} [input.allowedRedirectUris] - Exact-match redirect URIs allowed for DCR
+ * @param {string[]} [input.trustedRedirectHosts] - Extra https hosts merged with library defaults
+ * @param {boolean} [input.allowAnyHttpsRedirect] - When true, accept any https redirect URI
  * @returns {{ enabled: false } | Object} Normalized auth options for ExpressMcp
  */
 export function buildAuthOptions(input = {}) {
@@ -88,6 +91,12 @@ export function buildAuthOptions(input = {}) {
   }
   if (Array.isArray(input.allowedRedirectUris)) {
     auth.allowedRedirectUris = input.allowedRedirectUris;
+  }
+  if (Array.isArray(input.trustedRedirectHosts)) {
+    auth.trustedRedirectHosts = input.trustedRedirectHosts;
+  }
+  if (input.allowAnyHttpsRedirect === true) {
+    auth.allowAnyHttpsRedirect = true;
   }
   if (input.showTokenOnSuccessPage === true) {
     auth.showTokenOnSuccessPage = true;

@@ -127,4 +127,16 @@ describe('buildAuthOptions', () => {
 
     assert.strictEqual(auth.postLoginRedirectUrl, 'https://t.me/echoharvest_bot');
   });
+
+  it('forwards trustedRedirectHosts and allowAnyHttpsRedirect', () => {
+    const auth = buildAuthOptions(
+      validInput({
+        trustedRedirectHosts: ['newagent.example'],
+        allowAnyHttpsRedirect: true
+      })
+    );
+
+    assert.deepStrictEqual(auth.trustedRedirectHosts, ['newagent.example']);
+    assert.strictEqual(auth.allowAnyHttpsRedirect, true);
+  });
 });

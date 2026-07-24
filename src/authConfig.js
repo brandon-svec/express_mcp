@@ -60,6 +60,24 @@ export function validateAuthOptions(auth) {
     throw new Error('Auth enabled but allowedRedirectUris must be an array.');
   }
 
+  if (auth.trustedRedirectHosts !== undefined) {
+    if (!Array.isArray(auth.trustedRedirectHosts)) {
+      throw new Error('Auth enabled but trustedRedirectHosts must be an array.');
+    }
+    for (const host of auth.trustedRedirectHosts) {
+      if (typeof host !== 'string' || !host.trim()) {
+        throw new Error('Auth enabled but trustedRedirectHosts must contain non-empty strings.');
+      }
+    }
+  }
+
+  if (
+    auth.allowAnyHttpsRedirect !== undefined &&
+    typeof auth.allowAnyHttpsRedirect !== 'boolean'
+  ) {
+    throw new Error('Auth enabled but allowAnyHttpsRedirect must be a boolean.');
+  }
+
   normalizeAuthProviders(auth);
 }
 

@@ -154,7 +154,7 @@ describe('MCP OAuth authorization server', () => {
     assert.deepEqual(res.body.redirect_uris, ['cursor://anysphere.cursor-mcp/oauth/callback']);
   });
 
-  it('rejects non-loopback http(s) redirect_uris unless allowlisted', async () => {
+  it('rejects unknown remote https redirect_uris unless allowlisted or allowAnyHttps', async () => {
     const app = createOAuthTestApp(createTestAuthManager());
     const rejected = await request(app)
       .post('/mcp/register')
@@ -179,6 +179,43 @@ describe('MCP OAuth authorization server', () => {
         response_types: ['code']
       });
     assert.strictEqual(ok.status, 201);
+
+    const anyHttps = createOAuthTestApp(
+      createTestAuthManager({ allowAnyHttpsRedirect: true })
+    );
+    const anyOk = await request(anyHttps)
+      .post('/mcp/register')
+      .send({
+        client_name: 'AnyHttps',
+        redirect_uris: ['https://evil.example/cb'],
+        grant_types: ['authorization_code'],
+        response_types: ['code']
+      });
+    assert.strictEqual(anyOk.status, 201);
+  });
+
+  it('accepts Cursor-style multi-URI DCR with trusted https host', async () => {
+    const app = createOAuthTestApp(createTestAuthManager());
+    const res = await request(app)
+      .post('/mcp/register')
+      .send({
+        client_name: 'Cursor',
+        redirect_uris: [
+          'cursor://anysphere.cursor-mcp/oauth/callback',
+          'http://localhost:8787/callback',
+          'https://www.cursor.com/agents/mcp/oauth/callback'
+        ],
+        grant_types: ['authorization_code'],
+        response_types: ['code']
+      });
+
+    assert.strictEqual(res.status, 201);
+    assert.property(res.body, 'client_id');
+    assert.deepEqual(res.body.redirect_uris, [
+      'cursor://anysphere.cursor-mcp/oauth/callback',
+      'http://localhost:8787/callback',
+      'https://www.cursor.com/agents/mcp/oauth/callback'
+    ]);
   });
 
   it('returns protected resource and authorization server metadata', async () => {

@@ -229,6 +229,8 @@ export class ExpressMcp {
       resourcePath: auth.resourcePath,
       allowedUsers: auth.allowedUsers || [],
       allowedRedirectUris: auth.allowedRedirectUris || [],
+      trustedRedirectHosts: auth.trustedRedirectHosts || [],
+      allowAnyHttpsRedirect: auth.allowAnyHttpsRedirect === true,
       loginStateExpiresIn: auth.loginStateExpiresIn,
       onTokenIssued: auth.onTokenIssued,
       postLoginRedirectUrl: auth.postLoginRedirectUrl,
