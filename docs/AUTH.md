@@ -107,7 +107,10 @@ Copy `examples/.env.example` to `examples/.env` and run `npm run example:auth`.
 ## OAuth provider setup
 
 1. Register redirect URI: `{baseUrl}/mcp/auth/callback`
-2. For Cursor MCP: discovery uses `GET /.well-known/oauth-protected-resource/mcp` and `GET /mcp/.well-known/oauth-authorization-server`
+2. For Cursor MCP discovery (primary then defensive):
+   - `GET /.well-known/oauth-protected-resource/mcp` (RFC 9728 PRM)
+   - `GET /.well-known/oauth-authorization-server/mcp` (RFC 8414 path-based AS metadata — **required** for path issuers)
+   - Also served: `GET /mcp/.well-known/oauth-authorization-server`, plus OIDC aliases `/.well-known/openid-configuration/mcp` and `/mcp/.well-known/openid-configuration`
 3. Use separate OAuth clients for dev and production when possible
 
 ## HTTP routes (when auth enabled)

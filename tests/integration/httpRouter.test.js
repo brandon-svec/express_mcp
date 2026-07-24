@@ -38,6 +38,21 @@ describe('ExpressMcp.httpRouter', () => {
     const prm = await request(app).get('/.well-known/oauth-protected-resource/mcp');
     assert.strictEqual(prm.status, 200);
 
+    // Load-bearing: RFC 8414 path-based AS metadata (Cursor after PRM)
+    const pathAs = await request(app).get('/.well-known/oauth-authorization-server/mcp');
+    assert.strictEqual(pathAs.status, 200);
+    assert.strictEqual(pathAs.body.issuer, TEST_AUTH.issuer);
+    assert.strictEqual(pathAs.body.registration_endpoint, `${TEST_AUTH.issuer}/register`);
+
+    // Defensive OIDC aliases
+    const pathOidc = await request(app).get('/.well-known/openid-configuration/mcp');
+    assert.strictEqual(pathOidc.status, 200);
+    assert.deepEqual(pathOidc.body, pathAs.body);
+
+    const mcpOidc = await request(app).get('/mcp/.well-known/openid-configuration');
+    assert.strictEqual(mcpOidc.status, 200);
+    assert.deepEqual(mcpOidc.body, pathAs.body);
+
     const registerBody = {
       client_name: 'Cursor',
       redirect_uris: ['cursor://callback'],
@@ -61,5 +76,22 @@ describe('ExpressMcp.httpRouter', () => {
     const login = await request(app).get('/mcp/auth/login');
     assert.strictEqual(login.status, 302);
     assert.include(login.headers.location, '/mcp/auth/login/github');
+  });
+
+  it('exposes RFC 8414 path-based AS metadata via mcpOAuthRouter', async () => {
+    const expressMcp = createTestAuthMcp();
+
+    const app = express();
+    app.use(express.json());
+    app.use(expressMcp.mcpOAuthRouter());
+
+    const pathAs = await request(app).get('/.well-known/oauth-authorization-server/mcp');
+    assert.strictEqual(pathAs.status, 200);
+    assert.strictEqual(pathAs.body.issuer, TEST_AUTH.issuer);
+    assert.strictEqual(pathAs.body.registration_endpoint, `${TEST_AUTH.issuer}/register`);
+
+    const pathOidc = await request(app).get('/.well-known/openid-configuration/mcp');
+    assert.strictEqual(pathOidc.status, 200);
+    assert.deepEqual(pathOidc.body, pathAs.body);
   });
 });

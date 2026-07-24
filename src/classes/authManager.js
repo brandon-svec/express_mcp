@@ -717,14 +717,40 @@ export class AuthManager {
   }
 
   /**
+   * RFC 8414 path-based AS metadata (+ OIDC aliases) at site origin.
+   * For issuer `https://host/mcp`, clients look up
+   * `/.well-known/oauth-authorization-server/mcp` (load-bearing for Cursor).
+   * OIDC insert-path aliases are defensive fallbacks.
+   * @param {import('express').Router} router
+   * @private
+   */
+  _registerPathBasedAuthorizationServerMetadataRoutes(router) {
+    const resourceSuffix = this.resourcePath.replace(/^\//, '');
+    if (!resourceSuffix) {
+      return;
+    }
+
+    const sendAsMetadata = (_req, res) => {
+      res.json(buildAuthorizationServerMetadata(this.issuer));
+    };
+
+    router.get(`/.well-known/oauth-authorization-server/${resourceSuffix}`, sendAsMetadata);
+    router.get(`/.well-known/openid-configuration/${resourceSuffix}`, sendAsMetadata);
+  }
+
+  /**
    * MCP OAuth authorization server routes (mount under /mcp).
    * @param {import('express').Router} router
    * @private
    */
   _registerAuthorizationServerRoutes(router) {
-    router.get('/.well-known/oauth-authorization-server', (_req, res) => {
+    const sendAsMetadata = (_req, res) => {
       res.json(buildAuthorizationServerMetadata(this.issuer));
-    });
+    };
+
+    router.get('/.well-known/oauth-authorization-server', sendAsMetadata);
+    // Defensive OIDC alias; under mcpPath becomes /mcp/.well-known/openid-configuration
+    router.get('/.well-known/openid-configuration', sendAsMetadata);
 
     router.post('/register', (req, res) => {
       const { redirect_uris: redirectUris, client_name: clientName, grant_types: grantTypes, response_types: responseTypes } = req.body;
@@ -905,6 +931,7 @@ export class AuthManager {
     router.use(express.urlencoded({ extended: false }));
     router.use(this._sessionMiddleware(sessionOptions));
     this._registerProtectedResourceMetadataRoute(router);
+    this._registerPathBasedAuthorizationServerMetadataRoutes(router);
     this._registerAuthorizationServerRoutes(router);
     return router;
   }
@@ -1220,6 +1247,7 @@ export class AuthManager {
     root.use(this._sessionMiddleware(sessionOptions));
 
     this._registerProtectedResourceMetadataRoute(root);
+    this._registerPathBasedAuthorizationServerMetadataRoutes(root);
 
     // Some MCP clients (e.g. Cursor) still call OAuth AS routes at site root even when
     // issuer is under mcpPath. Canonical routes remain under mcpPath; these are aliases.

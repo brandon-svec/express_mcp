@@ -191,6 +191,21 @@ describe('MCP OAuth authorization server', () => {
     const asm = await request(app).get('/mcp/.well-known/oauth-authorization-server');
     assert.strictEqual(asm.status, 200);
     assert.strictEqual(asm.body.registration_endpoint, `${TEST_AUTH.issuer}/register`);
+
+    // Load-bearing RFC 8414 path (Cursor after PRM)
+    const pathAs = await request(app).get('/.well-known/oauth-authorization-server/mcp');
+    assert.strictEqual(pathAs.status, 200);
+    assert.strictEqual(pathAs.body.issuer, TEST_AUTH.issuer);
+    assert.deepEqual(pathAs.body, asm.body);
+
+    // Defensive OIDC aliases
+    const pathOidc = await request(app).get('/.well-known/openid-configuration/mcp');
+    assert.strictEqual(pathOidc.status, 200);
+    assert.deepEqual(pathOidc.body, asm.body);
+
+    const mcpOidc = await request(app).get('/mcp/.well-known/openid-configuration');
+    assert.strictEqual(mcpOidc.status, 200);
+    assert.deepEqual(mcpOidc.body, asm.body);
   });
 
   it('returns WWW-Authenticate on unauthorized MCP requests', async () => {
