@@ -9,6 +9,7 @@ import { InvalidTokenError } from '@modelcontextprotocol/sdk/server/auth/errors.
 import { getOAuthProtectedResourceMetadataUrl } from '@modelcontextprotocol/sdk/server/auth/router.js';
 import {
   AuthorizationCodeStore,
+  DEFAULT_TRUSTED_REDIRECT_HOSTS,
   OAuthClientRegistry,
   PendingAuthStore,
   buildAuthorizationServerMetadata,
@@ -101,7 +102,9 @@ export class AuthManager {
    * @param {string} [options.loginStateExpiresIn='10m'] - TTL for pending standalone login sessions
    * @param {function(user: Object, jwt: string, context: Object): (void|Promise<void>)} [options.onTokenIssued]
    * @param {string} [options.postLoginRedirectUrl] - Redirect browser after standalone OAuth (not MCP PKCE flow)
-   * @param {string[]} [options.allowedRedirectUris] - Extra http(s) redirect URIs allowed for DCR
+   * @param {string[]} [options.allowedRedirectUris] - Extra exact redirect URIs allowed for DCR
+   * @param {string[]} [options.trustedRedirectHosts] - Extra https hosts merged with library defaults
+   * @param {boolean} [options.allowAnyHttpsRedirect=false] - When true, accept any https redirect URI
    * @param {boolean} [options.showTokenOnSuccessPage=false] - Embed Bearer JWT in standalone success HTML (local dev only)
    * @param {boolean} [options.enableDebugEndpoint=false] - Mount GET /auth/debug
    * @param {boolean} [options.enableLoginUrlEndpoint=false] - Mount POST /auth/login-url
@@ -128,6 +131,13 @@ export class AuthManager {
     this.allowedRedirectUris = Array.isArray(options.allowedRedirectUris)
       ? options.allowedRedirectUris.filter((u) => typeof u === 'string')
       : [];
+    this.trustedRedirectHosts = new Set([
+      ...DEFAULT_TRUSTED_REDIRECT_HOSTS,
+      ...(Array.isArray(options.trustedRedirectHosts) ? options.trustedRedirectHosts : [])
+        .filter((h) => typeof h === 'string' && h.trim())
+        .map((h) => h.trim().toLowerCase())
+    ]);
+    this.allowAnyHttpsRedirect = options.allowAnyHttpsRedirect === true;
     this.showTokenOnSuccessPage = options.showTokenOnSuccessPage === true;
     this.enableDebugEndpoint = options.enableDebugEndpoint === true;
     this.enableLoginUrlEndpoint = options.enableLoginUrlEndpoint === true;
@@ -770,13 +780,18 @@ export class AuthManager {
       }
 
       const rejected = redirectUris.filter(
-        (uri) => !isRedirectUriAllowedByPolicy(uri, this.allowedRedirectUris)
+        (uri) =>
+          !isRedirectUriAllowedByPolicy(uri, {
+            allowedRedirectUris: this.allowedRedirectUris,
+            trustedHosts: this.trustedRedirectHosts,
+            allowAnyHttps: this.allowAnyHttpsRedirect
+          })
       );
       if (rejected.length > 0) {
         return res.status(400).json({
           error: 'invalid_redirect_uri',
           error_description:
-            'redirect_uris must be loopback http(s), a private-use URI scheme, or listed in auth.allowedRedirectUris'
+            'redirect_uris must be loopback http(s), a private-use URI scheme, an https host in the trusted agent list, or listed in auth.allowedRedirectUris (set auth.allowAnyHttpsRedirect to accept any https)'
         });
       }
 

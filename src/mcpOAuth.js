@@ -3,6 +3,25 @@ import { createHash, randomBytes } from 'crypto';
 const DEFAULT_MAX_STORE_ENTRIES = 10_000;
 
 /**
+ * Hosts whose https redirect URIs are accepted by default during DCR.
+ * Exact hostname match only (via URL.hostname) — no suffix matching.
+ */
+export const DEFAULT_TRUSTED_REDIRECT_HOSTS = new Set([
+  'cursor.com',
+  'www.cursor.com',
+  'vscode.dev',
+  'insiders.vscode.dev'
+]);
+
+/**
+ * @param {string} host
+ * @returns {boolean}
+ */
+function isLoopbackHost(host) {
+  return host === '127.0.0.1' || host === 'localhost' || host === '::1';
+}
+
+/**
  * @param {string} codeVerifier
  * @param {string} codeChallenge
  * @returns {boolean}
@@ -19,13 +38,26 @@ export function verifyPkceChallenge(codeVerifier, codeChallenge) {
 }
 
 /**
- * Whether a redirect_uri is allowed under the default DCR policy.
- * Allows loopback http(s), private-use URI schemes, and exact matches in allowedRedirectUris.
+ * Whether a redirect_uri is allowed under the DCR policy.
+ *
+ * Default: loopback http(s), private-use schemes, https on trusted agent hosts,
+ * and exact matches in allowedRedirectUris. Set allowAnyHttps to accept any https
+ * (opt-out of the host allowlist; public cleartext http remains rejected).
+ *
  * @param {string} uri
- * @param {string[]} [allowedRedirectUris=[]]
+ * @param {Object} [options]
+ * @param {string[]} [options.allowedRedirectUris=[]] - Exact-match URI allowlist
+ * @param {Set<string>|Iterable<string>} [options.trustedHosts=DEFAULT_TRUSTED_REDIRECT_HOSTS]
+ * @param {boolean} [options.allowAnyHttps=false] - When true, allow any https host
  * @returns {boolean}
  */
-export function isRedirectUriAllowedByPolicy(uri, allowedRedirectUris = []) {
+export function isRedirectUriAllowedByPolicy(uri, options = {}) {
+  const {
+    allowedRedirectUris = [],
+    trustedHosts = DEFAULT_TRUSTED_REDIRECT_HOSTS,
+    allowAnyHttps = false
+  } = options;
+
   if (typeof uri !== 'string' || !uri.trim()) {
     return false;
   }
@@ -40,9 +72,25 @@ export function isRedirectUriAllowedByPolicy(uri, allowedRedirectUris = []) {
     return false;
   }
 
-  if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
-    const host = parsed.hostname.toLowerCase();
-    return host === '127.0.0.1' || host === 'localhost' || host === '::1';
+  const host = parsed.hostname.toLowerCase();
+  const trusted =
+    trustedHosts instanceof Set
+      ? trustedHosts
+      : new Set(
+          [...(trustedHosts || [])]
+            .filter((h) => typeof h === 'string')
+            .map((h) => h.toLowerCase())
+        );
+
+  if (parsed.protocol === 'http:') {
+    return isLoopbackHost(host);
+  }
+
+  if (parsed.protocol === 'https:') {
+    if (allowAnyHttps === true) {
+      return true;
+    }
+    return isLoopbackHost(host) || trusted.has(host);
   }
 
   // Private-use / custom schemes (e.g. cursor://...)

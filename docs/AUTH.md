@@ -49,12 +49,16 @@ app.listen(3000);
 | `onTokenIssued` | No | `async (user, jwt, context) => {}` after standalone OAuth (not MCP PKCE) |
 | `postLoginRedirectUrl` | No | Browser redirect after standalone OAuth (e.g. `https://t.me/YourBot`) |
 | `sessionStore` | Yes | `InMemoryStandaloneSessionStore` or `RedisStandaloneSessionStore` — pending + active standalone sessions; PKCE Bearer tokens keyed by JWT `jti` |
-| `allowedRedirectUris` | No | Extra http(s) redirect URIs allowed for Dynamic Client Registration (loopback + custom schemes allowed by default) |
+| `allowedRedirectUris` | No | Exact-match redirect URIs allowed for Dynamic Client Registration |
+| `trustedRedirectHosts` | No | Extra https hostnames merged with library defaults (`cursor.com`, `www.cursor.com`, `vscode.dev`, `insiders.vscode.dev`) |
+| `allowAnyHttpsRedirect` | No | When `true`, accept **any** https redirect URI (disables the https host allowlist). Off by default — trades away anti-phishing protection for open DCR |
 | `showTokenOnSuccessPage` | No | When `true`, embed Bearer JWT in standalone success HTML (local dev only; default `false`) |
 | `enableDebugEndpoint` | No | When `true`, mount `GET …/auth/debug` (default `false`) |
 | `enableLoginUrlEndpoint` | No | When `true`, mount `POST …/auth/login-url` (default `false`) |
 
 `jwtSecret` and `sessionSecret` must be at least 32 characters.
+
+**DCR redirect URI policy (secure by default):** loopback `http`/`https`, private-use schemes (e.g. `cursor://`), and `https` on library trusted agent hosts are allowed. Unknown remote `https` hosts are rejected unless listed via `trustedRedirectHosts`, matched exactly in `allowedRedirectUris`, or `allowAnyHttpsRedirect` is `true`. Public cleartext `http` is always rejected. Host matching uses `URL.hostname` (exact domain; suffix bypasses like `cursor.com.attacker.example` are rejected).
 
 ### Derived values (normally do not set manually)
 

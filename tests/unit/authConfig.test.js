@@ -92,4 +92,33 @@ describe('validateAuthOptions', () => {
       /google clientSecret is missing or empty/
     );
   });
+
+  it('accepts trustedRedirectHosts and allowAnyHttpsRedirect', () => {
+    assert.doesNotThrow(() =>
+      validateAuthOptions(
+        validAuth({
+          trustedRedirectHosts: ['newagent.example'],
+          allowAnyHttpsRedirect: true
+        })
+      )
+    );
+  });
+
+  it('throws when trustedRedirectHosts is not an array of non-empty strings', () => {
+    assert.throws(
+      () => validateAuthOptions(validAuth({ trustedRedirectHosts: 'cursor.com' })),
+      /trustedRedirectHosts must be an array/
+    );
+    assert.throws(
+      () => validateAuthOptions(validAuth({ trustedRedirectHosts: [''] })),
+      /trustedRedirectHosts must contain non-empty strings/
+    );
+  });
+
+  it('throws when allowAnyHttpsRedirect is not a boolean', () => {
+    assert.throws(
+      () => validateAuthOptions(validAuth({ allowAnyHttpsRedirect: 'yes' })),
+      /allowAnyHttpsRedirect must be a boolean/
+    );
+  });
 });
