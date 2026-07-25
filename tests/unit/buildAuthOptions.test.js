@@ -121,11 +121,11 @@ describe('buildAuthOptions', () => {
   it('preserves postLoginRedirectUrl for standalone OAuth', () => {
     const auth = buildAuthOptions(
       validInput({
-        postLoginRedirectUrl: 'https://t.me/echoharvest_bot'
+        postLoginRedirectUrl: 'https://t.me/example_bot'
       })
     );
 
-    assert.strictEqual(auth.postLoginRedirectUrl, 'https://t.me/echoharvest_bot');
+    assert.strictEqual(auth.postLoginRedirectUrl, 'https://t.me/example_bot');
   });
 
   it('forwards trustedRedirectHosts and allowAnyHttpsRedirect', () => {

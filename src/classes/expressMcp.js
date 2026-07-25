@@ -236,7 +236,6 @@ export class ExpressMcp {
       postLoginRedirectUrl: auth.postLoginRedirectUrl,
       showTokenOnSuccessPage: auth.showTokenOnSuccessPage === true,
       enableDebugEndpoint: auth.enableDebugEndpoint === true,
-      enableLoginUrlEndpoint: auth.enableLoginUrlEndpoint === true,
       sessionStore: auth.sessionStore,
       logger: this.logger
     });

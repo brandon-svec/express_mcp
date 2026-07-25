@@ -107,7 +107,6 @@ export class AuthManager {
    * @param {boolean} [options.allowAnyHttpsRedirect=false] - When true, accept any https redirect URI
    * @param {boolean} [options.showTokenOnSuccessPage=false] - Embed Bearer JWT in standalone success HTML (local dev only)
    * @param {boolean} [options.enableDebugEndpoint=false] - Mount GET /auth/debug
-   * @param {boolean} [options.enableLoginUrlEndpoint=false] - Mount POST /auth/login-url
    * @param {import('../stores/inMemoryStandaloneSessionStore.js').InMemoryStandaloneSessionStore|import('../stores/redisStandaloneSessionStore.js').RedisStandaloneSessionStore} options.sessionStore
    */
   constructor(options) {
@@ -140,7 +139,6 @@ export class AuthManager {
     this.allowAnyHttpsRedirect = options.allowAnyHttpsRedirect === true;
     this.showTokenOnSuccessPage = options.showTokenOnSuccessPage === true;
     this.enableDebugEndpoint = options.enableDebugEndpoint === true;
-    this.enableLoginUrlEndpoint = options.enableLoginUrlEndpoint === true;
 
     if (!options.issuer || typeof options.issuer !== 'string' || !options.issuer.trim()) {
       throw new Error('issuer is required for MCP OAuth authorization server');
@@ -991,51 +989,49 @@ export class AuthManager {
       res.send(this._renderLoginPicker(pendingQuery));
     });
 
-    if (this.enableLoginUrlEndpoint) {
-      router.post('/login-url', async (req, res) => {
-        const { provider, context } = req.body || {};
-        let sanitized;
-        try {
-          sanitized = sanitizeHostContext(context);
-        } catch (err) {
-          return res.status(400).json({
-            error: 'invalid_request',
-            error_description: err.message
-          });
-        }
-
-        const oauthProvider =
-          typeof provider === 'string' && this.enabledProviders.includes(provider)
-            ? provider
-            : this.enabledProviders[0];
-
-        const sessionId = randomUUID();
-        try {
-          await this.sessionStore.createPending(
-            sessionId,
-            sanitized,
-            oauthProvider,
-            this._pendingSessionTtlSeconds()
-          );
-        } catch (err) {
-          return res.status(400).json({
-            error: 'invalid_request',
-            error_description: err.message
-          });
-        }
-
-        const loginUrl = new URL(
-          `${this.origin}${this.authPath}/login/${oauthProvider}`,
-          this.origin
-        );
-        loginUrl.searchParams.set('session_id', sessionId);
-
-        return res.json({
-          session_id: sessionId,
-          login_url: loginUrl.toString()
+    router.post('/login-url', async (req, res) => {
+      const { provider, context } = req.body || {};
+      let sanitized;
+      try {
+        sanitized = sanitizeHostContext(context);
+      } catch (err) {
+        return res.status(400).json({
+          error: 'invalid_request',
+          error_description: err.message
         });
+      }
+
+      const oauthProvider =
+        typeof provider === 'string' && this.enabledProviders.includes(provider)
+          ? provider
+          : this.enabledProviders[0];
+
+      const sessionId = randomUUID();
+      try {
+        await this.sessionStore.createPending(
+          sessionId,
+          sanitized,
+          oauthProvider,
+          this._pendingSessionTtlSeconds()
+        );
+      } catch (err) {
+        return res.status(400).json({
+          error: 'invalid_request',
+          error_description: err.message
+        });
+      }
+
+      const loginUrl = new URL(
+        `${this.origin}${this.authPath}/login/${oauthProvider}`,
+        this.origin
+      );
+      loginUrl.searchParams.set('session_id', sessionId);
+
+      return res.json({
+        session_id: sessionId,
+        login_url: loginUrl.toString()
       });
-    }
+    });
 
     router.get('/login/:provider', async (req, res) => {
       const { provider } = req.params;
