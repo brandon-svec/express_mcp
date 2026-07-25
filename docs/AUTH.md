@@ -176,7 +176,7 @@ If `postLoginRedirectUrl` is set, the browser is redirected there instead of the
 
 ## Session tool
 
-When auth is enabled, `{name}_session` is registered (e.g. `echoharvest_session`):
+When auth is enabled, `{name}_session` is registered (e.g. `my-service_session`):
 
 | Action | Behavior |
 |--------|----------|
@@ -209,7 +209,7 @@ When `auth.enabled` is true, `ExpressMcp` sets `requireUser: true` on the intern
 Agent requires an authenticated user but none was provided.
 ```
 
-The optional `agent_ask` MCP tool forwards `context.user` from the HTTP request into the agent. Host integrations (e.g. echoHarvest Telegram) must resolve `session_id`, call `getVerifiedSession`, verify returned context, and pass the user payload as `user`.
+The optional `agent_ask` MCP tool forwards `context.user` from the HTTP request into the agent. Host integrations that drive the agent outside HTTP MCP (e.g. a chat bot) must resolve `session_id`, call `getVerifiedSession`, verify returned context, and pass the user payload as `user`.
 
 Hosts may exclude tools from the agent via `agent.excludeTools` or by mutating `expressMcp.getAgent().excludeTools` after construction (e.g. exclude `{name}_session` so the model cannot revoke tokens from chat).
 
