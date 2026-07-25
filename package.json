@@ -1,6 +1,6 @@
 {
   "name": "@brandon-svec/express_mcp",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Add MCP tools, OAuth, and a knowledge base to any Express app so AI clients can call your APIs",
   "main": "src/index.js",
   "type": "module",
