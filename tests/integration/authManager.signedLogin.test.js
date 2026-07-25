@@ -24,7 +24,6 @@ describe('AuthManager standalone session login', () => {
     it('returns session_id and login_url with session_id query param', async () => {
       const store = new InMemoryStandaloneSessionStore();
       const authManager = createTestAuthManager({
-        enableLoginUrlEndpoint: true,
         sessionStore: store,
         enabledProviders: ['google'],
         providers: { google: TEST_AUTH.google }
@@ -52,7 +51,8 @@ describe('AuthManager standalone session login', () => {
     it('rejects invalid context values', async () => {
       const store = new InMemoryStandaloneSessionStore();
       const authManager = createTestAuthManager({
-        enableLoginUrlEndpoint: true, sessionStore: store });
+        sessionStore: store
+      });
       const app = createAuthRouterApp(authManager);
 
       const res = await request(app)
@@ -67,7 +67,8 @@ describe('AuthManager standalone session login', () => {
     it('redirects to provider when pending session exists', async () => {
       const store = new InMemoryStandaloneSessionStore();
       const authManager = createTestAuthManager({
-        enableLoginUrlEndpoint: true, sessionStore: store });
+        sessionStore: store
+      });
       const app = createAuthRouterApp(authManager);
 
       const created = await request(app)
@@ -87,7 +88,8 @@ describe('AuthManager standalone session login', () => {
     it('returns 400 for unknown or expired session_id', async () => {
       const store = new InMemoryStandaloneSessionStore();
       const authManager = createTestAuthManager({
-        enableLoginUrlEndpoint: true, sessionStore: store });
+        sessionStore: store
+      });
       const app = createAuthRouterApp(authManager);
 
       const loginRes = await request(app)
@@ -102,7 +104,8 @@ describe('AuthManager standalone session login', () => {
     it('activates session and returns user + context via getVerifiedSession', async () => {
       const store = new InMemoryStandaloneSessionStore();
       const authManager = createTestAuthManager({
-        enableLoginUrlEndpoint: true, sessionStore: store });
+        sessionStore: store
+      });
       mockExchangeCodeForUser(authManager);
       const app = createAuthRouterApp(authManager);
 
@@ -139,7 +142,6 @@ describe('AuthManager standalone session login', () => {
       let capturedContext = null;
       const store = new InMemoryStandaloneSessionStore();
       const authManager = createTestAuthManager({
-        enableLoginUrlEndpoint: true,
         sessionStore: store,
         onTokenIssued: async (_user, _token, context) => {
           capturedContext = context;
@@ -171,7 +173,8 @@ describe('AuthManager standalone session login', () => {
     it('rejects callback replay for the same session_id', async () => {
       const store = new InMemoryStandaloneSessionStore();
       const authManager = createTestAuthManager({
-        enableLoginUrlEndpoint: true, sessionStore: store });
+        sessionStore: store
+      });
       mockExchangeCodeForUser(authManager);
       const app = createAuthRouterApp(authManager);
 
@@ -200,7 +203,6 @@ describe('AuthManager standalone session login', () => {
       let callbackCalls = 0;
       const store = new InMemoryStandaloneSessionStore();
       const authManager = createTestAuthManager({
-        enableLoginUrlEndpoint: true,
         sessionStore: store,
         onTokenIssued: async () => {
           callbackCalls += 1;

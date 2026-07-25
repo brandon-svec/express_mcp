@@ -54,7 +54,6 @@ app.listen(3000);
 | `allowAnyHttpsRedirect` | No | When `true`, accept **any** https redirect URI (disables the https host allowlist). Off by default — trades away anti-phishing protection for open DCR |
 | `showTokenOnSuccessPage` | No | When `true`, embed Bearer JWT in standalone success HTML (local dev only; default `false`) |
 | `enableDebugEndpoint` | No | When `true`, mount `GET …/auth/debug` (default `false`) |
-| `enableLoginUrlEndpoint` | No | When `true`, mount `POST …/auth/login-url` (default `false`) |
 
 `jwtSecret` and `sessionSecret` must be at least 32 characters.
 
@@ -128,7 +127,7 @@ Mount once with `app.use(expressMcp.httpRouter())`:
 | `GET /mcp/auth/login/google` | Google sign-in |
 | `GET /mcp/auth/callback` | OAuth callback; issues JWT |
 | `GET /mcp/auth/me` | Current user (Bearer token) |
-| `POST /mcp/auth/login-url` | Returns `{ session_id, login_url }` for standalone login (see below) |
+| `POST /mcp/auth/login-url` | Returns `{ session_id, login_url }` for standalone login (always mounted when auth is enabled; see below) |
 | `POST /mcp` | MCP JSON-RPC (requires Bearer token) |
 
 Tool handlers receive `context.user` (JWT payload: `sub`, `login`, `email`, `provider`, `jti`, `iat`, `exp`).

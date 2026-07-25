@@ -104,9 +104,6 @@ export function buildAuthOptions(input = {}) {
   if (input.enableDebugEndpoint === true) {
     auth.enableDebugEndpoint = true;
   }
-  if (input.enableLoginUrlEndpoint === true) {
-    auth.enableLoginUrlEndpoint = true;
-  }
 
   validateAuthOptions(auth);
   return auth;
