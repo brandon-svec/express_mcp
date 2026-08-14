@@ -59,7 +59,7 @@ export function parseGeminiGenerateContentResponse (response) {
   }
 
   let text = textChunks.length > 0 ? textChunks.join('') : null;
-  if (text === null && typeof response.text === 'string' && response.text.length > 0) {
+  if (text === null && functionCalls.length === 0 && typeof response.text === 'string' && response.text.length > 0) {
     text = response.text;
   }
 

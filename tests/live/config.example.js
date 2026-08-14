@@ -9,4 +9,5 @@
 export const liveGeminiConfig = {
   apiKey: '',
   model: 'gemini-2.5-flash',
+  gemini3Model: 'gemini-3.5-flash-lite',
 };

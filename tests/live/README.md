@@ -18,6 +18,6 @@ npm run test:live
 
 If `config.js` is missing or `apiKey` is empty, the run fails immediately with a clear error (no silent skips).
 
-## Optional model override
+## Models
 
-Set `liveGeminiConfig.model` in `config.js` (default in example: `gemini-2.5-flash`).
+Set `liveGeminiConfig.model` (default in example: `gemini-2.5-flash`) and `liveGeminiConfig.gemini3Model` (default: `gemini-3.5-flash-lite`). The Gemini 3 live agent case requires a thought-signature-safe tool loop.
