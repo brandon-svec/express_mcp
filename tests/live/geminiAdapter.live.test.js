@@ -26,10 +26,8 @@ describe('GeminiAdapter live', function () {
       toolDeclarations: [],
     });
 
-    assert.deepStrictEqual(result, {
-      text: result.text,
-      functionCalls: null,
-    });
+    assert.strictEqual(result.functionCalls, null);
+    assert.strictEqual(Array.isArray(result.modelParts), true);
     assert.strictEqual(typeof result.text, 'string');
     assert.notStrictEqual(result.text.trim(), '');
   });

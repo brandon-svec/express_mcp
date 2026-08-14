@@ -7,7 +7,7 @@ export class ModelAdapter {
    * @param {Array<Object>} params.contents - Gemini-style conversation contents
    * @param {string} params.systemInstruction
    * @param {Array<Object>} params.toolDeclarations - function declaration objects
-   * @returns {Promise<{ text: string|null, functionCalls: Array<{ name: string, args: object }>|null }>}
+   * @returns {Promise<{ text: string|null, functionCalls: Array<{ name: string, args: object, thoughtSignature?: string }>|null, modelParts?: Array<object> }>}
    */
   async generate (_params) {
     throw new Error('generate must be implemented by subclass');

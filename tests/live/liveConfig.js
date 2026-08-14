@@ -10,7 +10,7 @@ let cached = null;
  * Load live Gemini credentials from tests/live/config.js.
  * Throws if the file is missing or invalid — live tests are intentional, not optional.
  *
- * @returns {Promise<{ apiKey: string, model: string }>}
+ * @returns {Promise<{ apiKey: string, model: string, gemini3Model: string }>}
  */
 export async function loadLiveGeminiConfig () {
   if (cached) {
@@ -31,10 +31,14 @@ export async function loadLiveGeminiConfig () {
   if (typeof cfg.model !== 'string' || !cfg.model.trim()) {
     throw new Error('tests/live/config.js: liveGeminiConfig.model must be a non-empty string');
   }
+  if (typeof cfg.gemini3Model !== 'string' || !cfg.gemini3Model.trim()) {
+    throw new Error('tests/live/config.js: liveGeminiConfig.gemini3Model must be a non-empty string');
+  }
 
   cached = {
     apiKey: cfg.apiKey.trim(),
     model: cfg.model.trim(),
+    gemini3Model: cfg.gemini3Model.trim(),
   };
   return cached;
 }

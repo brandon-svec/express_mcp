@@ -10,9 +10,11 @@ class FakeAdapter extends ModelAdapter {
     super();
     this.script = script;
     this.callIndex = 0;
+    this.generateParams = [];
   }
 
-  async generate () {
+  async generate (params) {
+    this.generateParams.push(params);
     const step = this.script[this.callIndex];
     this.callIndex += 1;
     if (!step) {
@@ -315,5 +317,66 @@ describe('Agent', () => {
     assert.isAtLeast(stored.length, 4);
     assert.strictEqual(stored[0].parts[0].text, 'one');
     assert.strictEqual(stored[stored.length - 1].parts[0].text, 'second reply');
+  });
+
+  it('echoes thoughtSignature on the model functionCall turn', async () => {
+    const modelParts = [{
+      functionCall: { name: 'echo', args: { message: 'hi' } },
+      thoughtSignature: 'sig-1',
+    }];
+    const adapter = new FakeAdapter([
+      {
+        text: null,
+        functionCalls: [{ name: 'echo', args: { message: 'hi' }, thoughtSignature: 'sig-1' }],
+        modelParts,
+      },
+      { text: 'done', functionCalls: null },
+    ]);
+    const agent = new Agent({
+      adapter,
+      toolRegistry: registry,
+      systemInstruction: 'test',
+      maxToolRounds: 8,
+    });
+
+    await agent.processMessage('user:1', 'say hi');
+
+    const secondContents = adapter.generateParams[1].contents;
+    const modelTurn = secondContents.find((entry) => (
+      entry.role === 'model' &&
+      entry.parts[0] &&
+      entry.parts[0].functionCall
+    ));
+    assert.strictEqual(modelTurn.parts[0].thoughtSignature, 'sig-1');
+  });
+
+  it('batches parallel functionResponses into one user content', async () => {
+    const adapter = new FakeAdapter([
+      {
+        text: null,
+        functionCalls: [
+          { name: 'echo', args: { message: 'a' } },
+          { name: 'echo', args: { message: 'b' } },
+        ],
+      },
+      { text: 'done', functionCalls: null },
+    ]);
+    const agent = new Agent({
+      adapter,
+      toolRegistry: registry,
+      systemInstruction: 'test',
+      maxToolRounds: 8,
+    });
+
+    await agent.processMessage('user:1', 'both');
+
+    const secondContents = adapter.generateParams[1].contents;
+    const userToolTurns = secondContents.filter((entry) => (
+      entry.role === 'user' &&
+      entry.parts[0] &&
+      entry.parts[0].functionResponse
+    ));
+    assert.strictEqual(userToolTurns.length, 1);
+    assert.strictEqual(userToolTurns[0].parts.length, 2);
   });
 });
