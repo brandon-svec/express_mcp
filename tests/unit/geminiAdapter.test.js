@@ -60,7 +60,7 @@ describe('GeminiAdapter', () => {
 
     const result = await adapter.generate(params);
 
-    assert.deepStrictEqual(result, { text: 'hello', functionCalls: null });
+    assert.deepStrictEqual(result, { text: 'hello', functionCalls: null, modelParts: [] });
     assert.deepStrictEqual(generateCalls, [{
       model: 'gemini-2.5-flash',
       contents: params.contents,
@@ -88,6 +88,38 @@ describe('GeminiAdapter', () => {
       toolDeclarations: [],
     });
 
-    assert.deepStrictEqual(result, { text: null, functionCalls: calls });
+    assert.deepStrictEqual(result, {
+      text: null,
+      functionCalls: calls,
+      modelParts: [],
+    });
+  });
+
+  it('generate echoes candidate functionCall parts including thoughtSignature', async () => {
+    const modelPart = {
+      functionCall: { name: 'echo', args: { message: 'hi' } },
+      thoughtSignature: 'sig-1',
+    };
+    const adapter = new GeminiAdapter({
+      apiKey: 'key-1',
+      model: 'gemini-2.5-flash',
+      createClient: createMockClient(async () => ({
+        candidates: [{ content: { parts: [modelPart] } }],
+      }), []),
+    });
+
+    const result = await adapter.generate({
+      contents: [],
+      systemInstruction: 'test',
+      toolDeclarations: [],
+    });
+
+    assert.deepStrictEqual(result.modelParts, [modelPart]);
+    assert.deepStrictEqual(result.functionCalls, [{
+      name: 'echo',
+      args: { message: 'hi' },
+      thoughtSignature: 'sig-1',
+    }]);
+    assert.strictEqual(result.text, null);
   });
 });

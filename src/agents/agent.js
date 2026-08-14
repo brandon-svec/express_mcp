@@ -1,6 +1,32 @@
 import { ToolExecution } from '../classes/toolExecution.js';
 
 /**
+ * @param {{ modelParts?: Array<object>, functionCalls?: Array<object>|null }} response
+ * @returns {Array<object>}
+ */
+function modelPartsForEcho (response) {
+  if (Array.isArray(response.modelParts) && response.modelParts.length > 0) {
+    return response.modelParts;
+  }
+  const functionCalls = response.functionCalls;
+  if (!Array.isArray(functionCalls)) {
+    throw new Error('Model function calls missing parts to echo');
+  }
+  return functionCalls.map((fc) => {
+    const part = {
+      functionCall: {
+        name: fc.name,
+        args: fc.args,
+      },
+    };
+    if (fc.thoughtSignature != null && fc.thoughtSignature !== '') {
+      part.thoughtSignature = fc.thoughtSignature;
+    }
+    return part;
+  });
+}
+
+/**
  * Generic tool-calling agent over a ToolRegistry and ModelAdapter.
  */
 export class Agent {
@@ -114,14 +140,9 @@ export class Agent {
         break;
       }
 
-      const modelParts = functionCalls.map((fc) => ({
-        functionCall: {
-          name: fc.name,
-          args: fc.args,
-        },
-      }));
-      turnContents.push({ role: 'model', parts: modelParts });
+      turnContents.push({ role: 'model', parts: modelPartsForEcho(response) });
 
+      const responseParts = [];
       for (const fc of functionCalls) {
         if (!fc.name) {
           throw new Error('Model function call missing name');
@@ -144,16 +165,14 @@ export class Agent {
           throw new Error(errorData.error || `Tool ${fc.name} failed`);
         }
 
-        turnContents.push({
-          role: 'user',
-          parts: [{
-            functionResponse: {
-              name: fc.name,
-              response: { result: execution.result },
-            },
-          }],
+        responseParts.push({
+          functionResponse: {
+            name: fc.name,
+            response: { result: execution.result },
+          },
         });
       }
+      turnContents.push({ role: 'user', parts: responseParts });
 
       response = await this.adapter.generate({
         contents: [...priorHistory, ...turnContents],
