@@ -319,6 +319,77 @@ describe('Agent', () => {
     assert.strictEqual(stored[stored.length - 1].parts[0].text, 'second reply');
   });
 
+  it('recordAssistantMessage appends a model turn visible to the next processMessage', async () => {
+    const history = new InMemoryHistoryStore({ windowMinutes: 60 });
+    const adapter = new FakeAdapter([
+      { text: 'marked done', functionCalls: null },
+    ]);
+    const agent = new Agent({
+      adapter,
+      toolRegistry: registry,
+      systemInstruction: 'test',
+      history,
+      maxToolRounds: 8,
+    });
+
+    await agent.recordAssistantMessage('owner:1', 'Would you like to stretch today?');
+    const reply = await agent.processMessage('owner:1', 'just completed for today');
+
+    assert.strictEqual(reply, 'marked done');
+    const contents = adapter.generateParams[0].contents;
+    assert.strictEqual(contents[0].role, 'user');
+    assert.strictEqual(contents[0].parts[0].text, '[continued]');
+    assert.strictEqual(contents[1].role, 'model');
+    assert.strictEqual(contents[1].parts[0].text, 'Would you like to stretch today?');
+    assert.strictEqual(contents[2].role, 'user');
+    assert.strictEqual(contents[2].parts[0].text, 'just completed for today');
+
+    const stored = history.get('owner:1');
+    assert.strictEqual(stored[0].role, 'model');
+    assert.strictEqual(stored[0].parts[0].text, 'Would you like to stretch today?');
+  });
+
+  it('recordAssistantMessage throws without a history store', async () => {
+    const agent = new Agent({
+      adapter: new FakeAdapter([]),
+      toolRegistry: registry,
+      systemInstruction: 'test',
+      maxToolRounds: 8,
+    });
+
+    try {
+      await agent.recordAssistantMessage('owner:1', 'hello');
+      assert.fail('expected recordAssistantMessage to throw');
+    } catch (err) {
+      assert.strictEqual(err.message, 'history store is required to record assistant messages');
+    }
+  });
+
+  it('recordAssistantMessage throws for empty historyKey or blank text', async () => {
+    const history = new InMemoryHistoryStore({ windowMinutes: 60 });
+    const agent = new Agent({
+      adapter: new FakeAdapter([]),
+      toolRegistry: registry,
+      systemInstruction: 'test',
+      history,
+      maxToolRounds: 8,
+    });
+
+    try {
+      await agent.recordAssistantMessage('', 'hello');
+      assert.fail('expected empty historyKey to throw');
+    } catch (err) {
+      assert.strictEqual(err.message, 'historyKey is required');
+    }
+
+    try {
+      await agent.recordAssistantMessage('owner:1', '  ');
+      assert.fail('expected blank text to throw');
+    } catch (err) {
+      assert.strictEqual(err.message, 'text is required');
+    }
+  });
+
   it('echoes thoughtSignature on the model functionCall turn', async () => {
     const modelParts = [{
       functionCall: { name: 'echo', args: { message: 'hi' } },
