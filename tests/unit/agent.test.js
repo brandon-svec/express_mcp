@@ -24,21 +24,50 @@ class FakeAdapter extends ModelAdapter {
   }
 }
 
+const ECHO_INPUT_SCHEMA = {
+  type: 'object',
+  properties: {
+    message: { type: 'string' },
+  },
+  required: ['message'],
+  additionalProperties: false,
+};
+
+const ECHO_TOOL_DECLARATION = {
+  name: 'echo',
+  description: 'Echo tool',
+  parameters: ECHO_INPUT_SCHEMA,
+};
+
 class EchoTool extends BaseTool {
   constructor () {
-    super('echo', 'Echo tool', {
-      type: 'object',
-      properties: {
-        message: { type: 'string' },
-      },
-      required: ['message'],
-      additionalProperties: false,
-    });
+    super('echo', 'Echo tool', ECHO_INPUT_SCHEMA);
   }
 
   async execute (args) {
     return { echoed: args.message };
   }
+}
+
+/**
+ * @param {() => unknown | Promise<unknown>} fn
+ * @param {string} expectedMessage
+ */
+async function assertRejectsWithMessage (fn, expectedMessage) {
+  let caught;
+  try {
+    await fn();
+  } catch (err) {
+    caught = err;
+  }
+  assert.deepStrictEqual(
+    {
+      message: caught instanceof Error ? caught.message : caught,
+    },
+    {
+      message: expectedMessage,
+    },
+  );
 }
 
 describe('Agent', () => {
@@ -319,7 +348,24 @@ describe('Agent', () => {
     assert.strictEqual(stored[stored.length - 1].parts[0].text, 'second reply');
   });
 
-  it('recordAssistantMessage appends a model turn visible to the next processMessage', async () => {
+  it('recordAssistantMessage appends exactly one model turn', async () => {
+    const history = new InMemoryHistoryStore({ windowMinutes: 60 });
+    const agent = new Agent({
+      adapter: new FakeAdapter([]),
+      toolRegistry: registry,
+      systemInstruction: 'test',
+      history,
+      maxToolRounds: 8,
+    });
+
+    await agent.recordAssistantMessage('owner:1', 'Would you like to stretch today?');
+
+    assert.deepStrictEqual(history.get('owner:1'), [
+      { role: 'model', parts: [{ text: 'Would you like to stretch today?' }] },
+    ]);
+  });
+
+  it('processMessage prepends a synthetic continued user turn when history starts with model', async () => {
     const history = new InMemoryHistoryStore({ windowMinutes: 60 });
     const adapter = new FakeAdapter([
       { text: 'marked done', functionCalls: null },
@@ -335,18 +381,109 @@ describe('Agent', () => {
     await agent.recordAssistantMessage('owner:1', 'Would you like to stretch today?');
     const reply = await agent.processMessage('owner:1', 'just completed for today');
 
-    assert.strictEqual(reply, 'marked done');
-    const contents = adapter.generateParams[0].contents;
-    assert.strictEqual(contents[0].role, 'user');
-    assert.strictEqual(contents[0].parts[0].text, '[continued]');
-    assert.strictEqual(contents[1].role, 'model');
-    assert.strictEqual(contents[1].parts[0].text, 'Would you like to stretch today?');
-    assert.strictEqual(contents[2].role, 'user');
-    assert.strictEqual(contents[2].parts[0].text, 'just completed for today');
+    assert.deepStrictEqual({
+      reply,
+      generate: adapter.generateParams,
+      stored: history.get('owner:1'),
+    }, {
+      reply: 'marked done',
+      generate: [{
+        contents: [
+          { role: 'user', parts: [{ text: '[continued]' }] },
+          { role: 'model', parts: [{ text: 'Would you like to stretch today?' }] },
+          { role: 'user', parts: [{ text: 'just completed for today' }] },
+        ],
+        systemInstruction: 'test',
+        toolDeclarations: [ECHO_TOOL_DECLARATION],
+      }],
+      stored: [
+        { role: 'model', parts: [{ text: 'Would you like to stretch today?' }] },
+        { role: 'user', parts: [{ text: 'just completed for today' }] },
+        { role: 'model', parts: [{ text: 'marked done' }] },
+      ],
+    });
+  });
 
-    const stored = history.get('owner:1');
-    assert.strictEqual(stored[0].role, 'model');
-    assert.strictEqual(stored[0].parts[0].text, 'Would you like to stretch today?');
+  it('processMessage does not prepend a continued turn when history starts with user', async () => {
+    const history = new InMemoryHistoryStore({ windowMinutes: 60 });
+    const adapter = new FakeAdapter([
+      { text: 'hello back', functionCalls: null },
+    ]);
+    const agent = new Agent({
+      adapter,
+      toolRegistry: registry,
+      systemInstruction: 'test',
+      history,
+      maxToolRounds: 8,
+    });
+
+    const reply = await agent.processMessage('owner:1', 'hello');
+
+    assert.deepStrictEqual({
+      reply,
+      generate: adapter.generateParams,
+      stored: history.get('owner:1'),
+    }, {
+      reply: 'hello back',
+      generate: [{
+        contents: [
+          { role: 'user', parts: [{ text: 'hello' }] },
+        ],
+        systemInstruction: 'test',
+        toolDeclarations: [ECHO_TOOL_DECLARATION],
+      }],
+      stored: [
+        { role: 'user', parts: [{ text: 'hello' }] },
+        { role: 'model', parts: [{ text: 'hello back' }] },
+      ],
+    });
+  });
+
+  it('keeps the synthetic continued user turn on later tool-loop generate calls', async () => {
+    const history = new InMemoryHistoryStore({ windowMinutes: 60 });
+    const adapter = new FakeAdapter([
+      { text: null, functionCalls: [{ name: 'echo', args: { message: 'hi' } }] },
+      { text: 'done', functionCalls: null },
+    ]);
+    const agent = new Agent({
+      adapter,
+      toolRegistry: registry,
+      systemInstruction: 'test',
+      history,
+      maxToolRounds: 8,
+    });
+
+    await agent.recordAssistantMessage('owner:1', 'Stretch today?');
+    const reply = await agent.processMessage('owner:1', 'do it');
+
+    assert.deepStrictEqual({
+      reply,
+      generateContents: adapter.generateParams.map((params) => params.contents),
+    }, {
+      reply: 'done',
+      generateContents: [
+        [
+          { role: 'user', parts: [{ text: '[continued]' }] },
+          { role: 'model', parts: [{ text: 'Stretch today?' }] },
+          { role: 'user', parts: [{ text: 'do it' }] },
+        ],
+        [
+          { role: 'user', parts: [{ text: '[continued]' }] },
+          { role: 'model', parts: [{ text: 'Stretch today?' }] },
+          { role: 'user', parts: [{ text: 'do it' }] },
+          { role: 'model', parts: [{ functionCall: { name: 'echo', args: { message: 'hi' } } }] },
+          {
+            role: 'user',
+            parts: [{
+              functionResponse: {
+                name: 'echo',
+                response: { result: { echoed: 'hi' } },
+              },
+            }],
+          },
+        ],
+      ],
+    });
   });
 
   it('recordAssistantMessage throws without a history store', async () => {
@@ -357,15 +494,13 @@ describe('Agent', () => {
       maxToolRounds: 8,
     });
 
-    try {
-      await agent.recordAssistantMessage('owner:1', 'hello');
-      assert.fail('expected recordAssistantMessage to throw');
-    } catch (err) {
-      assert.strictEqual(err.message, 'history store is required to record assistant messages');
-    }
+    await assertRejectsWithMessage(
+      () => agent.recordAssistantMessage('owner:1', 'hello'),
+      'history store is required to record assistant messages',
+    );
   });
 
-  it('recordAssistantMessage throws for empty historyKey or blank text', async () => {
+  it('recordAssistantMessage throws for an empty historyKey', async () => {
     const history = new InMemoryHistoryStore({ windowMinutes: 60 });
     const agent = new Agent({
       adapter: new FakeAdapter([]),
@@ -375,19 +510,26 @@ describe('Agent', () => {
       maxToolRounds: 8,
     });
 
-    try {
-      await agent.recordAssistantMessage('', 'hello');
-      assert.fail('expected empty historyKey to throw');
-    } catch (err) {
-      assert.strictEqual(err.message, 'historyKey is required');
-    }
+    await assertRejectsWithMessage(
+      () => agent.recordAssistantMessage('', 'hello'),
+      'historyKey is required',
+    );
+  });
 
-    try {
-      await agent.recordAssistantMessage('owner:1', '  ');
-      assert.fail('expected blank text to throw');
-    } catch (err) {
-      assert.strictEqual(err.message, 'text is required');
-    }
+  it('recordAssistantMessage throws for blank text', async () => {
+    const history = new InMemoryHistoryStore({ windowMinutes: 60 });
+    const agent = new Agent({
+      adapter: new FakeAdapter([]),
+      toolRegistry: registry,
+      systemInstruction: 'test',
+      history,
+      maxToolRounds: 8,
+    });
+
+    await assertRejectsWithMessage(
+      () => agent.recordAssistantMessage('owner:1', '  '),
+      'text is required',
+    );
   });
 
   it('echoes thoughtSignature on the model functionCall turn', async () => {
