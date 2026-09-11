@@ -1,6 +1,26 @@
 import { ToolExecution } from '../classes/toolExecution.js';
 
 /**
+ * Gemini conversation contents must start with a user turn. Host-recorded
+ * assistant messages may leave prior history starting with role model.
+ *
+ * @param {Array<object>} contents
+ * @returns {Array<object>}
+ */
+function ensureUserLeadingContents (contents) {
+  if (!Array.isArray(contents)) {
+    throw new Error('contents must be an array');
+  }
+  if (contents.length === 0 || contents[0].role !== 'model') {
+    return contents;
+  }
+  return [
+    { role: 'user', parts: [{ text: '[continued]' }] },
+    ...contents,
+  ];
+}
+
+/**
  * @param {{ modelParts?: Array<object>, functionCalls?: Array<object>|null }} response
  * @returns {Array<object>}
  */
@@ -129,7 +149,7 @@ export class Agent {
 
     const toolDeclarations = this.buildToolDeclarations();
     let response = await this.adapter.generate({
-      contents: [...priorHistory, ...turnContents],
+      contents: ensureUserLeadingContents([...priorHistory, ...turnContents]),
       systemInstruction: this.systemInstruction,
       toolDeclarations,
     });
@@ -175,7 +195,7 @@ export class Agent {
       turnContents.push({ role: 'user', parts: responseParts });
 
       response = await this.adapter.generate({
-        contents: [...priorHistory, ...turnContents],
+        contents: ensureUserLeadingContents([...priorHistory, ...turnContents]),
         systemInstruction: this.systemInstruction,
         toolDeclarations,
       });
@@ -192,6 +212,30 @@ export class Agent {
     }
 
     return replyText;
+  }
+
+  /**
+   * Append a model turn without calling the LLM (host-initiated agent speech).
+   * Requires a history store. Used by hosts that send proactive messages
+   * (reminders, notifications) so the next processMessage sees them.
+   *
+   * @param {string} historyKey
+   * @param {string} text
+   * @returns {Promise<void>}
+   */
+  async recordAssistantMessage (historyKey, text) {
+    if (typeof historyKey !== 'string' || !historyKey) {
+      throw new Error('historyKey is required');
+    }
+    if (typeof text !== 'string' || !text.trim()) {
+      throw new Error('text is required');
+    }
+    if (!this.history) {
+      throw new Error('history store is required to record assistant messages');
+    }
+    this.history.append(historyKey, [
+      { role: 'model', parts: [{ text }] },
+    ]);
   }
 
   /**
