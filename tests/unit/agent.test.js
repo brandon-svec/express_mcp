@@ -151,19 +151,24 @@ describe('Agent', () => {
     });
 
     const reply = await agent.processMessage('k', 'x');
-    assert.strictEqual(reply, 'sorry, that tool is unavailable');
-    assert.strictEqual(adapter.callIndex, 2);
 
-    const toolTurn = adapter.generateParams[1].contents.find((entry) => (
-      entry.role === 'user' &&
-      entry.parts[0] &&
-      entry.parts[0].functionResponse
-    ));
-    assert.deepStrictEqual(toolTurn.parts[0].functionResponse, {
-      name: 'missing_tool',
-      response: {
-        ok: false,
-        error: "Tool 'missing_tool' not found",
+    assert.deepStrictEqual({
+      reply,
+      callIndex: adapter.callIndex,
+      functionResponse: adapter.generateParams[1].contents.find((entry) => (
+        entry.role === 'user' &&
+        entry.parts[0] &&
+        entry.parts[0].functionResponse
+      )).parts[0].functionResponse,
+    }, {
+      reply: 'sorry, that tool is unavailable',
+      callIndex: 2,
+      functionResponse: {
+        name: 'missing_tool',
+        response: {
+          ok: false,
+          error: "Tool 'missing_tool' not found",
+        },
       },
     });
   });
@@ -182,29 +187,34 @@ describe('Agent', () => {
     });
 
     const reply = await agent.processMessage('user:1', 'say hi');
-    assert.strictEqual(reply, 'done');
-    assert.strictEqual(adapter.callIndex, 3);
+    const functionResponses = adapter.generateParams[2].contents
+      .filter((entry) => (
+        entry.role === 'user' &&
+        entry.parts[0] &&
+        entry.parts[0].functionResponse
+      ))
+      .map((entry) => entry.parts[0].functionResponse);
 
-    const errorTurn = adapter.generateParams[1].contents.find((entry) => (
-      entry.role === 'user' &&
-      entry.parts[0] &&
-      entry.parts[0].functionResponse
-    ));
-    assert.strictEqual(errorTurn.parts[0].functionResponse.name, 'echo');
-    assert.strictEqual(errorTurn.parts[0].functionResponse.response.ok, false);
-    assert.match(
-      errorTurn.parts[0].functionResponse.response.error,
-      /Validation failed/,
-    );
-
-    const successTurn = adapter.generateParams[2].contents.filter((entry) => (
-      entry.role === 'user' &&
-      entry.parts[0] &&
-      entry.parts[0].functionResponse
-    )).at(-1);
-    assert.deepStrictEqual(successTurn.parts[0].functionResponse, {
-      name: 'echo',
-      response: { result: { echoed: 'hi' } },
+    assert.deepStrictEqual({
+      reply,
+      callIndex: adapter.callIndex,
+      functionResponses,
+    }, {
+      reply: 'done',
+      callIndex: 3,
+      functionResponses: [
+        {
+          name: 'echo',
+          response: {
+            ok: false,
+            error: "Validation failed: must have required property 'message'",
+          },
+        },
+        {
+          name: 'echo',
+          response: { result: { echoed: 'hi' } },
+        },
+      ],
     });
   });
 
@@ -230,29 +240,35 @@ describe('Agent', () => {
 
     await agent.processMessage('user:1', 'say hi');
 
-    const toolLogs = infoCalls.filter((entry) => entry.msg === 'Agent tool call completed');
-    const completed = infoCalls.filter((entry) => entry.msg === 'Agent processMessage completed');
-    assert.strictEqual(toolLogs.length, 2);
-    assert.deepStrictEqual(toolLogs[0].attrs, {
-      round: 0,
-      toolName: 'echo',
-      status: 'error',
-      argKeys: [],
-      error: toolLogs[0].attrs.error,
-    });
-    assert.match(toolLogs[0].attrs.error, /Validation failed/);
-    assert.deepStrictEqual(toolLogs[1].attrs, {
-      round: 1,
-      toolName: 'echo',
-      status: 'success',
-      argKeys: ['message'],
-    });
-    assert.strictEqual(completed.length, 1);
-    assert.deepStrictEqual(completed[0].attrs, {
-      rounds: 2,
-      toolCalls: 2,
-      errorCalls: 1,
-    });
+    assert.deepStrictEqual(infoCalls, [
+      {
+        attrs: {
+          round: 0,
+          toolName: 'echo',
+          status: 'error',
+          argKeys: [],
+          error: "Validation failed: must have required property 'message'",
+        },
+        msg: 'Agent tool call completed',
+      },
+      {
+        attrs: {
+          round: 1,
+          toolName: 'echo',
+          status: 'success',
+          argKeys: ['message'],
+        },
+        msg: 'Agent tool call completed',
+      },
+      {
+        attrs: {
+          rounds: 2,
+          toolCalls: 2,
+          errorCalls: 1,
+        },
+        msg: 'Agent processMessage completed',
+      },
+    ]);
   });
 
   it('throws when adapter is missing', () => {
