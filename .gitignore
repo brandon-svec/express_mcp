@@ -4,7 +4,9 @@ dist/
 .env
 .cursor.env
 tests/live/config.js
-.cursor/
+.cursor/*
+!.cursor/rules/
+!.cursor/rules/**
 .DS_Store
 *.tgz
 

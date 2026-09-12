@@ -1,0 +1,32 @@
+---
+description: npm version bump and publish flow for @brandon-svec/express_mcp (release, tag, CI)
+alwaysApply: true
+---
+
+# npm Publish and Version Bumps
+
+Full detail: [CONTRIBUTING.md](../../CONTRIBUTING.md) → **Publishing new versions**. Read that section before planning or cutting a release.
+
+## When planning
+
+If a plan needs a new published package (hosts like Gillium will bump the dependency), include these steps explicitly. Do not treat missing local `npm whoami` as a blocker — publish is CI on tag/`main`, not local `npm publish`.
+
+## Release sequence
+
+1. Land feature work first (or include it on the release branch). Do **not** hand-edit `package.json` / `package-lock.json` version fields.
+2. Cut the version only with `npm version major|minor|patch` (creates the version commit + git tag).
+3. `git push && git push --tags` **before** opening the PR (tags must be on the remote branch).
+4. Open the PR; CI publishes when the release reaches `main` (tag `v*` workflow).
+
+## Version choice
+
+- **patch** — bug fixes, docs-only (skip a tag for trivial README-only edits if no publish is needed)
+- **minor** — new backward-compatible behavior
+- **major** — breaking API changes
+
+## Do not
+
+- Manually change the version in `package.json`
+- Assume a local `npm publish` or `npm whoami` is required
+- Cancel a dependent-repo bump because local npm auth failed
+- Bump version for every small docs tweak when no registry publish is intended

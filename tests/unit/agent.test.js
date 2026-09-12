@@ -138,9 +138,10 @@ describe('Agent', () => {
     }
   });
 
-  it('throws for unknown tool from model', async () => {
+  it('returns unknown tool errors as functionResponse and continues', async () => {
     const adapter = new FakeAdapter([
       { text: null, functionCalls: [{ name: 'missing_tool', args: {} }] },
+      { text: 'sorry, that tool is unavailable', functionCalls: null },
     ]);
     const agent = new Agent({
       adapter,
@@ -149,12 +150,125 @@ describe('Agent', () => {
       maxToolRounds: 8,
     });
 
-    try {
-      await agent.processMessage('k', 'x');
-      assert.fail('expected processMessage to throw');
-    } catch (err) {
-      assert.match(err.message, /Tool 'missing_tool' not found/);
-    }
+    const reply = await agent.processMessage('k', 'x');
+
+    assert.deepStrictEqual({
+      reply,
+      callIndex: adapter.callIndex,
+      functionResponse: adapter.generateParams[1].contents.find((entry) => (
+        entry.role === 'user' &&
+        entry.parts[0] &&
+        entry.parts[0].functionResponse
+      )).parts[0].functionResponse,
+    }, {
+      reply: 'sorry, that tool is unavailable',
+      callIndex: 2,
+      functionResponse: {
+        name: 'missing_tool',
+        response: {
+          ok: false,
+          error: "Tool 'missing_tool' not found",
+        },
+      },
+    });
+  });
+
+  it('returns schema validation errors as functionResponse and retries', async () => {
+    const adapter = new FakeAdapter([
+      { text: null, functionCalls: [{ name: 'echo', args: {} }] },
+      { text: null, functionCalls: [{ name: 'echo', args: { message: 'hi' } }] },
+      { text: 'done', functionCalls: null },
+    ]);
+    const agent = new Agent({
+      adapter,
+      toolRegistry: registry,
+      systemInstruction: 'test',
+      maxToolRounds: 8,
+    });
+
+    const reply = await agent.processMessage('user:1', 'say hi');
+    const functionResponses = adapter.generateParams[2].contents
+      .filter((entry) => (
+        entry.role === 'user' &&
+        entry.parts[0] &&
+        entry.parts[0].functionResponse
+      ))
+      .map((entry) => entry.parts[0].functionResponse);
+
+    assert.deepStrictEqual({
+      reply,
+      callIndex: adapter.callIndex,
+      functionResponses,
+    }, {
+      reply: 'done',
+      callIndex: 3,
+      functionResponses: [
+        {
+          name: 'echo',
+          response: {
+            ok: false,
+            error: "Validation failed: must have required property 'message'",
+          },
+        },
+        {
+          name: 'echo',
+          response: { result: { echoed: 'hi' } },
+        },
+      ],
+    });
+  });
+
+  it('logs tool call and processMessage dispositions across rounds', async () => {
+    const infoCalls = [];
+    const logger = {
+      info (attrs, msg) {
+        infoCalls.push({ attrs, msg });
+      },
+    };
+    const adapter = new FakeAdapter([
+      { text: null, functionCalls: [{ name: 'echo', args: {} }] },
+      { text: null, functionCalls: [{ name: 'echo', args: { message: 'hi' } }] },
+      { text: 'done', functionCalls: null },
+    ]);
+    const agent = new Agent({
+      adapter,
+      toolRegistry: registry,
+      systemInstruction: 'test',
+      maxToolRounds: 8,
+      logger,
+    });
+
+    await agent.processMessage('user:1', 'say hi');
+
+    assert.deepStrictEqual(infoCalls, [
+      {
+        attrs: {
+          round: 0,
+          toolName: 'echo',
+          status: 'error',
+          argKeys: [],
+          error: "Validation failed: must have required property 'message'",
+        },
+        msg: 'Agent tool call completed',
+      },
+      {
+        attrs: {
+          round: 1,
+          toolName: 'echo',
+          status: 'success',
+          argKeys: ['message'],
+        },
+        msg: 'Agent tool call completed',
+      },
+      {
+        attrs: {
+          rounds: 2,
+          toolCalls: 2,
+          errorCalls: 1,
+        },
+        msg: 'Agent processMessage completed',
+      },
+    ]);
   });
 
   it('throws when adapter is missing', () => {
