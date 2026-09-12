@@ -154,12 +154,17 @@ export class Agent {
       toolDeclarations,
     });
 
+    let toolCalls = 0;
+    let errorCalls = 0;
+    let rounds = 0;
+
     for (let round = 0; round < this.maxToolRounds; round += 1) {
       const functionCalls = response.functionCalls;
       if (!functionCalls || functionCalls.length === 0) {
         break;
       }
 
+      rounds += 1;
       turnContents.push({ role: 'model', parts: modelPartsForEcho(response) });
 
       const responseParts = [];
@@ -170,21 +175,51 @@ export class Agent {
         if (!this._isToolAvailable(fc.name)) {
           throw new Error(`Tool is not available to the agent: ${fc.name}`);
         }
+        const args = fc.args || {};
+        const argKeys = Object.keys(args).sort();
         const execution = await this.toolRegistry.executeTool(
           fc.name,
-          fc.args || {},
+          args,
           {
-            execution: new ToolExecution(fc.name, null, fc.args || {}),
+            execution: new ToolExecution(fc.name, null, args),
             user,
             hostContext,
           },
         );
 
+        toolCalls += 1;
         if (execution.status === 'error') {
+          errorCalls += 1;
           const errorData = execution.getErrorData();
-          throw new Error(errorData.error || `Tool ${fc.name} failed`);
+          const errorMessage = errorData.error || `Tool ${fc.name} failed`;
+          this.logger?.info?.(
+            {
+              round,
+              toolName: fc.name,
+              status: 'error',
+              argKeys,
+              error: errorMessage,
+            },
+            'Agent tool call completed',
+          );
+          responseParts.push({
+            functionResponse: {
+              name: fc.name,
+              response: { ok: false, error: errorMessage },
+            },
+          });
+          continue;
         }
 
+        this.logger?.info?.(
+          {
+            round,
+            toolName: fc.name,
+            status: 'success',
+            argKeys,
+          },
+          'Agent tool call completed',
+        );
         responseParts.push({
           functionResponse: {
             name: fc.name,
@@ -210,6 +245,11 @@ export class Agent {
     if (this.history) {
       this.history.append(historyKey, turnContents);
     }
+
+    this.logger?.info?.(
+      { rounds, toolCalls, errorCalls },
+      'Agent processMessage completed',
+    );
 
     return replyText;
   }

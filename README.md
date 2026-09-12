@@ -181,7 +181,7 @@ const expressMcp = new ExpressMcp({
 
 Requires auth by default (`agent.allowUnauthenticated: true` to opt out). `@google/genai` is an optional peer dependency.
 
-Use `getAgent().processMessage(historyKey, text, options)` for inbound turns. For **host-initiated agent speech** (proactive reminders, notifications) that must appear in the next turn’s conversation history without calling the LLM, use `getAgent().recordAssistantMessage(historyKey, text)`. That method requires a history store and throws if none is configured. When recorded model turns leave history starting with a `model` role, `processMessage` prepends a synthetic user `[continued]` turn before calling Gemini so contents remain valid.
+Use `getAgent().processMessage(historyKey, text, options)` for inbound turns. For **host-initiated agent speech** (proactive reminders, notifications) that must appear in the next turn’s conversation history without calling the LLM, use `getAgent().recordAssistantMessage(historyKey, text)`. That method requires a history store and throws if none is configured. When recorded model turns leave history starting with a `model` role, `processMessage` prepends a synthetic user `[continued]` turn before calling Gemini so contents remain valid. Schema and tool execution errors are returned to the model as `{ ok: false, error }` functionResponses so further `maxToolRounds` can fix args and retry (same recovery Cursor gets over MCP JSON-RPC).
 
 ## API Reference
 

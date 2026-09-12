@@ -138,9 +138,10 @@ describe('Agent', () => {
     }
   });
 
-  it('throws for unknown tool from model', async () => {
+  it('returns unknown tool errors as functionResponse and continues', async () => {
     const adapter = new FakeAdapter([
       { text: null, functionCalls: [{ name: 'missing_tool', args: {} }] },
+      { text: 'sorry, that tool is unavailable', functionCalls: null },
     ]);
     const agent = new Agent({
       adapter,
@@ -149,12 +150,109 @@ describe('Agent', () => {
       maxToolRounds: 8,
     });
 
-    try {
-      await agent.processMessage('k', 'x');
-      assert.fail('expected processMessage to throw');
-    } catch (err) {
-      assert.match(err.message, /Tool 'missing_tool' not found/);
-    }
+    const reply = await agent.processMessage('k', 'x');
+    assert.strictEqual(reply, 'sorry, that tool is unavailable');
+    assert.strictEqual(adapter.callIndex, 2);
+
+    const toolTurn = adapter.generateParams[1].contents.find((entry) => (
+      entry.role === 'user' &&
+      entry.parts[0] &&
+      entry.parts[0].functionResponse
+    ));
+    assert.deepStrictEqual(toolTurn.parts[0].functionResponse, {
+      name: 'missing_tool',
+      response: {
+        ok: false,
+        error: "Tool 'missing_tool' not found",
+      },
+    });
+  });
+
+  it('returns schema validation errors as functionResponse and retries', async () => {
+    const adapter = new FakeAdapter([
+      { text: null, functionCalls: [{ name: 'echo', args: {} }] },
+      { text: null, functionCalls: [{ name: 'echo', args: { message: 'hi' } }] },
+      { text: 'done', functionCalls: null },
+    ]);
+    const agent = new Agent({
+      adapter,
+      toolRegistry: registry,
+      systemInstruction: 'test',
+      maxToolRounds: 8,
+    });
+
+    const reply = await agent.processMessage('user:1', 'say hi');
+    assert.strictEqual(reply, 'done');
+    assert.strictEqual(adapter.callIndex, 3);
+
+    const errorTurn = adapter.generateParams[1].contents.find((entry) => (
+      entry.role === 'user' &&
+      entry.parts[0] &&
+      entry.parts[0].functionResponse
+    ));
+    assert.strictEqual(errorTurn.parts[0].functionResponse.name, 'echo');
+    assert.strictEqual(errorTurn.parts[0].functionResponse.response.ok, false);
+    assert.match(
+      errorTurn.parts[0].functionResponse.response.error,
+      /Validation failed/,
+    );
+
+    const successTurn = adapter.generateParams[2].contents.filter((entry) => (
+      entry.role === 'user' &&
+      entry.parts[0] &&
+      entry.parts[0].functionResponse
+    )).at(-1);
+    assert.deepStrictEqual(successTurn.parts[0].functionResponse, {
+      name: 'echo',
+      response: { result: { echoed: 'hi' } },
+    });
+  });
+
+  it('logs tool call and processMessage dispositions across rounds', async () => {
+    const infoCalls = [];
+    const logger = {
+      info (attrs, msg) {
+        infoCalls.push({ attrs, msg });
+      },
+    };
+    const adapter = new FakeAdapter([
+      { text: null, functionCalls: [{ name: 'echo', args: {} }] },
+      { text: null, functionCalls: [{ name: 'echo', args: { message: 'hi' } }] },
+      { text: 'done', functionCalls: null },
+    ]);
+    const agent = new Agent({
+      adapter,
+      toolRegistry: registry,
+      systemInstruction: 'test',
+      maxToolRounds: 8,
+      logger,
+    });
+
+    await agent.processMessage('user:1', 'say hi');
+
+    const toolLogs = infoCalls.filter((entry) => entry.msg === 'Agent tool call completed');
+    const completed = infoCalls.filter((entry) => entry.msg === 'Agent processMessage completed');
+    assert.strictEqual(toolLogs.length, 2);
+    assert.deepStrictEqual(toolLogs[0].attrs, {
+      round: 0,
+      toolName: 'echo',
+      status: 'error',
+      argKeys: [],
+      error: toolLogs[0].attrs.error,
+    });
+    assert.match(toolLogs[0].attrs.error, /Validation failed/);
+    assert.deepStrictEqual(toolLogs[1].attrs, {
+      round: 1,
+      toolName: 'echo',
+      status: 'success',
+      argKeys: ['message'],
+    });
+    assert.strictEqual(completed.length, 1);
+    assert.deepStrictEqual(completed[0].attrs, {
+      rounds: 2,
+      toolCalls: 2,
+      errorCalls: 1,
+    });
   });
 
   it('throws when adapter is missing', () => {
