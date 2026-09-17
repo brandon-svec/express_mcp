@@ -10,7 +10,10 @@ export const DEFAULT_TRUSTED_REDIRECT_HOSTS = new Set([
   'cursor.com',
   'www.cursor.com',
   'vscode.dev',
-  'insiders.vscode.dev'
+  'insiders.vscode.dev',
+  'oauth-redirect.googleusercontent.com',
+  'oauth-redirect-sandbox.googleusercontent.com',
+  'oauth-redirect-test.googleusercontent.com'
 ]);
 
 /**

@@ -165,12 +165,7 @@ describe('MCP OAuth authorization server', () => {
         logs.push({ fields, message });
       }
     };
-    const app = createOAuthTestApp(
-      createTestAuthManager({
-        logger,
-        trustedRedirectHosts: ['oauth-redirect.googleusercontent.com']
-      })
-    );
+    const app = createOAuthTestApp(createTestAuthManager({ logger }));
     const rejected = await request(app)
       .post('/mcp/register')
       .send({
@@ -217,7 +212,7 @@ describe('MCP OAuth authorization server', () => {
     assert.strictEqual(anyOk.status, 201);
   });
 
-  it('logs redirect_uris on successful DCR registration', async () => {
+  it('registers Gemini Spark DCR redirect_uris by default and logs them', async () => {
     const logs = [];
     const logger = {
       ...silentTestLogger,
@@ -225,39 +220,27 @@ describe('MCP OAuth authorization server', () => {
         logs.push({ fields, message });
       }
     };
+    const sparkRedirectUris = [
+      'https://oauth-redirect-sandbox.googleusercontent.com/r/user_bound_custom-mcp-example',
+      'https://oauth-redirect-test.googleusercontent.com/r/user_bound_custom-mcp-example',
+      'https://oauth-redirect.googleusercontent.com/r/user_bound_custom-mcp-example',
+      'https://oauth-redirect-sandbox.googleusercontent.com/a/user_bound_custom-mcp-example',
+      'https://oauth-redirect-test.googleusercontent.com/a/user_bound_custom-mcp-example',
+      'https://oauth-redirect.googleusercontent.com/a/user_bound_custom-mcp-example'
+    ];
     const app = createOAuthTestApp(createTestAuthManager({ logger }));
-    const res = await request(app)
+    const ok = await request(app)
       .post('/mcp/register')
       .send({
         client_name: 'Google',
-        redirect_uris: ['https://oauth-redirect.googleusercontent.com/r/user_bound_custom-mcp-x'],
-        grant_types: ['authorization_code'],
-        response_types: ['code']
-      });
-    // Default trusted hosts do not include googleusercontent — use allowAny for this success path
-    assert.strictEqual(res.status, 400);
-
-    const anyApp = createOAuthTestApp(
-      createTestAuthManager({ logger, allowAnyHttpsRedirect: true })
-    );
-    const ok = await request(anyApp)
-      .post('/mcp/register')
-      .send({
-        client_name: 'Google',
-        redirect_uris: [
-          'https://oauth-redirect.googleusercontent.com/r/user_bound_custom-mcp-x',
-          'https://gemini.google.com/oauth'
-        ],
+        redirect_uris: sparkRedirectUris,
         grant_types: ['authorization_code'],
         response_types: ['code']
       });
     assert.strictEqual(ok.status, 201);
     const successLog = logs.find((entry) => entry.message === 'MCP OAuth client registered');
     assert.isOk(successLog);
-    assert.deepEqual(successLog.fields.redirectUris, [
-      'https://oauth-redirect.googleusercontent.com/r/user_bound_custom-mcp-x',
-      'https://gemini.google.com/oauth'
-    ]);
+    assert.deepEqual(successLog.fields.redirectUris, sparkRedirectUris);
     assert.deepEqual(successLog.fields.rejectedRedirectUris, []);
   });
 
@@ -269,10 +252,7 @@ describe('MCP OAuth authorization server', () => {
         logs.push({ fields, message });
       }
     };
-    const authManager = createTestAuthManager({
-      logger,
-      allowedRedirectUris: ['https://oauth-redirect.googleusercontent.com/r/spark']
-    });
+    const authManager = createTestAuthManager({ logger });
     const { codeChallenge } = createPkcePair();
     const client = registerOAuthTestClient(
       authManager,

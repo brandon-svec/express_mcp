@@ -1,10 +1,10 @@
 name: Publish NPM Package
 
+# Publish only when a GitHub Release is published (tag + Release object).
+# Do not publish on bare tag push — that fired before PRs reached main.
 on:
-  workflow_dispatch:
-  push:
-    tags:
-      - "v*"
+  release:
+    types: [published]
 
 permissions:
   contents: read
@@ -16,6 +16,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
 
       - name: Setup Node
         uses: actions/setup-node@v6
@@ -29,6 +31,16 @@ jobs:
 
       - name: Run tests
         run: npm test
+
+      - name: Verify package version matches release tag
+        run: |
+          tag="${{ github.event.release.tag_name }}"
+          expected="${tag#v}"
+          actual="$(node -p "require('./package.json').version")"
+          if [ "$actual" != "$expected" ]; then
+            echo "package.json version ($actual) does not match release tag ($tag)"
+            exit 1
+          fi
 
       - name: Publish package
         run: |

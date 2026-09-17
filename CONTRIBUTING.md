@@ -85,26 +85,23 @@ examples/
 
 ## Publishing new versions
 
-Releases to the npm registry are enabled on `main` branch through CI.
+Releases to the npm registry run only when a **GitHub Release** is published for a `v*` tag (not on bare tag push, and not from feature branches).
 
 To create a new release:
 
-1. **Create version**: Run `npm version major/minor/patch`
-   - This creates a tag for the version type you want
-   - Bumps the version in `package.json`
-   - Creates a version commit and tag
-
-2. **Push changes**: Run `git push && git push --tags`
-   - This pushes both the commit and the new tag to Github
-
-3. **Create PR**: Create your pull request and get approvals
+1. **Land the feature on `main`** via PR (no version bump / no tags in the feature PR).
+2. **On `main`**, cut the version with `npm version major|minor|patch`
+   - Bumps `package.json` / lockfile
+   - Creates the version commit and git tag
+3. **Push**: `git push && git push --tags`
+4. **Publish a GitHub Release** for that tag (UI or `gh release create vX.Y.Z --generate-notes`). The Publish NPM Package workflow runs on `release: published` and verifies `package.json` version matches the tag before `npm publish`.
 
 **Important notes:**
 
-- New versions should **only** be generated using the `npm version` command
-- Make sure to push tags to branch before creating a pull request
-- CI build and publish actions run automatically on `main` branch
-- You don't need to create a tag for minor changes like README updates
+- New versions should **only** be generated using the `npm version` command (do not hand-edit version fields)
+- Do **not** push `v*` tags from a feature branch before merge
+- A tag alone does not publish; creating the GitHub Release does
+- You don't need a Release for trivial README-only edits when no registry publish is intended
 
 ### Version guidelines
 
