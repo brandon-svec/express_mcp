@@ -11,6 +11,8 @@ export class InMemoryStandaloneSessionStore {
     this._active = new Map();
     /** @type {Map<string, string>} */
     this._contextAlias = new Map();
+    /** @type {Map<string, { user: Object, clientId: string, expiresAt: number }>} */
+    this._refreshTokens = new Map();
   }
 
   /**
@@ -157,6 +159,62 @@ export class InMemoryStandaloneSessionStore {
       return false;
     }
     return this.deactivate(sessionId);
+  }
+
+  /**
+   * Persist an opaque OAuth refresh token bound to user + DCR client.
+   * @param {string} refreshToken
+   * @param {{ user: Object, clientId: string }} entry
+   * @param {number} ttlSeconds
+   * @returns {Promise<void>}
+   */
+  async storeRefreshToken(refreshToken, entry, ttlSeconds) {
+    if (typeof refreshToken !== 'string' || !refreshToken) {
+      throw new Error('refreshToken is required');
+    }
+    if (!entry || typeof entry !== 'object' || !entry.user || typeof entry.clientId !== 'string' || !entry.clientId) {
+      throw new Error('refresh token entry requires user and clientId');
+    }
+    if (typeof ttlSeconds !== 'number' || ttlSeconds <= 0) {
+      throw new Error('ttlSeconds must be a positive number');
+    }
+    const expiresAt = Math.floor(Date.now() / 1000) + ttlSeconds;
+    this._refreshTokens.set(refreshToken, {
+      user: entry.user,
+      clientId: entry.clientId,
+      expiresAt
+    });
+  }
+
+  /**
+   * @param {string} refreshToken
+   * @returns {Promise<{ user: Object, clientId: string }|null>}
+   */
+  async findRefreshToken(refreshToken) {
+    if (typeof refreshToken !== 'string' || !refreshToken) {
+      throw new Error('refreshToken is required');
+    }
+    const entry = this._refreshTokens.get(refreshToken);
+    if (!entry) {
+      return null;
+    }
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    if (entry.expiresAt <= nowSeconds) {
+      this._refreshTokens.delete(refreshToken);
+      return null;
+    }
+    return { user: entry.user, clientId: entry.clientId };
+  }
+
+  /**
+   * @param {string} refreshToken
+   * @returns {Promise<boolean>}
+   */
+  async deleteRefreshToken(refreshToken) {
+    if (typeof refreshToken !== 'string' || !refreshToken) {
+      throw new Error('refreshToken is required');
+    }
+    return this._refreshTokens.delete(refreshToken);
   }
 
   /**

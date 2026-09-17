@@ -17,6 +17,14 @@ function activeKey(sessionId) {
 }
 
 /**
+ * @param {string} refreshToken
+ * @returns {string}
+ */
+function refreshKey(refreshToken) {
+  return `mcp:refresh:${refreshToken}`;
+}
+
+/**
  * Redis-backed standalone OAuth session store.
  *
  * @param {import('ioredis').Redis} redis
@@ -199,5 +207,60 @@ export class RedisStandaloneSessionStore {
       return false;
     }
     return this.deactivate(sessionId);
+  }
+
+  /**
+   * Persist an opaque OAuth refresh token bound to user + DCR client.
+   * @param {string} refreshToken
+   * @param {{ user: Object, clientId: string }} entry
+   * @param {number} ttlSeconds
+   * @returns {Promise<void>}
+   */
+  async storeRefreshToken(refreshToken, entry, ttlSeconds) {
+    if (typeof refreshToken !== 'string' || !refreshToken) {
+      throw new Error('refreshToken is required');
+    }
+    if (!entry || typeof entry !== 'object' || !entry.user || typeof entry.clientId !== 'string' || !entry.clientId) {
+      throw new Error('refresh token entry requires user and clientId');
+    }
+    if (typeof ttlSeconds !== 'number' || ttlSeconds <= 0) {
+      throw new Error('ttlSeconds must be a positive number');
+    }
+    const value = JSON.stringify({ user: entry.user, clientId: entry.clientId });
+    await this._redis.set(refreshKey(refreshToken), value, 'EX', ttlSeconds);
+  }
+
+  /**
+   * @param {string} refreshToken
+   * @returns {Promise<{ user: Object, clientId: string }|null>}
+   */
+  async findRefreshToken(refreshToken) {
+    if (typeof refreshToken !== 'string' || !refreshToken) {
+      throw new Error('refreshToken is required');
+    }
+    const raw = await this._redis.get(refreshKey(refreshToken));
+    if (raw === null) {
+      return null;
+    }
+    const parsed = JSON.parse(raw);
+    if (!parsed || !parsed.user || typeof parsed.user !== 'object') {
+      throw new Error('Invalid refresh token payload');
+    }
+    if (typeof parsed.clientId !== 'string' || !parsed.clientId) {
+      throw new Error('Invalid refresh token payload: missing clientId');
+    }
+    return { user: parsed.user, clientId: parsed.clientId };
+  }
+
+  /**
+   * @param {string} refreshToken
+   * @returns {Promise<boolean>}
+   */
+  async deleteRefreshToken(refreshToken) {
+    if (typeof refreshToken !== 'string' || !refreshToken) {
+      throw new Error('refreshToken is required');
+    }
+    const deleted = await this._redis.del(refreshKey(refreshToken));
+    return deleted > 0;
   }
 }
