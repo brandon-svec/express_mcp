@@ -136,11 +136,60 @@ export function buildAuthorizationServerMetadata(issuer) {
     token_endpoint: `${issuer}/token`,
     registration_endpoint: `${issuer}/register`,
     response_types_supported: ['code'],
-    grant_types_supported: ['authorization_code'],
+    grant_types_supported: ['authorization_code', 'refresh_token'],
     code_challenge_methods_supported: ['S256'],
     token_endpoint_auth_methods_supported: ['none']
   };
 }
+
+/**
+ * Extract a single query parameter value from a URL path+query string without
+ * decoding (preserves the wire encoding for OAuth `state` round-trips).
+ * @param {string} originalUrl - e.g. `/mcp/authorize?state=a%2Bb&client_id=x`
+ * @param {string} name - Parameter name
+ * @returns {string|null} Raw value after `name=`, or null if absent
+ */
+export function extractRawQueryParam(originalUrl, name) {
+  if (typeof originalUrl !== 'string' || typeof name !== 'string' || !name) {
+    return null;
+  }
+  const qIndex = originalUrl.indexOf('?');
+  if (qIndex === -1) {
+    return null;
+  }
+  const query = originalUrl.slice(qIndex + 1);
+  const prefix = `${name}=`;
+  for (const part of query.split('&')) {
+    if (part.startsWith(prefix)) {
+      return part.slice(prefix.length);
+    }
+  }
+  return null;
+}
+
+/**
+ * Build authorization-code redirect with encoded `code` and unmodified `state`.
+ * @param {string} redirectUri
+ * @param {string} code
+ * @param {string} rawState - Wire-encoded state from the authorize request
+ * @returns {string}
+ */
+export function buildAuthorizationRedirectUrl(redirectUri, code, rawState) {
+  if (typeof redirectUri !== 'string' || !redirectUri) {
+    throw new Error('redirectUri is required');
+  }
+  if (typeof code !== 'string' || !code) {
+    throw new Error('code is required');
+  }
+  if (typeof rawState !== 'string' || !rawState) {
+    throw new Error('rawState is required');
+  }
+  const separator = redirectUri.includes('?') ? '&' : '?';
+  return `${redirectUri}${separator}code=${encodeURIComponent(code)}&state=${rawState}`;
+}
+
+/** Default refresh token lifetime (90 days) for Google Account Linking. */
+export const DEFAULT_REFRESH_TOKEN_TTL_SECONDS = 90 * 24 * 60 * 60;
 
 /**
  * In-memory OAuth client registry for Dynamic Client Registration.

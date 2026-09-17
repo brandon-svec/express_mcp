@@ -41,6 +41,15 @@ describe('InMemoryStandaloneSessionStore', () => {
     });
     expect(await store.findActive(SESSION_ID)).to.equal(null);
   });
+
+  it('stores and finds refresh tokens until deleted or expired', async () => {
+    const store = new InMemoryStandaloneSessionStore();
+    const user = { sub: 'gh:1', email: 'a@b.com' };
+    await store.storeRefreshToken('rt-1', { user, clientId: 'client-a' }, 3600);
+    expect(await store.findRefreshToken('rt-1')).to.deep.equal({ user, clientId: 'client-a' });
+    expect(await store.deleteRefreshToken('rt-1')).to.equal(true);
+    expect(await store.findRefreshToken('rt-1')).to.equal(null);
+  });
 });
 
 describe('RedisStandaloneSessionStore', () => {

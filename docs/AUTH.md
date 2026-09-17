@@ -203,7 +203,9 @@ flowchart LR
 
 When `auth.enabled` is true, `ExpressMcp` sets `requireUser: true` on the internal `Agent`. `processMessage(historyKey, text, { user, hostContext })` throws immediately if `user` is missing—before any model or tool call. Pass `hostContext` (e.g. `{ telegram_chat_id, telegram_user_id }`) so `reset_session` can clear Telegram standalone sessions by context alias.
 
-**sessionStore is required** when auth is enabled. PKCE `POST /token` persists each Bearer JWT under `mcp:session:{jti}`; Bearer middleware rejects tokens with no active session row (logout = `deactivate(jti)`).
+**sessionStore is required** when auth is enabled. PKCE `POST /token` persists each Bearer JWT under `mcp:session:{jti}`; Bearer middleware rejects tokens with no active session row (logout = `deactivate(jti)`). Authorization-code responses also include a long-lived `refresh_token` (stored under `mcp:refresh:…`) for Google Account Linking / GAL clients; `grant_type=refresh_token` rotates the refresh token and issues a new access token. AS metadata advertises `grant_types_supported: ["authorization_code", "refresh_token"]`.
+
+On `POST /register`, the library logs the full `redirect_uris` array and any `rejectedRedirectUris` (no client secrets). On MCP authorization-code redirects, it logs `stateUnchanged` and length diagnostics without logging the code, state, or Location.
 
 ```text
 Agent requires an authenticated user but none was provided.

@@ -2,8 +2,10 @@ import { assert } from 'chai';
 import jwt from 'jsonwebtoken';
 import request from 'supertest';
 import {
+  buildAuthorizationRedirectUrl,
   buildAuthorizationServerMetadata,
   buildProtectedResourceMetadata,
+  extractRawQueryParam,
   PendingAuthStore,
   verifyPkceChallenge
 } from '../../src/mcpOAuth.js';
@@ -15,6 +17,7 @@ import {
   createTestAuthManager,
   mockExchangeCodeForUser,
   registerOAuthTestClient,
+  silentTestLogger,
   TEST_AUTH,
   TEST_GITHUB_USER
 } from '../authTestUtils.js';
@@ -36,7 +39,7 @@ describe('MCP OAuth authorization server', () => {
       token_endpoint: `${TEST_AUTH.issuer}/token`,
       registration_endpoint: `${TEST_AUTH.issuer}/register`,
       response_types_supported: ['code'],
-      grant_types_supported: ['authorization_code'],
+      grant_types_supported: ['authorization_code', 'refresh_token'],
       code_challenge_methods_supported: ['S256'],
       token_endpoint_auth_methods_supported: ['none']
     });
@@ -155,17 +158,37 @@ describe('MCP OAuth authorization server', () => {
   });
 
   it('rejects unknown remote https redirect_uris unless allowlisted or allowAnyHttps', async () => {
-    const app = createOAuthTestApp(createTestAuthManager());
+    const logs = [];
+    const logger = {
+      ...silentTestLogger,
+      info: (fields, message) => {
+        logs.push({ fields, message });
+      }
+    };
+    const app = createOAuthTestApp(
+      createTestAuthManager({
+        logger,
+        trustedRedirectHosts: ['oauth-redirect.googleusercontent.com']
+      })
+    );
     const rejected = await request(app)
       .post('/mcp/register')
       .send({
         client_name: 'Evil',
-        redirect_uris: ['https://evil.example/cb'],
+        redirect_uris: ['https://evil.example/cb', 'https://oauth-redirect.googleusercontent.com/r/ok'],
         grant_types: ['authorization_code'],
         response_types: ['code']
       });
     assert.strictEqual(rejected.status, 400);
     assert.strictEqual(rejected.body.error, 'invalid_redirect_uri');
+    const rejectLog = logs.find((entry) => entry.message === 'MCP OAuth client registration rejected');
+    assert.isOk(rejectLog);
+    assert.deepEqual(rejectLog.fields.redirectUris, [
+      'https://evil.example/cb',
+      'https://oauth-redirect.googleusercontent.com/r/ok'
+    ]);
+    assert.deepEqual(rejectLog.fields.rejectedRedirectUris, ['https://evil.example/cb']);
+    assert.strictEqual(rejectLog.fields.clientName, 'Evil');
 
     const allowed = createOAuthTestApp(
       createTestAuthManager({ allowedRedirectUris: ['https://app.example/cb'] })
@@ -192,6 +215,114 @@ describe('MCP OAuth authorization server', () => {
         response_types: ['code']
       });
     assert.strictEqual(anyOk.status, 201);
+  });
+
+  it('logs redirect_uris on successful DCR registration', async () => {
+    const logs = [];
+    const logger = {
+      ...silentTestLogger,
+      info: (fields, message) => {
+        logs.push({ fields, message });
+      }
+    };
+    const app = createOAuthTestApp(createTestAuthManager({ logger }));
+    const res = await request(app)
+      .post('/mcp/register')
+      .send({
+        client_name: 'Google',
+        redirect_uris: ['https://oauth-redirect.googleusercontent.com/r/user_bound_custom-mcp-x'],
+        grant_types: ['authorization_code'],
+        response_types: ['code']
+      });
+    // Default trusted hosts do not include googleusercontent — use allowAny for this success path
+    assert.strictEqual(res.status, 400);
+
+    const anyApp = createOAuthTestApp(
+      createTestAuthManager({ logger, allowAnyHttpsRedirect: true })
+    );
+    const ok = await request(anyApp)
+      .post('/mcp/register')
+      .send({
+        client_name: 'Google',
+        redirect_uris: [
+          'https://oauth-redirect.googleusercontent.com/r/user_bound_custom-mcp-x',
+          'https://gemini.google.com/oauth'
+        ],
+        grant_types: ['authorization_code'],
+        response_types: ['code']
+      });
+    assert.strictEqual(ok.status, 201);
+    const successLog = logs.find((entry) => entry.message === 'MCP OAuth client registered');
+    assert.isOk(successLog);
+    assert.deepEqual(successLog.fields.redirectUris, [
+      'https://oauth-redirect.googleusercontent.com/r/user_bound_custom-mcp-x',
+      'https://gemini.google.com/oauth'
+    ]);
+    assert.deepEqual(successLog.fields.rejectedRedirectUris, []);
+  });
+
+  it('echoes wire-encoded state unmodified on https callback redirect', async () => {
+    const logs = [];
+    const logger = {
+      ...silentTestLogger,
+      info: (fields, message) => {
+        logs.push({ fields, message });
+      }
+    };
+    const authManager = createTestAuthManager({
+      logger,
+      allowedRedirectUris: ['https://oauth-redirect.googleusercontent.com/r/spark']
+    });
+    const { codeChallenge } = createPkcePair();
+    const client = registerOAuthTestClient(
+      authManager,
+      'https://oauth-redirect.googleusercontent.com/r/spark'
+    );
+    // Spark-like state: plus, slash, equals, and already-encoded %2B
+    const rawStateOnWire = 'abc%2Bdef/ghi=end';
+    mockExchangeCodeForUser(authManager);
+
+    const app = createOAuthTestApp(authManager);
+    const authorizeRes = await request(app).get(
+      `/mcp/authorize?client_id=${client.client_id}` +
+        `&redirect_uri=${encodeURIComponent('https://oauth-redirect.googleusercontent.com/r/spark')}` +
+        `&response_type=code` +
+        `&code_challenge=${codeChallenge}` +
+        `&code_challenge_method=S256` +
+        `&state=${rawStateOnWire}`
+    );
+    assert.strictEqual(authorizeRes.status, 302);
+    const idpState = new URL(authorizeRes.headers.location).searchParams.get('state');
+
+    const callbackRes = await request(app)
+      .get('/mcp/auth/callback')
+      .query({ state: idpState, code: 'github-auth-code' });
+
+    assert.strictEqual(callbackRes.status, 302);
+    const location = callbackRes.headers.location;
+    assert.include(location, `state=${rawStateOnWire}`);
+    assert.match(location, /^https:\/\/oauth-redirect\.googleusercontent\.com\/r\/spark\?code=[^&]+&state=/);
+
+    const redirectLog = logs.find((entry) => entry.message === 'MCP authorization code redirect issued');
+    assert.isOk(redirectLog);
+    assert.strictEqual(redirectLog.fields.stateUnchanged, true);
+    assert.strictEqual(redirectLog.fields.inboundStateLength, rawStateOnWire.length);
+    assert.deepEqual(redirectLog.fields.queryKeys, ['code', 'state']);
+    assert.strictEqual(redirectLog.fields.redirectHost, 'oauth-redirect.googleusercontent.com');
+  });
+
+  it('extractRawQueryParam and buildAuthorizationRedirectUrl preserve encoding', () => {
+    const raw = extractRawQueryParam('/mcp/authorize?state=a%2Bb%2Fc%3D&client_id=x', 'state');
+    assert.strictEqual(raw, 'a%2Bb%2Fc%3D');
+    const url = buildAuthorizationRedirectUrl(
+      'https://oauth-redirect.googleusercontent.com/r/x',
+      'authcode',
+      raw
+    );
+    assert.strictEqual(
+      url,
+      'https://oauth-redirect.googleusercontent.com/r/x?code=authcode&state=a%2Bb%2Fc%3D'
+    );
   });
 
   it('accepts Cursor-style multi-URI DCR with trusted https host', async () => {
@@ -282,6 +413,7 @@ describe('MCP OAuth authorization server', () => {
 
     assert.strictEqual(res.status, 200);
     assert.property(res.body, 'access_token');
+    assert.property(res.body, 'refresh_token');
     assert.strictEqual(res.body.token_type, 'Bearer');
     assert.isAbove(res.body.expires_in, 0);
 
@@ -294,5 +426,63 @@ describe('MCP OAuth authorization server', () => {
     assert.strictEqual(active.user.login, TEST_GITHUB_USER.login);
     assert.strictEqual(active.context.oauth_client_id, client.client_id);
     assert.strictEqual(active.context.oauth_sub, TEST_GITHUB_USER.sub);
+
+    const storedRefresh = await authManager.sessionStore.findRefreshToken(res.body.refresh_token);
+    assert.isNotNull(storedRefresh);
+    assert.strictEqual(storedRefresh.clientId, client.client_id);
+    assert.strictEqual(storedRefresh.user.sub, TEST_GITHUB_USER.sub);
+  });
+
+  it('exchanges refresh_token for a new access token and rotates refresh_token', async () => {
+    const authManager = createTestAuthManager();
+    const { codeVerifier, codeChallenge } = createPkcePair();
+    const client = registerOAuthTestClient(authManager);
+    const code = authManager.authorizationCodes.issue({
+      clientId: client.client_id,
+      redirectUri: 'cursor://callback',
+      codeChallenge,
+      user: TEST_GITHUB_USER,
+      resource: `${TEST_AUTH.origin}/mcp`
+    });
+
+    const app = createOAuthTestApp(authManager);
+    const first = await request(app)
+      .post('/mcp/token')
+      .type('form')
+      .send({
+        grant_type: 'authorization_code',
+        code,
+        redirect_uri: 'cursor://callback',
+        client_id: client.client_id,
+        code_verifier: codeVerifier
+      });
+    assert.strictEqual(first.status, 200);
+    const oldRefresh = first.body.refresh_token;
+
+    const refreshed = await request(app)
+      .post('/mcp/token')
+      .type('form')
+      .send({
+        grant_type: 'refresh_token',
+        refresh_token: oldRefresh,
+        client_id: client.client_id
+      });
+    assert.strictEqual(refreshed.status, 200);
+    assert.property(refreshed.body, 'access_token');
+    assert.property(refreshed.body, 'refresh_token');
+    assert.notStrictEqual(refreshed.body.refresh_token, oldRefresh);
+    assert.isNull(await authManager.sessionStore.findRefreshToken(oldRefresh));
+    assert.isNotNull(await authManager.sessionStore.findRefreshToken(refreshed.body.refresh_token));
+
+    const missing = await request(app)
+      .post('/mcp/token')
+      .type('form')
+      .send({
+        grant_type: 'refresh_token',
+        refresh_token: oldRefresh,
+        client_id: client.client_id
+      });
+    assert.strictEqual(missing.status, 400);
+    assert.strictEqual(missing.body.error, 'invalid_grant');
   });
 });

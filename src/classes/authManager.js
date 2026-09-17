@@ -9,11 +9,14 @@ import { InvalidTokenError } from '@modelcontextprotocol/sdk/server/auth/errors.
 import { getOAuthProtectedResourceMetadataUrl } from '@modelcontextprotocol/sdk/server/auth/router.js';
 import {
   AuthorizationCodeStore,
+  DEFAULT_REFRESH_TOKEN_TTL_SECONDS,
   DEFAULT_TRUSTED_REDIRECT_HOSTS,
   OAuthClientRegistry,
   PendingAuthStore,
+  buildAuthorizationRedirectUrl,
   buildAuthorizationServerMetadata,
   buildProtectedResourceMetadata,
+  extractRawQueryParam,
   isRedirectUriAllowedByPolicy,
   jwtExpiresInSeconds,
   verifyPkceChallenge
@@ -535,6 +538,9 @@ export class AuthManager {
     if (!mcpAuthPending) {
       throw new Error('MCP authorization pending state is missing');
     }
+    if (typeof mcpAuthPending.state !== 'string' || !mcpAuthPending.state) {
+      throw new Error('MCP authorization pending state is missing');
+    }
 
     const code = this.authorizationCodes.issue({
       clientId: mcpAuthPending.client_id,
@@ -544,10 +550,27 @@ export class AuthManager {
       resource: mcpAuthPending.resource
     });
 
-    const redirectUrl = new URL(mcpAuthPending.redirect_uri);
-    redirectUrl.searchParams.set('code', code);
-    redirectUrl.searchParams.set('state', mcpAuthPending.state);
-    const redirectTarget = redirectUrl.toString();
+    const rawState = mcpAuthPending.state;
+    const redirectTarget = buildAuthorizationRedirectUrl(
+      mcpAuthPending.redirect_uri,
+      code,
+      rawState
+    );
+    const redirectHost = new URL(mcpAuthPending.redirect_uri).hostname;
+    const stateParam = `state=${rawState}`;
+    const stateUnchanged = redirectTarget.includes(stateParam);
+
+    this.logger.info?.(
+      {
+        redirectHost,
+        locationLength: redirectTarget.length,
+        inboundStateLength: rawState.length,
+        outboundStateLength: rawState.length,
+        stateUnchanged,
+        queryKeys: ['code', 'state']
+      },
+      'MCP authorization code redirect issued'
+    );
 
     if (this._isHttpRedirectUri(mcpAuthPending.redirect_uri)) {
       return res.redirect(redirectTarget);
@@ -786,6 +809,14 @@ export class AuthManager {
           })
       );
       if (rejected.length > 0) {
+        this.logger.info?.(
+          {
+            clientName: clientName.trim(),
+            redirectUris,
+            rejectedRedirectUris: rejected
+          },
+          'MCP OAuth client registration rejected'
+        );
         return res.status(400).json({
           error: 'invalid_redirect_uri',
           error_description:
@@ -800,7 +831,15 @@ export class AuthManager {
         response_types: responseTypes || ['code']
       });
 
-      this.logger.info?.({ clientId: record.client_id, clientName: record.client_name }, 'MCP OAuth client registered');
+      this.logger.info?.(
+        {
+          clientId: record.client_id,
+          clientName: record.client_name,
+          redirectUris,
+          rejectedRedirectUris: []
+        },
+        'MCP OAuth client registered'
+      );
       return res.status(201).json(record);
     });
 
@@ -811,9 +850,9 @@ export class AuthManager {
         response_type: responseType,
         code_challenge: codeChallenge,
         code_challenge_method: codeChallengeMethod,
-        state,
         resource
       } = req.query;
+      const rawState = extractRawQueryParam(req.originalUrl, 'state');
 
       if (typeof clientId !== 'string' || !clientId) {
         return res.status(400).json({ error: 'invalid_request', error_description: 'client_id is required' });
@@ -830,7 +869,7 @@ export class AuthManager {
       if (typeof codeChallenge !== 'string' || !codeChallenge) {
         return res.status(400).json({ error: 'invalid_request', error_description: 'code_challenge is required' });
       }
-      if (typeof state !== 'string' || !state) {
+      if (typeof rawState !== 'string' || !rawState) {
         return res.status(400).json({ error: 'invalid_request', error_description: 'state is required' });
       }
       if (!this.oauthClients.isRedirectUriAllowed(clientId, redirectUri)) {
@@ -848,7 +887,7 @@ export class AuthManager {
         client_id: clientId,
         redirect_uri: redirectUri,
         code_challenge: codeChallenge,
-        state,
+        state: rawState,
         resource: typeof resource === 'string' && resource ? resource : this.expectedResource
       };
 
@@ -876,11 +915,16 @@ export class AuthManager {
         code,
         redirect_uri: redirectUri,
         client_id: clientId,
-        code_verifier: codeVerifier
+        code_verifier: codeVerifier,
+        refresh_token: refreshToken
       } = req.body;
 
+      if (grantType === 'refresh_token') {
+        return this._handleRefreshTokenGrant(req, res, { refreshToken, clientId });
+      }
+
       if (grantType !== 'authorization_code') {
-        return res.status(400).json({ error: 'unsupported_grant_type', error_description: 'Only authorization_code is supported' });
+        return res.status(400).json({ error: 'unsupported_grant_type', error_description: 'Only authorization_code and refresh_token are supported' });
       }
       if (typeof code !== 'string' || !code) {
         return res.status(400).json({ error: 'invalid_request', error_description: 'code is required' });
@@ -906,12 +950,9 @@ export class AuthManager {
         return res.status(400).json({ error: 'invalid_grant', error_description: 'PKCE verification failed' });
       }
 
-      const accessToken = this.issueJwt(authCode.user);
       try {
-        await this.persistAccessTokenSession(accessToken, {
-          oauth_client_id: clientId,
-          oauth_sub: authCode.user.sub
-        });
+        const tokens = await this._issueAccessAndRefreshTokens(authCode.user, clientId);
+        return res.json(tokens);
       } catch (persistErr) {
         this.logger.error?.(
           { err: persistErr.message, clientId },
@@ -922,14 +963,90 @@ export class AuthManager {
           error_description: 'Failed to persist access token session'
         });
       }
-      const expiresIn = jwtExpiresInSeconds(accessToken);
-
-      return res.json({
-        access_token: accessToken,
-        token_type: 'Bearer',
-        expires_in: expiresIn
-      });
     });
+  }
+
+  /**
+   * Issue access + refresh tokens and persist both.
+   * @param {Object} user
+   * @param {string} clientId
+   * @returns {Promise<{ access_token: string, token_type: string, expires_in: number, refresh_token: string }>}
+   * @private
+   */
+  async _issueAccessAndRefreshTokens(user, clientId) {
+    if (!user || typeof user !== 'object') {
+      throw new Error('user is required to issue tokens');
+    }
+    if (typeof clientId !== 'string' || !clientId) {
+      throw new Error('clientId is required to issue tokens');
+    }
+    if (typeof this.sessionStore.storeRefreshToken !== 'function') {
+      throw new Error('sessionStore.storeRefreshToken is required for OAuth refresh tokens');
+    }
+
+    const accessToken = this.issueJwt(user);
+    await this.persistAccessTokenSession(accessToken, {
+      oauth_client_id: clientId,
+      oauth_sub: user.sub
+    });
+
+    const refreshToken = randomBytes(32).toString('base64url');
+    await this.sessionStore.storeRefreshToken(
+      refreshToken,
+      { user, clientId },
+      DEFAULT_REFRESH_TOKEN_TTL_SECONDS
+    );
+
+    return {
+      access_token: accessToken,
+      token_type: 'Bearer',
+      expires_in: jwtExpiresInSeconds(accessToken),
+      refresh_token: refreshToken
+    };
+  }
+
+  /**
+   * Handle grant_type=refresh_token.
+   * @param {import('express').Request} _req
+   * @param {import('express').Response} res
+   * @param {{ refreshToken: unknown, clientId: unknown }} params
+   * @returns {Promise<void>}
+   * @private
+   */
+  async _handleRefreshTokenGrant(_req, res, { refreshToken, clientId }) {
+    if (typeof refreshToken !== 'string' || !refreshToken) {
+      return res.status(400).json({ error: 'invalid_request', error_description: 'refresh_token is required' });
+    }
+    if (typeof clientId !== 'string' || !clientId) {
+      return res.status(400).json({ error: 'invalid_request', error_description: 'client_id is required' });
+    }
+    if (typeof this.sessionStore.findRefreshToken !== 'function' || typeof this.sessionStore.deleteRefreshToken !== 'function') {
+      throw new Error('sessionStore refresh token methods are required');
+    }
+
+    const stored = await this.sessionStore.findRefreshToken(refreshToken);
+    if (!stored) {
+      return res.status(400).json({ error: 'invalid_grant', error_description: 'Refresh token is invalid or expired' });
+    }
+    if (stored.clientId !== clientId) {
+      return res.status(400).json({ error: 'invalid_grant', error_description: 'Refresh token does not match client' });
+    }
+
+    await this.sessionStore.deleteRefreshToken(refreshToken);
+
+    try {
+      const tokens = await this._issueAccessAndRefreshTokens(stored.user, clientId);
+      return res.json(tokens);
+    } catch (persistErr) {
+      this.logger.error?.(
+        { err: persistErr.message, clientId },
+        'persistAccessTokenSession failed'
+      );
+      return res.status(500).json({
+        error: 'server_error',
+        error_description: 'Failed to persist access token session'
+      });
+    }
   }
 
   /**
