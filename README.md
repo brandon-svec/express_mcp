@@ -1,6 +1,6 @@
 # Express MCP
 
-Mount the [Model Context Protocol](https://modelcontextprotocol.io/) on any Express app so AI clients (Cursor, Claude, and other MCP-compatible tools) can agentically interact with your pre-existing API server without standing up a separate MCP server.
+Mount the [Model Context Protocol](https://modelcontextprotocol.io/) on any Express app so AI clients (Cursor, Claude, Gemini Spark Connected Apps, and other MCP-compatible tools) can agentically interact with your pre-existing API server without standing up a separate MCP server.
 
 Register tools against your existing business logic, optionally add OAuth SSO (GitHub/Google), a FlexSearch knowledge base, and an in-process LLM agent. This package ships **routers and middleware only**; your host Express app remains in control of TLS, CORS, body parsers, and rate limits.
 
@@ -9,6 +9,7 @@ Register tools against your existing business logic, optionally add OAuth SSO (G
 - **Drop-in MCP on Express** — Mount JSON-RPC MCP endpoints on the app you already run
 - **Your tools, your data** — Register custom tools that wrap existing APIs and services
 - **Optional OAuth SSO** — GitHub/Google login, Bearer JWTs, PKCE, and Dynamic Client Registration for MCP clients
+- **Gemini Spark Connected Apps** — First-class Google Account Linking for Spark: default DCR allowlist for `oauth-redirect*.googleusercontent.com`, wire-encoded `state` echo, and `refresh_token` issuance
 - **Built-in knowledge base** — Full-text document search via FlexSearch (`kb_search`, `kb_list`, `kb_get`)
 - **Tool name prefixing** — Avoid collisions when multiple MCP services share a client
 - **Optional agent** — Gemini-backed `agent_ask` that can call your registered tools
@@ -159,6 +160,16 @@ if (auth) {
 ```
 
 Env vars: `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `JWT_SECRET`, `SESSION_SECRET`. Optional: `JWT_EXPIRES_IN`, `AUTH_ALLOWED_USERS`, `OAUTH_CALLBACK_URL`.
+
+### Gemini Spark Connected Apps
+
+Spark connects through [Google Account Linking](https://developers.google.com/identity/account-linking/oauth-linking), not by pasting your `GOOGLE_CLIENT_SECRET` into Spark’s UI.
+
+1. Enable auth with a Google IdP client. Register **only** `{baseUrl}/mcp/auth/callback` on that Google Cloud OAuth client (the server’s IdP callback).
+2. Point Spark Connected Apps at your MCP HTTPS URL. Spark DCR registers `oauth-redirect` / `oauth-redirect-sandbox` / `oauth-redirect-test` `.googleusercontent.com` redirect hosts — those are trusted by default (no `trustedRedirectHosts` or `allowAnyHttpsRedirect` required for Spark).
+3. After the user signs in, Google’s servers call your `POST /mcp/token`. The library returns `refresh_token` and echoes the wire-encoded `state` unchanged (required for Account Linking).
+
+Do not add `oauth-redirect*.googleusercontent.com` URLs to the Google Cloud OAuth client’s authorized redirect list. See **[docs/AUTH.md](docs/AUTH.md)** for `trustedRedirectHosts` and `allowAnyHttpsRedirect` when integrating other agents.
 
 ## Optional AI Agent
 

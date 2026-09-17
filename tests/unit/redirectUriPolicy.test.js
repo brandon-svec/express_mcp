@@ -23,6 +23,23 @@ describe('DCR redirect URI policy', () => {
     assert.isTrue(DEFAULT_TRUSTED_REDIRECT_HOSTS.has('www.cursor.com'));
   });
 
+  it('allows Gemini Spark Account Linking redirect hosts by default', () => {
+    const sparkHosts = [
+      'oauth-redirect.googleusercontent.com',
+      'oauth-redirect-sandbox.googleusercontent.com',
+      'oauth-redirect-test.googleusercontent.com'
+    ];
+    for (const host of sparkHosts) {
+      assert.isTrue(DEFAULT_TRUSTED_REDIRECT_HOSTS.has(host));
+      assert.isTrue(
+        isRedirectUriAllowedByPolicy(`https://${host}/r/user_bound_custom-mcp-example`)
+      );
+      assert.isTrue(
+        isRedirectUriAllowedByPolicy(`https://${host}/a/user_bound_custom-mcp-example`)
+      );
+    }
+  });
+
   it('rejects unknown remote https and public cleartext http by default', () => {
     assert.isFalse(isRedirectUriAllowedByPolicy('https://evil.example/cb'));
     assert.isFalse(isRedirectUriAllowedByPolicy('http://evil.example/cb'));

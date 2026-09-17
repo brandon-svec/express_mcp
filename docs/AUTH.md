@@ -50,7 +50,7 @@ app.listen(3000);
 | `postLoginRedirectUrl` | No | Browser redirect after standalone OAuth (e.g. `https://t.me/YourBot`) |
 | `sessionStore` | Yes | `InMemoryStandaloneSessionStore` or `RedisStandaloneSessionStore` — pending + active standalone sessions; PKCE Bearer tokens keyed by JWT `jti` |
 | `allowedRedirectUris` | No | Exact-match redirect URIs allowed for Dynamic Client Registration |
-| `trustedRedirectHosts` | No | Extra https hostnames merged with library defaults (`cursor.com`, `www.cursor.com`, `vscode.dev`, `insiders.vscode.dev`) |
+| `trustedRedirectHosts` | No | Extra https hostnames merged with library defaults (`cursor.com`, `www.cursor.com`, `vscode.dev`, `insiders.vscode.dev`, `oauth-redirect.googleusercontent.com`, `oauth-redirect-sandbox.googleusercontent.com`, `oauth-redirect-test.googleusercontent.com`) |
 | `allowAnyHttpsRedirect` | No | When `true`, accept **any** https redirect URI (disables the https host allowlist). Off by default — trades away anti-phishing protection for open DCR |
 | `showTokenOnSuccessPage` | No | When `true`, embed Bearer JWT in standalone success HTML (local dev only; default `false`) |
 | `enableDebugEndpoint` | No | When `true`, mount `GET …/auth/debug` (default `false`) |
@@ -58,6 +58,8 @@ app.listen(3000);
 `jwtSecret` and `sessionSecret` must be at least 32 characters.
 
 **DCR redirect URI policy (secure by default):** loopback `http`/`https`, private-use schemes (e.g. `cursor://`), and `https` on library trusted agent hosts are allowed. Unknown remote `https` hosts are rejected unless listed via `trustedRedirectHosts`, matched exactly in `allowedRedirectUris`, or `allowAnyHttpsRedirect` is `true`. Public cleartext `http` is always rejected. Host matching uses `URL.hostname` (exact domain; suffix bypasses like `cursor.com.attacker.example` are rejected).
+
+**Gemini Spark Connected Apps:** Spark’s Account Linking DCR uses the three `oauth-redirect*.googleusercontent.com` hosts above (prod, sandbox, and test; `/r/…` and `/a/…` paths). Those hosts are trusted by default — no host config is required for Spark. Register only `{baseUrl}/mcp/auth/callback` on your Google Cloud OAuth client; do not put googleusercontent redirect URLs there.
 
 ### Derived values (normally do not set manually)
 
