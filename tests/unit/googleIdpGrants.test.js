@@ -3,7 +3,6 @@ import {
   AuthManager,
   GOOGLE_CONTACTS_READONLY_SCOPE
 } from '../../src/classes/authManager.js';
-import { GoogleScopeGrantRequiredError } from '../../src/stores/errors.js';
 import { InMemoryStandaloneSessionStore } from '../../src/stores/inMemoryStandaloneSessionStore.js';
 import { deriveSealKey, seal, unseal } from '../../src/crypto/seal.js';
 import { GoogleGrantTool } from '../../src/tools/googleGrant.js';
@@ -19,7 +18,9 @@ describe('seal crypto', () => {
   });
 
   it('rejects short secrets', () => {
-    expect(() => deriveSealKey('short')).to.throw(/at least 32/);
+    expect(() => deriveSealKey('short')).to.throw(
+      'idpTokenEncryptionKey must be a string of at least 32 characters'
+    );
   });
 });
 
@@ -39,9 +40,13 @@ describe('Google IdP grants', () => {
       }
     );
     const pending = await store.peekPending(sessionId);
-    expect(pending.purpose).to.equal('google_grant');
-    expect(pending.scopes).to.deep.equal([GOOGLE_CONTACTS_READONLY_SCOPE]);
-    expect(pending.sub).to.equal('google:123');
+    expect(pending).to.deep.equal({
+      context: { telegram_chat_id: '1' },
+      provider: 'google',
+      purpose: 'google_grant',
+      scopes: [GOOGLE_CONTACTS_READONLY_SCOPE],
+      sub: 'google:123'
+    });
   });
 
   it('createGoogleGrantUrl rejects scopes outside the allowlist', async () => {
@@ -56,7 +61,9 @@ describe('Google IdP grants', () => {
       });
       expect.fail('expected error');
     } catch (err) {
-      expect(err.message).to.include('not in googleExtraScopes');
+      expect(err.message).to.equal(
+        'scope is not in googleExtraScopes allowlist: https://www.googleapis.com/auth/contacts'
+      );
     }
   });
 
@@ -73,11 +80,22 @@ describe('Google IdP grants', () => {
       includeGrantedScopes: true
     });
     const parsed = new URL(url);
-    expect(parsed.searchParams.get('access_type')).to.equal('offline');
-    expect(parsed.searchParams.get('prompt')).to.equal('consent');
-    expect(parsed.searchParams.get('include_granted_scopes')).to.equal('true');
-    expect(parsed.searchParams.get('scope')).to.include(GOOGLE_CONTACTS_READONLY_SCOPE);
-    expect(parsed.searchParams.get('scope')).to.include('openid');
+    expect({
+      access_type: parsed.searchParams.get('access_type'),
+      prompt: parsed.searchParams.get('prompt'),
+      include_granted_scopes: parsed.searchParams.get('include_granted_scopes'),
+      scope: parsed.searchParams.get('scope')
+    }).to.deep.equal({
+      access_type: 'offline',
+      prompt: 'consent',
+      include_granted_scopes: 'true',
+      scope: [
+        'openid',
+        'email',
+        'profile',
+        GOOGLE_CONTACTS_READONLY_SCOPE
+      ].join(' ')
+    });
   });
 
   it('getGoogleAccessToken throws typed no_grant when missing', async () => {
@@ -92,9 +110,15 @@ describe('Google IdP grants', () => {
       });
       expect.fail('expected GoogleScopeGrantRequiredError');
     } catch (err) {
-      expect(err).to.be.instanceOf(GoogleScopeGrantRequiredError);
-      expect(err.reason).to.equal('no_grant');
-      expect(err.missingScopes).to.deep.equal([GOOGLE_CONTACTS_READONLY_SCOPE]);
+      expect({
+        name: err.name,
+        reason: err.reason,
+        missingScopes: err.missingScopes
+      }).to.deep.equal({
+        name: 'GoogleScopeGrantRequiredError',
+        reason: 'no_grant',
+        missingScopes: [GOOGLE_CONTACTS_READONLY_SCOPE]
+      });
     }
   });
 
@@ -117,9 +141,13 @@ describe('Google IdP grants', () => {
     );
 
     const grant = await store.findIdpGrant('google:99');
-    expect(grant.scopes).to.include(GOOGLE_CONTACTS_READONLY_SCOPE);
-    expect(grant.sealedRefreshToken).to.be.a('string');
-    expect(grant.sealedRefreshToken).to.not.include('rt-secret');
+    expect({
+      scopes: grant.scopes,
+      plaintext: unseal(grant.sealedRefreshToken, deriveSealKey(IDP_KEY))
+    }).to.deep.equal({
+      scopes: [GOOGLE_CONTACTS_READONLY_SCOPE],
+      plaintext: 'rt-secret'
+    });
 
     authManager._refreshGoogleAccessToken = async (refreshToken) => {
       expect(refreshToken).to.equal('rt-secret');
@@ -133,8 +161,11 @@ describe('Google IdP grants', () => {
     const result = await authManager.getGoogleAccessToken('google:99', {
       requiredScopes: [GOOGLE_CONTACTS_READONLY_SCOPE]
     });
-    expect(result.accessToken).to.equal('fresh-access');
-    expect(result.expiresIn).to.equal(3600);
+    expect(result).to.deep.equal({
+      accessToken: 'fresh-access',
+      scopes: [GOOGLE_CONTACTS_READONLY_SCOPE],
+      expiresIn: 3600
+    });
   });
 
   it('requires idpTokenEncryptionKey when googleExtraScopes is set', () => {
@@ -151,7 +182,9 @@ describe('Google IdP grants', () => {
           sessionStore: new InMemoryStandaloneSessionStore(),
           googleExtraScopes: [GOOGLE_CONTACTS_READONLY_SCOPE]
         })
-    ).to.throw(/idpTokenEncryptionKey/);
+    ).to.throw(
+      'idpTokenEncryptionKey (≥32 characters) is required when googleExtraScopes is set'
+    );
   });
 
   it('revokeGoogleIdpGrant revokes at Google and deletes the grant', async () => {
@@ -173,18 +206,31 @@ describe('Google IdP grants', () => {
     );
 
     const originalFetch = globalThis.fetch;
-    let revokeBody = null;
+    /** @type {{ url: string, method: string, body: string }|null} */
+    let revokeRequest = null;
     globalThis.fetch = async (url, options) => {
-      expect(String(url)).to.equal('https://oauth2.googleapis.com/revoke');
-      expect(options.method).to.equal('POST');
-      revokeBody = options.body;
+      revokeRequest = {
+        url: String(url),
+        method: options.method,
+        body: options.body
+      };
       return { ok: true, status: 200, text: async () => '' };
     };
     try {
       const revoked = await authManager.revokeGoogleIdpGrant('google:99');
-      expect(revoked).to.equal(true);
-      expect(revokeBody).to.equal(new URLSearchParams({ token: 'rt-secret' }).toString());
-      expect(await store.findIdpGrant('google:99')).to.equal(null);
+      expect({
+        revoked,
+        revokeRequest,
+        grantAfter: await store.findIdpGrant('google:99')
+      }).to.deep.equal({
+        revoked: true,
+        revokeRequest: {
+          url: 'https://oauth2.googleapis.com/revoke',
+          method: 'POST',
+          body: new URLSearchParams({ token: 'rt-secret' }).toString()
+        },
+        grantAfter: null
+      });
     } finally {
       globalThis.fetch = originalFetch;
     }
@@ -204,8 +250,10 @@ describe('Google IdP grants', () => {
     };
     try {
       const revoked = await authManager.revokeGoogleIdpGrant('google:missing');
-      expect(revoked).to.equal(false);
-      expect(fetchCalled).to.equal(false);
+      expect({ revoked, fetchCalled }).to.deep.equal({
+        revoked: false,
+        fetchCalled: false
+      });
     } finally {
       globalThis.fetch = originalFetch;
     }
@@ -235,8 +283,13 @@ describe('Google IdP grants', () => {
     });
     try {
       const revoked = await authManager.revokeGoogleIdpGrant('google:99');
-      expect(revoked).to.equal(true);
-      expect(await store.findIdpGrant('google:99')).to.equal(null);
+      expect({
+        revoked,
+        grantAfter: await store.findIdpGrant('google:99')
+      }).to.deep.equal({
+        revoked: true,
+        grantAfter: null
+      });
     } finally {
       globalThis.fetch = originalFetch;
     }
@@ -309,8 +362,13 @@ describe('GoogleGrantTool', () => {
         { action: 'revoke' },
         { user: { sub: 'google:1' } }
       );
-      expect(result).to.deep.equal({ revoked: true });
-      expect(await store.findIdpGrant('google:1')).to.equal(null);
+      expect({
+        result,
+        grantAfter: await store.findIdpGrant('google:1')
+      }).to.deep.equal({
+        result: { revoked: true },
+        grantAfter: null
+      });
     } finally {
       globalThis.fetch = originalFetch;
     }
