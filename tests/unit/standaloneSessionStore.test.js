@@ -15,11 +15,20 @@ describe('InMemoryStandaloneSessionStore', () => {
     expect(await store.hasPending(SESSION_ID)).to.equal(true);
     expect(await store.peekPending(SESSION_ID)).to.deep.equal({
       context,
-      provider: 'github'
+      provider: 'github',
+      purpose: 'login',
+      scopes: [],
+      sub: null
     });
 
     const pending = await store.consumePending(SESSION_ID);
-    expect(pending).to.deep.equal({ context, provider: 'github' });
+    expect(pending).to.deep.equal({
+      context,
+      provider: 'github',
+      purpose: 'login',
+      scopes: [],
+      sub: null
+    });
     expect(await store.hasPending(SESSION_ID)).to.equal(false);
     expect(await store.consumePending(SESSION_ID)).to.equal(null);
 
@@ -85,7 +94,13 @@ describe('RedisStandaloneSessionStore', () => {
     expect(await store.hasPending(SESSION_ID)).to.equal(true);
 
     const pending = await store.consumePending(SESSION_ID);
-    expect(pending).to.deep.equal({ context, provider: 'google' });
+    expect(pending).to.deep.equal({
+      context,
+      provider: 'google',
+      purpose: 'login',
+      scopes: [],
+      sub: null
+    });
 
     const user = { sub: 'google:1', email: 'a@b.com' };
     await store.activate(SESSION_ID, user, 3600, context);

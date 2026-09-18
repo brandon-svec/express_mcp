@@ -139,4 +139,33 @@ describe('buildAuthOptions', () => {
     assert.deepStrictEqual(auth.trustedRedirectHosts, ['newagent.example']);
     assert.strictEqual(auth.allowAnyHttpsRedirect, true);
   });
+
+  it('requires idpTokenEncryptionKey when googleExtraScopes is set', () => {
+    assert.throws(
+      () =>
+        buildAuthOptions(
+          validInput({
+            googleExtraScopes: ['https://www.googleapis.com/auth/contacts.readonly']
+          })
+        ),
+      /idpTokenEncryptionKey/
+    );
+  });
+
+  it('forwards googleExtraScopes and idpTokenEncryptionKey', () => {
+    const auth = buildAuthOptions(
+      validInput({
+        googleExtraScopes: ['https://www.googleapis.com/auth/contacts.readonly'],
+        idpTokenEncryptionKey: 'test-idp-encryption-key-at-least-32!!'
+      })
+    );
+
+    assert.deepStrictEqual(auth.googleExtraScopes, [
+      'https://www.googleapis.com/auth/contacts.readonly'
+    ]);
+    assert.strictEqual(
+      auth.idpTokenEncryptionKey,
+      'test-idp-encryption-key-at-least-32!!'
+    );
+  });
 });

@@ -20,7 +20,7 @@ export {
   authServerInfo,
   validateAuthOptions
 } from './authConfig.js';
-export { SUPPORTED_OAUTH_PROVIDERS } from './classes/authManager.js';
+export { SUPPORTED_OAUTH_PROVIDERS, GOOGLE_CONTACTS_READONLY_SCOPE } from './classes/authManager.js';
 
 export {
   Agent,
@@ -31,5 +31,5 @@ export {
 
 export { InMemoryStandaloneSessionStore } from './stores/inMemoryStandaloneSessionStore.js';
 export { RedisStandaloneSessionStore } from './stores/redisStandaloneSessionStore.js';
-export { ContextAuthRequiredError } from './stores/errors.js';
+export { ContextAuthRequiredError, GoogleScopeGrantRequiredError } from './stores/errors.js';
 export { sanitizeHostContext } from './stores/sessionContext.js';

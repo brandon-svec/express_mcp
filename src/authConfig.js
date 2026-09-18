@@ -78,6 +78,20 @@ export function validateAuthOptions(auth) {
     throw new Error('Auth enabled but allowAnyHttpsRedirect must be a boolean.');
   }
 
+  if (auth.googleExtraScopes !== undefined) {
+    if (!Array.isArray(auth.googleExtraScopes)) {
+      throw new Error('Auth enabled but googleExtraScopes must be an array.');
+    }
+    for (const scope of auth.googleExtraScopes) {
+      if (typeof scope !== 'string' || !scope.trim()) {
+        throw new Error('Auth enabled but googleExtraScopes must contain non-empty strings.');
+      }
+    }
+    if (auth.googleExtraScopes.length > 0) {
+      requireSecret(auth.idpTokenEncryptionKey, 'idpTokenEncryptionKey');
+    }
+  }
+
   normalizeAuthProviders(auth);
 }
 

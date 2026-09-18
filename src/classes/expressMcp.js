@@ -236,6 +236,8 @@ export class ExpressMcp {
       postLoginRedirectUrl: auth.postLoginRedirectUrl,
       showTokenOnSuccessPage: auth.showTokenOnSuccessPage === true,
       enableDebugEndpoint: auth.enableDebugEndpoint === true,
+      googleExtraScopes: auth.googleExtraScopes || [],
+      idpTokenEncryptionKey: auth.idpTokenEncryptionKey,
       sessionStore: auth.sessionStore,
       logger: this.logger
     });
@@ -284,6 +286,31 @@ export class ExpressMcp {
       throw new Error('Auth is not enabled. Set options.auth.enabled to true.');
     }
     return this.authManager.getVerifiedSessionByContext(context);
+  }
+
+  /**
+   * Create an incremental Google consent URL for configured extra scopes.
+   * @param {{ scopes: string[], context?: unknown, sub?: string }} input
+   * @returns {Promise<{ session_id: string, grant_url: string }>}
+   */
+  createGoogleGrantUrl(input) {
+    if (!this.authManager) {
+      throw new Error('Auth is not enabled. Set options.auth.enabled to true.');
+    }
+    return this.authManager.createGoogleGrantUrl(input);
+  }
+
+  /**
+   * Obtain a fresh Google access token for People API calls.
+   * @param {string} sub
+   * @param {{ requiredScopes: string[] }} options
+   * @returns {Promise<{ accessToken: string, scopes: string[], expiresIn: number|null }>}
+   */
+  getGoogleAccessToken(sub, options) {
+    if (!this.authManager) {
+      throw new Error('Auth is not enabled. Set options.auth.enabled to true.');
+    }
+    return this.authManager.getGoogleAccessToken(sub, options);
   }
 
   /**
