@@ -576,6 +576,91 @@ export class AuthManager {
   }
 
   /**
+   * Revoke a stored Google refresh token at Google's revoke endpoint.
+   * Treats HTTP 200 and "already revoked" (typically 400) as success.
+   * @param {string} refreshToken
+   * @returns {Promise<void>}
+   * @private
+   */
+  async _revokeGoogleToken(refreshToken) {
+    if (typeof refreshToken !== 'string' || !refreshToken) {
+      throw new Error('refreshToken is required');
+    }
+    let response;
+    try {
+      response = await fetch('https://oauth2.googleapis.com/revoke', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded'
+        },
+        body: new URLSearchParams({ token: refreshToken }).toString()
+      });
+    } catch (err) {
+      throw new Error(`Google token revoke network failure: ${err.message}`);
+    }
+    if (response.ok || response.status === 400) {
+      return;
+    }
+    const text = await response.text();
+    throw new Error(`Google token revoke failed (${response.status}): ${text}`);
+  }
+
+  /**
+   * Revoke the stored Google IdP grant for a user at Google, then delete the local row.
+   * @param {string} sub
+   * @returns {Promise<boolean>} true when a grant was revoked and deleted; false when none existed
+   */
+  async revokeGoogleIdpGrant(sub) {
+    if (typeof sub !== 'string' || !sub) {
+      throw new Error('sub is required');
+    }
+    if (!this.idpSealKey) {
+      throw new Error('idpTokenEncryptionKey is not configured');
+    }
+    if (typeof this.sessionStore.findIdpGrant !== 'function') {
+      throw new Error('sessionStore.findIdpGrant is required for Google IdP grants');
+    }
+    if (typeof this.sessionStore.deleteIdpGrant !== 'function') {
+      throw new Error('sessionStore.deleteIdpGrant is required for Google IdP grants');
+    }
+    const grant = await this.sessionStore.findIdpGrant(sub);
+    if (!grant) {
+      return false;
+    }
+    let refreshToken;
+    try {
+      refreshToken = unseal(grant.sealedRefreshToken, this.idpSealKey);
+    } catch (err) {
+      throw new Error(`Failed to decrypt Google IdP grant: ${err.message}`);
+    }
+    await this._revokeGoogleToken(refreshToken);
+    await this.sessionStore.deleteIdpGrant(sub);
+    return true;
+  }
+
+  /**
+   * Report whether a Google IdP grant exists for the user (no tokens returned).
+   * @param {string} sub
+   * @returns {Promise<{ granted: boolean, scopes: string[] }>}
+   */
+  async getGoogleIdpGrantStatus(sub) {
+    if (typeof sub !== 'string' || !sub) {
+      throw new Error('sub is required');
+    }
+    if (typeof this.sessionStore.findIdpGrant !== 'function') {
+      throw new Error('sessionStore.findIdpGrant is required for Google IdP grants');
+    }
+    const grant = await this.sessionStore.findIdpGrant(sub);
+    if (!grant) {
+      return { granted: false, scopes: [] };
+    }
+    return {
+      granted: true,
+      scopes: [...grant.scopes]
+    };
+  }
+
+  /**
    * @param {string} provider
    * @param {string} accessToken
    * @returns {Promise<Object>}

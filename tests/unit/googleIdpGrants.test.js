@@ -6,6 +6,7 @@ import {
 import { GoogleScopeGrantRequiredError } from '../../src/stores/errors.js';
 import { InMemoryStandaloneSessionStore } from '../../src/stores/inMemoryStandaloneSessionStore.js';
 import { deriveSealKey, seal, unseal } from '../../src/crypto/seal.js';
+import { GoogleGrantTool } from '../../src/tools/googleGrant.js';
 import { createTestAuthManager, TEST_AUTH } from '../authTestUtils.js';
 
 const IDP_KEY = 'test-idp-encryption-key-at-least-32!!';
@@ -151,5 +152,196 @@ describe('Google IdP grants', () => {
           googleExtraScopes: [GOOGLE_CONTACTS_READONLY_SCOPE]
         })
     ).to.throw(/idpTokenEncryptionKey/);
+  });
+
+  it('revokeGoogleIdpGrant revokes at Google and deletes the grant', async () => {
+    const store = new InMemoryStandaloneSessionStore();
+    const authManager = createTestAuthManager({
+      providers: { google: TEST_AUTH.google },
+      googleExtraScopes: [GOOGLE_CONTACTS_READONLY_SCOPE],
+      idpTokenEncryptionKey: IDP_KEY,
+      sessionStore: store
+    });
+
+    await authManager.persistGoogleIdpGrant(
+      'google:99',
+      {
+        refresh_token: 'rt-secret',
+        scope: GOOGLE_CONTACTS_READONLY_SCOPE
+      },
+      [GOOGLE_CONTACTS_READONLY_SCOPE]
+    );
+
+    const originalFetch = globalThis.fetch;
+    let revokeBody = null;
+    globalThis.fetch = async (url, options) => {
+      expect(String(url)).to.equal('https://oauth2.googleapis.com/revoke');
+      expect(options.method).to.equal('POST');
+      revokeBody = options.body;
+      return { ok: true, status: 200, text: async () => '' };
+    };
+    try {
+      const revoked = await authManager.revokeGoogleIdpGrant('google:99');
+      expect(revoked).to.equal(true);
+      expect(revokeBody).to.equal(new URLSearchParams({ token: 'rt-secret' }).toString());
+      expect(await store.findIdpGrant('google:99')).to.equal(null);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('revokeGoogleIdpGrant returns false when no grant exists', async () => {
+    const authManager = createTestAuthManager({
+      providers: { google: TEST_AUTH.google },
+      googleExtraScopes: [GOOGLE_CONTACTS_READONLY_SCOPE],
+      idpTokenEncryptionKey: IDP_KEY
+    });
+    const originalFetch = globalThis.fetch;
+    let fetchCalled = false;
+    globalThis.fetch = async () => {
+      fetchCalled = true;
+      return { ok: true, status: 200, text: async () => '' };
+    };
+    try {
+      const revoked = await authManager.revokeGoogleIdpGrant('google:missing');
+      expect(revoked).to.equal(false);
+      expect(fetchCalled).to.equal(false);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('revokeGoogleIdpGrant treats Google 400 as already-revoked success', async () => {
+    const store = new InMemoryStandaloneSessionStore();
+    const authManager = createTestAuthManager({
+      providers: { google: TEST_AUTH.google },
+      googleExtraScopes: [GOOGLE_CONTACTS_READONLY_SCOPE],
+      idpTokenEncryptionKey: IDP_KEY,
+      sessionStore: store
+    });
+    await authManager.persistGoogleIdpGrant(
+      'google:99',
+      {
+        refresh_token: 'rt-secret',
+        scope: GOOGLE_CONTACTS_READONLY_SCOPE
+      },
+      [GOOGLE_CONTACTS_READONLY_SCOPE]
+    );
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => ({
+      ok: false,
+      status: 400,
+      text: async () => 'invalid_token'
+    });
+    try {
+      const revoked = await authManager.revokeGoogleIdpGrant('google:99');
+      expect(revoked).to.equal(true);
+      expect(await store.findIdpGrant('google:99')).to.equal(null);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
+describe('GoogleGrantTool', () => {
+  it('status with grant returns granted true and scopes', async () => {
+    const store = new InMemoryStandaloneSessionStore();
+    const authManager = createTestAuthManager({
+      providers: { google: TEST_AUTH.google },
+      googleExtraScopes: [GOOGLE_CONTACTS_READONLY_SCOPE],
+      idpTokenEncryptionKey: IDP_KEY,
+      sessionStore: store
+    });
+    await authManager.persistGoogleIdpGrant(
+      'google:1',
+      {
+        refresh_token: 'rt-1',
+        scope: GOOGLE_CONTACTS_READONLY_SCOPE
+      },
+      [GOOGLE_CONTACTS_READONLY_SCOPE]
+    );
+    const tool = new GoogleGrantTool(authManager);
+    const result = await tool.execute(
+      { action: 'status' },
+      { user: { sub: 'google:1' } }
+    );
+    expect(result).to.deep.equal({
+      granted: true,
+      scopes: [GOOGLE_CONTACTS_READONLY_SCOPE]
+    });
+  });
+
+  it('status without grant returns granted false', async () => {
+    const authManager = createTestAuthManager({
+      providers: { google: TEST_AUTH.google },
+      googleExtraScopes: [GOOGLE_CONTACTS_READONLY_SCOPE],
+      idpTokenEncryptionKey: IDP_KEY
+    });
+    const tool = new GoogleGrantTool(authManager);
+    const result = await tool.execute(
+      { action: 'status' },
+      { user: { sub: 'google:missing' } }
+    );
+    expect(result).to.deep.equal({ granted: false, scopes: [] });
+  });
+
+  it('revoke with grant returns revoked true and clears store', async () => {
+    const store = new InMemoryStandaloneSessionStore();
+    const authManager = createTestAuthManager({
+      providers: { google: TEST_AUTH.google },
+      googleExtraScopes: [GOOGLE_CONTACTS_READONLY_SCOPE],
+      idpTokenEncryptionKey: IDP_KEY,
+      sessionStore: store
+    });
+    await authManager.persistGoogleIdpGrant(
+      'google:1',
+      {
+        refresh_token: 'rt-1',
+        scope: GOOGLE_CONTACTS_READONLY_SCOPE
+      },
+      [GOOGLE_CONTACTS_READONLY_SCOPE]
+    );
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => ({ ok: true, status: 200, text: async () => '' });
+    try {
+      const tool = new GoogleGrantTool(authManager);
+      const result = await tool.execute(
+        { action: 'revoke' },
+        { user: { sub: 'google:1' } }
+      );
+      expect(result).to.deep.equal({ revoked: true });
+      expect(await store.findIdpGrant('google:1')).to.equal(null);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('revoke without grant returns no_grant', async () => {
+    const authManager = createTestAuthManager({
+      providers: { google: TEST_AUTH.google },
+      googleExtraScopes: [GOOGLE_CONTACTS_READONLY_SCOPE],
+      idpTokenEncryptionKey: IDP_KEY
+    });
+    const tool = new GoogleGrantTool(authManager);
+    const result = await tool.execute(
+      { action: 'revoke' },
+      { user: { sub: 'google:missing' } }
+    );
+    expect(result).to.deep.equal({ revoked: false, reason: 'no_grant' });
+  });
+
+  it('throws when context.user.sub is missing', async () => {
+    const authManager = createTestAuthManager({
+      providers: { google: TEST_AUTH.google },
+      googleExtraScopes: [GOOGLE_CONTACTS_READONLY_SCOPE],
+      idpTokenEncryptionKey: IDP_KEY
+    });
+    const tool = new GoogleGrantTool(authManager);
+    try {
+      await tool.execute({ action: 'status' }, {});
+      expect.fail('expected error');
+    } catch (err) {
+      expect(err.message).to.equal('Authenticated user.sub is required');
+    }
   });
 });

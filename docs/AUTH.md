@@ -69,6 +69,17 @@ Base Google login still requests only `openid email profile`. Extra scopes such 
 
 If no grant exists, `getGoogleAccessToken` throws `GoogleScopeGrantRequiredError` with `reason: 'no_grant'` (or `missing_scopes` / `refresh_failed`). Do not invent contact data when that error occurs.
 
+Stored grants are **long-lived** and decoupled from the MCP login session (`jwtExpiresIn`). They remain until the user revokes them. Call `expressMcp.revokeGoogleIdpGrant(sub)` (or the MCP tool below) to revoke the refresh token at Google and delete the Redis row.
+
+When `googleExtraScopes` is configured, the library registers `{name}_google_grant` (e.g. `my-service_google_grant`):
+
+| Action | Behavior |
+|--------|----------|
+| `status` | `{ granted, scopes }` — whether a grant is stored (no tokens) |
+| `revoke` | Revokes at Google, deletes the local grant; `{ revoked: true }` or `{ revoked: false, reason: 'no_grant' }` |
+
+Owner is always `context.user.sub` — never a tool argument. Unlike `{name}_session`, this tool is **not** excluded from the in-process agent. After `revoked: true`, hosts must not invent contact data; the next People call should surface a new `grant_url`.
+
 ```javascript
 import {
   ExpressMcp,
@@ -106,6 +117,9 @@ try {
     // send grant_url to the user
   }
 }
+
+// User disconnect (also available via MCP tool action=revoke):
+await expressMcp.revokeGoogleIdpGrant(user.sub);
 ```
 
 
