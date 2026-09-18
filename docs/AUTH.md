@@ -54,8 +54,60 @@ app.listen(3000);
 | `allowAnyHttpsRedirect` | No | When `true`, accept **any** https redirect URI (disables the https host allowlist). Off by default — trades away anti-phishing protection for open DCR |
 | `showTokenOnSuccessPage` | No | When `true`, embed Bearer JWT in standalone success HTML (local dev only; default `false`) |
 | `enableDebugEndpoint` | No | When `true`, mount `GET …/auth/debug` (default `false`) |
+| `googleExtraScopes` | No | Extra Google scopes available via incremental consent only (not requested on every login). Example: `['https://www.googleapis.com/auth/contacts.readonly']` |
+| `idpTokenEncryptionKey` | When `googleExtraScopes` is non-empty | Secret (≥32 chars) used to encrypt stored Google refresh tokens |
 
 `jwtSecret` and `sessionSecret` must be at least 32 characters.
+
+### Google Contacts / People API grants
+
+Base Google login still requests only `openid email profile`. Extra scopes such as Contacts are **not** added to every sign-in. Hosts that need People API access:
+
+1. Set `googleExtraScopes` (allowlist) and `idpTokenEncryptionKey`.
+2. Call `expressMcp.createGoogleGrantUrl({ scopes, sub, context })` or `POST …/auth/google-grant-url` when the user needs Contacts.
+3. After the user consents, call `expressMcp.getGoogleAccessToken(sub, { requiredScopes })`.
+
+If no grant exists, `getGoogleAccessToken` throws `GoogleScopeGrantRequiredError` with `reason: 'no_grant'` (or `missing_scopes` / `refresh_failed`). Do not invent contact data when that error occurs.
+
+```javascript
+import {
+  ExpressMcp,
+  GOOGLE_CONTACTS_READONLY_SCOPE,
+  GoogleScopeGrantRequiredError
+} from '@brandon-svec/express_mcp';
+
+const expressMcp = new ExpressMcp({
+  name: 'my-service',
+  auth: {
+    enabled: true,
+    baseUrl: 'https://my-host.example.com',
+    callbackUrl: 'https://my-host.example.com/mcp/auth/callback',
+    jwtSecret: process.env.JWT_SECRET,
+    sessionSecret: process.env.SESSION_SECRET,
+    jwtExpiresIn: '7d',
+    providers: { google: { clientId: '...', clientSecret: '...' } },
+    googleExtraScopes: [GOOGLE_CONTACTS_READONLY_SCOPE],
+    idpTokenEncryptionKey: process.env.IDP_TOKEN_ENCRYPTION_KEY,
+    sessionStore
+  }
+});
+
+try {
+  const { accessToken } = await expressMcp.getGoogleAccessToken(user.sub, {
+    requiredScopes: [GOOGLE_CONTACTS_READONLY_SCOPE]
+  });
+  // call people.googleapis.com with accessToken
+} catch (err) {
+  if (err instanceof GoogleScopeGrantRequiredError) {
+    const { grant_url } = await expressMcp.createGoogleGrantUrl({
+      scopes: [GOOGLE_CONTACTS_READONLY_SCOPE],
+      sub: user.sub
+    });
+    // send grant_url to the user
+  }
+}
+```
+
 
 **DCR redirect URI policy (secure by default):** loopback `http`/`https`, private-use schemes (e.g. `cursor://`), and `https` on library trusted agent hosts are allowed. Unknown remote `https` hosts are rejected unless listed via `trustedRedirectHosts`, matched exactly in `allowedRedirectUris`, or `allowAnyHttpsRedirect` is `true`. Public cleartext `http` is always rejected. Host matching uses `URL.hostname` (exact domain; suffix bypasses like `cursor.com.attacker.example` are rejected).
 

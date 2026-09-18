@@ -41,6 +41,8 @@ function requireNonEmptyString(value, label) {
  * @param {string[]} [input.allowedRedirectUris] - Exact-match redirect URIs allowed for DCR
  * @param {string[]} [input.trustedRedirectHosts] - Extra https hosts merged with library defaults
  * @param {boolean} [input.allowAnyHttpsRedirect] - When true, accept any https redirect URI
+ * @param {string[]} [input.googleExtraScopes] - Extra Google scopes for incremental consent (e.g. contacts.readonly)
+ * @param {string} [input.idpTokenEncryptionKey] - Secret (≥32 chars) to encrypt stored Google refresh tokens
  * @returns {{ enabled: false } | Object} Normalized auth options for ExpressMcp
  */
 export function buildAuthOptions(input = {}) {
@@ -103,6 +105,12 @@ export function buildAuthOptions(input = {}) {
   }
   if (input.enableDebugEndpoint === true) {
     auth.enableDebugEndpoint = true;
+  }
+  if (Array.isArray(input.googleExtraScopes)) {
+    auth.googleExtraScopes = input.googleExtraScopes;
+  }
+  if (typeof input.idpTokenEncryptionKey === 'string' && input.idpTokenEncryptionKey) {
+    auth.idpTokenEncryptionKey = input.idpTokenEncryptionKey;
   }
 
   validateAuthOptions(auth);

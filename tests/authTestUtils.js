@@ -151,7 +151,10 @@ export function registerOAuthTestClient(authManager, redirectUri = 'cursor://cal
  * @param {Object} [user]
  */
 export function mockExchangeCodeForUser(authManager, user = TEST_GITHUB_USER) {
-  authManager.exchangeCodeForUser = async () => user;
+  authManager.exchangeCodeForUser = async () => ({
+    user,
+    tokenResponse: { access_token: 'test-access-token' }
+  });
 }
 
 /**

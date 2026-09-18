@@ -22,10 +22,15 @@ import {
   verifyPkceChallenge
 } from '../mcpOAuth.js';
 import { ContextAuthRequiredError } from '../stores/errors.js';
+import { GoogleScopeGrantRequiredError } from '../stores/errors.js';
+import { deriveSealKey, seal, unseal } from '../crypto/seal.js';
 import { assertValidSessionId, isUuidV4SessionId, sanitizeHostContext } from '../stores/sessionContext.js';
 import { parseDurationToSeconds } from '../stores/sessionTtl.js';
 
 export const SUPPORTED_OAUTH_PROVIDERS = ['github', 'google'];
+
+export const GOOGLE_CONTACTS_READONLY_SCOPE =
+  'https://www.googleapis.com/auth/contacts.readonly';
 
 /**
  * @param {unknown} value
@@ -38,6 +43,54 @@ function escapeHtml(value) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+}
+
+/**
+ * @param {unknown} value
+ * @returns {string[]}
+ */
+function normalizeGoogleExtraScopes(value) {
+  if (value === undefined || value === null) {
+    return [];
+  }
+  if (!Array.isArray(value)) {
+    throw new Error('googleExtraScopes must be an array of strings');
+  }
+  const scopes = [];
+  for (const scope of value) {
+    if (typeof scope !== 'string' || !scope.trim()) {
+      throw new Error('googleExtraScopes must contain only non-empty strings');
+    }
+    const trimmed = scope.trim();
+    if (!scopes.includes(trimmed)) {
+      scopes.push(trimmed);
+    }
+  }
+  return scopes;
+}
+
+/**
+ * @param {string} scopeString
+ * @returns {string[]}
+ */
+function parseScopeString(scopeString) {
+  if (typeof scopeString !== 'string' || !scopeString.trim()) {
+    return [];
+  }
+  return scopeString
+    .split(/\s+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+/**
+ * @param {string[]} granted
+ * @param {string[]} required
+ * @returns {string[]}
+ */
+function missingScopes(granted, required) {
+  const set = new Set(granted);
+  return required.filter((scope) => !set.has(scope));
 }
 
 const PROVIDER_META = {
@@ -111,6 +164,8 @@ export class AuthManager {
    * @param {boolean} [options.showTokenOnSuccessPage=false] - Embed Bearer JWT in standalone success HTML (local dev only)
    * @param {boolean} [options.enableDebugEndpoint=false] - Mount GET /auth/debug
    * @param {import('../stores/inMemoryStandaloneSessionStore.js').InMemoryStandaloneSessionStore|import('../stores/redisStandaloneSessionStore.js').RedisStandaloneSessionStore} options.sessionStore
+   * @param {string[]} [options.googleExtraScopes] - Extra Google scopes available via incremental consent (not requested on every login)
+   * @param {string} [options.idpTokenEncryptionKey] - Secret (≥32 chars) used to encrypt stored Google refresh tokens; required when googleExtraScopes is set
    */
   constructor(options) {
     this.providers = options.providers || {};
@@ -177,6 +232,23 @@ export class AuthManager {
       typeof options.postLoginRedirectUrl === 'string' && options.postLoginRedirectUrl.trim()
         ? options.postLoginRedirectUrl.trim()
         : null;
+    this.googleExtraScopes = normalizeGoogleExtraScopes(options.googleExtraScopes);
+    if (this.googleExtraScopes.length > 0) {
+      if (!this.enabledProviders.includes('google')) {
+        throw new Error('googleExtraScopes requires the google OAuth provider');
+      }
+      if (
+        typeof options.idpTokenEncryptionKey !== 'string' ||
+        options.idpTokenEncryptionKey.length < 32
+      ) {
+        throw new Error(
+          'idpTokenEncryptionKey (≥32 characters) is required when googleExtraScopes is set'
+        );
+      }
+      this.idpSealKey = deriveSealKey(options.idpTokenEncryptionKey);
+    } else {
+      this.idpSealKey = null;
+    }
     this.oauthClients = new OAuthClientRegistry();
     this.authorizationCodes = new AuthorizationCodeStore();
     this.pendingAuthStore = new PendingAuthStore();
@@ -202,22 +274,47 @@ export class AuthManager {
    * Build OAuth authorization URL for a provider.
    * @param {string} provider
    * @param {string} state - CSRF state value
+   * @param {{
+   *   extraScopes?: string[],
+   *   accessType?: 'online'|'offline',
+   *   prompt?: string,
+   *   includeGrantedScopes?: boolean
+   * }} [options]
    * @returns {string}
    */
-  getAuthorizationUrl(provider, state) {
+  getAuthorizationUrl(provider, state, options = {}) {
     const { clientId, meta } = this._getProviderCredentials(provider);
+    const scopes = [...meta.scopes];
+    if (Array.isArray(options.extraScopes)) {
+      for (const scope of options.extraScopes) {
+        if (typeof scope !== 'string' || !scope) {
+          throw new Error('extraScopes must contain only non-empty strings');
+        }
+        if (!scopes.includes(scope)) {
+          scopes.push(scope);
+        }
+      }
+    }
 
     const params = new URLSearchParams({
       client_id: clientId,
       redirect_uri: this.callbackUrl,
-      scope: meta.scopes.join(' '),
+      scope: scopes.join(' '),
       state
     });
 
     if (provider === 'google') {
       params.set('response_type', 'code');
-      params.set('access_type', 'online');
-      params.set('prompt', 'select_account');
+      const accessType = options.accessType === 'offline' ? 'offline' : 'online';
+      params.set('access_type', accessType);
+      if (typeof options.prompt === 'string' && options.prompt) {
+        params.set('prompt', options.prompt);
+      } else {
+        params.set('prompt', 'select_account');
+      }
+      if (options.includeGrantedScopes === true) {
+        params.set('include_granted_scopes', 'true');
+      }
     }
 
     return `${meta.authorizeUrl}?${params.toString()}`;
@@ -227,18 +324,21 @@ export class AuthManager {
    * Exchange authorization code for user profile from the provider.
    * @param {string} provider
    * @param {string} code
-   * @returns {Promise<Object>} Normalized user object
+   * @returns {Promise<{ user: Object, tokenResponse: Object }>}
    */
   async exchangeCodeForUser(provider, code) {
-    const accessToken = await this._exchangeCodeForToken(provider, code);
-    const profile = await this._fetchUserProfile(provider, accessToken);
-    return normalizeUser(provider, profile);
+    const tokenResponse = await this._exchangeCodeForToken(provider, code);
+    const profile = await this._fetchUserProfile(provider, tokenResponse.access_token);
+    return {
+      user: normalizeUser(provider, profile),
+      tokenResponse
+    };
   }
 
   /**
    * @param {string} provider
    * @param {string} code
-   * @returns {Promise<string>}
+   * @returns {Promise<{ access_token: string, refresh_token?: string, scope?: string, expires_in?: number, token_type?: string }>}
    * @private
    */
   async _exchangeCodeForToken(provider, code) {
@@ -273,7 +373,206 @@ export class AuthManager {
       throw new Error('Token exchange did not return an access_token');
     }
 
-    return data.access_token;
+    return data;
+  }
+
+  /**
+   * Refresh a Google access token using a stored refresh token.
+   * @param {string} refreshToken
+   * @returns {Promise<{ access_token: string, scope?: string, expires_in?: number, token_type?: string }>}
+   * @private
+   */
+  async _refreshGoogleAccessToken(refreshToken) {
+    const { clientId, clientSecret, meta } = this._getProviderCredentials('google');
+    const body = new URLSearchParams({
+      client_id: clientId,
+      client_secret: clientSecret,
+      refresh_token: refreshToken,
+      grant_type: 'refresh_token'
+    });
+    const response = await fetch(meta.tokenUrl, {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/x-www-form-urlencoded'
+      },
+      body: body.toString()
+    });
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`Google token refresh failed (${response.status}): ${text}`);
+    }
+    const data = await response.json();
+    if (!data.access_token) {
+      throw new Error('Google token refresh did not return an access_token');
+    }
+    return data;
+  }
+
+  /**
+   * Persist an encrypted Google refresh grant for a user.
+   * @param {string} sub
+   * @param {{ refresh_token?: string, scope?: string }} tokenResponse
+   * @param {string[]} [requestedScopes]
+   * @returns {Promise<void>}
+   */
+  async persistGoogleIdpGrant(sub, tokenResponse, requestedScopes = []) {
+    if (typeof sub !== 'string' || !sub) {
+      throw new Error('sub is required');
+    }
+    if (!this.idpSealKey) {
+      throw new Error('idpTokenEncryptionKey is not configured');
+    }
+    if (typeof this.sessionStore.storeIdpGrant !== 'function') {
+      throw new Error('sessionStore.storeIdpGrant is required for Google IdP grants');
+    }
+    if (!tokenResponse || typeof tokenResponse !== 'object') {
+      throw new Error('tokenResponse is required');
+    }
+    if (typeof tokenResponse.refresh_token !== 'string' || !tokenResponse.refresh_token) {
+      throw new Error('Google token response did not include a refresh_token');
+    }
+    const scopesFromToken = parseScopeString(tokenResponse.scope);
+    const scopes = [...new Set([...requestedScopes, ...scopesFromToken])];
+    if (scopes.length === 0) {
+      throw new Error('Cannot persist Google IdP grant without scopes');
+    }
+    await this.sessionStore.storeIdpGrant(sub, {
+      sealedRefreshToken: seal(tokenResponse.refresh_token, this.idpSealKey),
+      scopes,
+      updatedAt: new Date().toISOString()
+    });
+  }
+
+  /**
+   * Create a pending incremental Google consent URL for extra scopes.
+   * @param {{ scopes: string[], context?: unknown, sub?: string }} input
+   * @returns {Promise<{ session_id: string, grant_url: string }>}
+   */
+  async createGoogleGrantUrl(input) {
+    if (!input || typeof input !== 'object') {
+      throw new Error('createGoogleGrantUrl requires an input object');
+    }
+    if (!this.enabledProviders.includes('google')) {
+      throw new Error('google OAuth provider is not enabled');
+    }
+    if (this.googleExtraScopes.length === 0) {
+      throw new Error('googleExtraScopes is not configured');
+    }
+    if (!Array.isArray(input.scopes) || input.scopes.length === 0) {
+      throw new Error('scopes is required');
+    }
+    for (const scope of input.scopes) {
+      if (typeof scope !== 'string' || !scope) {
+        throw new Error('scopes must contain only non-empty strings');
+      }
+      if (!this.googleExtraScopes.includes(scope)) {
+        throw new Error(`scope is not in googleExtraScopes allowlist: ${scope}`);
+      }
+    }
+    const sanitized = sanitizeHostContext(input.context);
+    const sub =
+      typeof input.sub === 'string' && input.sub ? input.sub : null;
+    const sessionId = randomUUID();
+    await this.sessionStore.createPending(
+      sessionId,
+      sanitized,
+      'google',
+      this._pendingSessionTtlSeconds(),
+      {
+        purpose: 'google_grant',
+        scopes: input.scopes,
+        sub
+      }
+    );
+    const grantUrl = new URL(
+      `${this.origin}${this.authPath}/login/google`,
+      this.origin
+    );
+    grantUrl.searchParams.set('session_id', sessionId);
+    return {
+      session_id: sessionId,
+      grant_url: grantUrl.toString()
+    };
+  }
+
+  /**
+   * Return a fresh Google access token for the given user sub.
+   * Throws GoogleScopeGrantRequiredError when the grant is missing or incomplete.
+   * @param {string} sub
+   * @param {{ requiredScopes: string[] }} options
+   * @returns {Promise<{ accessToken: string, scopes: string[], expiresIn: number|null }>}
+   */
+  async getGoogleAccessToken(sub, options) {
+    if (typeof sub !== 'string' || !sub) {
+      throw new Error('sub is required');
+    }
+    if (!options || typeof options !== 'object') {
+      throw new Error('options is required');
+    }
+    if (!Array.isArray(options.requiredScopes) || options.requiredScopes.length === 0) {
+      throw new Error('requiredScopes is required');
+    }
+    for (const scope of options.requiredScopes) {
+      if (typeof scope !== 'string' || !scope) {
+        throw new Error('requiredScopes must contain only non-empty strings');
+      }
+    }
+    if (!this.idpSealKey) {
+      throw new GoogleScopeGrantRequiredError(
+        'Google IdP grants are not configured on this server',
+        { sub, reason: 'not_configured', missingScopes: options.requiredScopes }
+      );
+    }
+    if (typeof this.sessionStore.findIdpGrant !== 'function') {
+      throw new Error('sessionStore.findIdpGrant is required for Google IdP grants');
+    }
+    const grant = await this.sessionStore.findIdpGrant(sub);
+    if (!grant) {
+      throw new GoogleScopeGrantRequiredError(
+        'No Google Contacts grant for this user',
+        { sub, reason: 'no_grant', missingScopes: options.requiredScopes }
+      );
+    }
+    const missing = missingScopes(grant.scopes, options.requiredScopes);
+    if (missing.length > 0) {
+      throw new GoogleScopeGrantRequiredError(
+        `Google grant is missing required scopes: ${missing.join(', ')}`,
+        { sub, reason: 'missing_scopes', missingScopes: missing }
+      );
+    }
+    let refreshToken;
+    try {
+      refreshToken = unseal(grant.sealedRefreshToken, this.idpSealKey);
+    } catch (err) {
+      throw new Error(`Failed to decrypt Google IdP grant: ${err.message}`);
+    }
+    let tokenResponse;
+    try {
+      tokenResponse = await this._refreshGoogleAccessToken(refreshToken);
+    } catch (err) {
+      throw new GoogleScopeGrantRequiredError(
+        `Google grant refresh failed: ${err.message}`,
+        { sub, reason: 'refresh_failed', missingScopes: options.requiredScopes }
+      );
+    }
+    const refreshedScopes = parseScopeString(tokenResponse.scope);
+    if (refreshedScopes.length > 0) {
+      const merged = [...new Set([...grant.scopes, ...refreshedScopes])];
+      const stillMissing = missingScopes(merged, options.requiredScopes);
+      if (stillMissing.length > 0) {
+        throw new GoogleScopeGrantRequiredError(
+          `Refreshed Google token is missing required scopes: ${stillMissing.join(', ')}`,
+          { sub, reason: 'missing_scopes', missingScopes: stillMissing }
+        );
+      }
+    }
+    return {
+      accessToken: tokenResponse.access_token,
+      scopes: grant.scopes,
+      expiresIn:
+        typeof tokenResponse.expires_in === 'number' ? tokenResponse.expires_in : null
+    };
   }
 
   /**
@@ -1186,6 +1485,21 @@ export class AuthManager {
               '<html><body><h1>Invalid or expired login link</h1><p>Request a new one.</p></body></html>'
             );
           }
+          if (pending.purpose === 'google_grant') {
+            if (provider !== 'google') {
+              return res.status(400).send(
+                '<html><body><h1>Invalid grant link</h1><p>Google grant requires the google provider.</p></body></html>'
+              );
+            }
+            return res.redirect(
+              this.getAuthorizationUrl(provider, sessionId, {
+                extraScopes: pending.scopes,
+                accessType: 'offline',
+                prompt: 'consent',
+                includeGrantedScopes: true
+              })
+            );
+          }
           return res.redirect(this.getAuthorizationUrl(provider, sessionId));
         } catch {
           return res.status(400).send(
@@ -1268,12 +1582,40 @@ export class AuthManager {
       }
 
       try {
-        const user = await this.exchangeCodeForUser(oauthProvider, code);
+        const { user, tokenResponse } = await this.exchangeCodeForUser(oauthProvider, code);
 
         if (!isUserAllowed(user, this.allowedUsers)) {
           this.logger.warn?.(userLogFields(user), 'OAuth login denied (not on allowlist)');
           return res.status(403).send(
             '<html><body><h1>Not authorized</h1><p>Your account is not allowed to use this MCP server.</p></body></html>'
+          );
+        }
+
+        if (
+          standalonePending &&
+          standalonePending.purpose === 'google_grant' &&
+          oauthProvider === 'google'
+        ) {
+          try {
+            await this.persistGoogleIdpGrant(
+              user.sub,
+              tokenResponse,
+              standalonePending.scopes || []
+            );
+          } catch (grantErr) {
+            this.logger.error?.(
+              { err: grantErr.message, provider: oauthProvider, sub: user.sub },
+              'Failed to persist Google IdP grant'
+            );
+            return res.status(500).send(
+              `<html><body><h1>Grant failed</h1><p>${escapeHtml(grantErr.message)}</p></body></html>`
+            );
+          }
+          if (this.postLoginRedirectUrl) {
+            return res.redirect(this.postLoginRedirectUrl);
+          }
+          return res.send(
+            `<html><body><h1>Google Contacts connected</h1><p>Signed in as ${escapeHtml(user.email || user.login)}. You can close this window.</p></body></html>`
           );
         }
 
@@ -1327,6 +1669,19 @@ export class AuthManager {
         res.status(500).send(
           `<html><body><h1>Authentication failed</h1><p>${escapeHtml(err.message)}</p></body></html>`
         );
+      }
+    });
+
+    router.post('/google-grant-url', async (req, res) => {
+      try {
+        const { scopes, context, sub } = req.body || {};
+        const result = await this.createGoogleGrantUrl({ scopes, context, sub });
+        return res.json(result);
+      } catch (err) {
+        return res.status(400).json({
+          error: 'invalid_request',
+          error_description: err.message
+        });
       }
     });
 
