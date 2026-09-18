@@ -16,6 +16,7 @@ import {
   KnowledgeBaseGetTool
 } from '../tools/knowledgeBase.js';
 import { SessionTool } from '../tools/session.js';
+import { GoogleGrantTool } from '../tools/googleGrant.js';
 import { Agent } from '../agents/agent.js';
 import { GeminiAdapter } from '../agents/geminiAdapter.js';
 import { InMemoryHistoryStore } from '../agents/historyStore.js';
@@ -106,6 +107,12 @@ export class ExpressMcp {
     if (this.options.auth?.enabled) {
       this._initializeAuth();
       this.toolRegistry.register(new SessionTool(this.authManager), this.name);
+      if (
+        Array.isArray(this.options.auth.googleExtraScopes) &&
+        this.options.auth.googleExtraScopes.length > 0
+      ) {
+        this.toolRegistry.register(new GoogleGrantTool(this.authManager), this.name);
+      }
     } else {
       this.logger.warn(
         'Auth is disabled: MCP endpoints are unauthenticated. Enable options.auth for internet-facing deployments.'
@@ -311,6 +318,18 @@ export class ExpressMcp {
       throw new Error('Auth is not enabled. Set options.auth.enabled to true.');
     }
     return this.authManager.getGoogleAccessToken(sub, options);
+  }
+
+  /**
+   * Revoke the stored Google IdP grant for a user (Google revoke + delete local row).
+   * @param {string} sub
+   * @returns {Promise<boolean>}
+   */
+  revokeGoogleIdpGrant(sub) {
+    if (!this.authManager) {
+      throw new Error('Auth is not enabled. Set options.auth.enabled to true.');
+    }
+    return this.authManager.revokeGoogleIdpGrant(sub);
   }
 
   /**

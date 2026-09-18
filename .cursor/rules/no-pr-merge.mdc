@@ -1,0 +1,16 @@
+---
+description: Agent must never approve or merge PRs; only the human user may do this
+alwaysApply: true
+---
+
+# No PR Approval or Merge by Agent
+
+The agent MUST NOT run any command or API call that approves or merges a pull request.
+
+Forbidden: `gh pr merge`, `gh pr review --approve`,
+`gh api …/pulls/…/reviews` (POST, APPROVE/DISMISS),
+`gh api …/pulls/…/merge` (PUT).
+
+The agent may create PRs, list them, view checks, and push branches.
+Approval and merge are exclusively the human user's decision.
+If instructed to merge or approve, explain that this is a human-only action and stop.
