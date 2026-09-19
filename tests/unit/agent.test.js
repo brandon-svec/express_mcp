@@ -240,7 +240,7 @@ describe('Agent', () => {
 
     await agent.processMessage('user:1', 'say hi');
 
-    assert.deepStrictEqual(infoCalls, [
+    assert.deepStrictEqual(infoCalls.slice(0, 2), [
       {
         attrs: {
           round: 0,
@@ -260,15 +260,257 @@ describe('Agent', () => {
         },
         msg: 'Agent tool call completed',
       },
-      {
-        attrs: {
-          rounds: 2,
-          toolCalls: 2,
-          errorCalls: 1,
-        },
-        msg: 'Agent processMessage completed',
-      },
     ]);
+    assert.deepStrictEqual(infoCalls[2].msg, 'Agent processMessage completed');
+    assert.deepStrictEqual(
+      {
+        rounds: infoCalls[2].attrs.rounds,
+        toolCalls: infoCalls[2].attrs.toolCalls,
+        errorCalls: infoCalls[2].attrs.errorCalls,
+        historyTurns: infoCalls[2].attrs.historyTurns,
+      },
+      {
+        rounds: 2,
+        toolCalls: 2,
+        errorCalls: 1,
+        historyTurns: 0,
+      },
+    );
+    assert.strictEqual(typeof infoCalls[2].attrs.contentsChars, 'number');
+    assert.strictEqual(typeof infoCalls[2].attrs.systemInstructionChars, 'number');
+    assert.strictEqual(typeof infoCalls[2].attrs.toolDeclarationChars, 'number');
+  });
+
+  it('traces each generate request with sizes breakdown', async () => {
+    const traceCalls = [];
+    const logger = {
+      info () {},
+      trace (attrs, msg) {
+        traceCalls.push({ attrs, msg });
+      },
+    };
+    const adapter = new FakeAdapter([
+      { text: null, functionCalls: [{ name: 'echo', args: { message: 'hi' } }] },
+      { text: 'done', functionCalls: null },
+    ]);
+    const agent = new Agent({
+      adapter,
+      toolRegistry: registry,
+      systemInstruction: 'sys',
+      maxToolRounds: 8,
+      logger,
+    });
+
+    await agent.processMessage('user:1', 'say hi');
+
+    assert.strictEqual(traceCalls.length, 2);
+    assert.deepStrictEqual(
+      {
+        msg0: traceCalls[0].msg,
+        msg1: traceCalls[1].msg,
+        round0: traceCalls[0].attrs.round,
+        round1: traceCalls[1].attrs.round,
+        historyTurns: traceCalls[0].attrs.historyTurns,
+        systemInstruction: traceCalls[0].attrs.systemInstruction,
+        toolDeclarations: traceCalls[0].attrs.toolDeclarations,
+        firstContent: traceCalls[0].attrs.contents[0],
+        sizes0: {
+          systemInstructionChars: traceCalls[0].attrs.sizes.systemInstructionChars,
+          toolCount: traceCalls[0].attrs.sizes.toolCount,
+          byContent: traceCalls[0].attrs.sizes.byContent,
+        },
+      },
+      {
+        msg0: 'Agent model generate request',
+        msg1: 'Agent model generate request',
+        round0: 0,
+        round1: 1,
+        historyTurns: 0,
+        systemInstruction: 'sys',
+        toolDeclarations: [ECHO_TOOL_DECLARATION],
+        firstContent: { role: 'user', parts: [{ text: 'say hi' }] },
+        sizes0: {
+          systemInstructionChars: 3,
+          toolCount: 1,
+          byContent: [{
+            index: 0,
+            role: 'user',
+            partKinds: ['text'],
+            chars: JSON.stringify({ role: 'user', parts: [{ text: 'say hi' }] }).length,
+          }],
+        },
+      },
+    );
+  });
+
+  it('sends ephemeralPrefix to the model but stores only the raw user text', async () => {
+    const history = new InMemoryHistoryStore({ windowMinutes: 60 });
+    const adapter = new FakeAdapter([
+      { text: 'first', functionCalls: null },
+      { text: 'second', functionCalls: null },
+    ]);
+    const agent = new Agent({
+      adapter,
+      toolRegistry: registry,
+      systemInstruction: 'test',
+      history,
+      maxToolRounds: 8,
+    });
+    const prefix = 'CURRENT_CONTEXT\nstay: home\nUSER_MESSAGE\n';
+
+    await agent.processMessage('chat:1', 'hello', { ephemeralPrefix: prefix });
+    await agent.processMessage('chat:1', 'again', { ephemeralPrefix: prefix });
+
+    assert.deepStrictEqual({
+      firstGenerate: adapter.generateParams[0].contents,
+      secondGenerate: adapter.generateParams[1].contents,
+      stored: history.get('chat:1'),
+    }, {
+      firstGenerate: [
+        { role: 'user', parts: [{ text: `${prefix}hello` }] },
+      ],
+      secondGenerate: [
+        { role: 'user', parts: [{ text: 'hello' }] },
+        { role: 'model', parts: [{ text: 'first' }] },
+        { role: 'user', parts: [{ text: `${prefix}again` }] },
+      ],
+      stored: [
+        { role: 'user', parts: [{ text: 'hello' }] },
+        { role: 'model', parts: [{ text: 'first' }] },
+        { role: 'user', parts: [{ text: 'again' }] },
+        { role: 'model', parts: [{ text: 'second' }] },
+      ],
+    });
+  });
+
+  it('keeps ephemeralPrefix on in-turn tool-loop generate calls', async () => {
+    const history = new InMemoryHistoryStore({ windowMinutes: 60 });
+    const adapter = new FakeAdapter([
+      { text: null, functionCalls: [{ name: 'echo', args: { message: 'hi' } }] },
+      { text: 'done', functionCalls: null },
+    ]);
+    const agent = new Agent({
+      adapter,
+      toolRegistry: registry,
+      systemInstruction: 'test',
+      history,
+      maxToolRounds: 8,
+    });
+    const prefix = 'PREFIX\n';
+
+    await agent.processMessage('chat:1', 'do it', { ephemeralPrefix: prefix });
+
+    assert.deepStrictEqual(
+      adapter.generateParams.map((params) => params.contents[0]),
+      [
+        { role: 'user', parts: [{ text: `${prefix}do it` }] },
+        { role: 'user', parts: [{ text: `${prefix}do it` }] },
+      ],
+    );
+    assert.deepStrictEqual(history.get('chat:1')[0], {
+      role: 'user',
+      parts: [{ text: 'do it' }],
+    });
+  });
+
+  it('throws when ephemeralPrefix is empty', async () => {
+    const agent = new Agent({
+      adapter: new FakeAdapter([]),
+      toolRegistry: registry,
+      systemInstruction: 'test',
+      maxToolRounds: 8,
+    });
+
+    await assertRejectsWithMessage(
+      () => agent.processMessage('k', 'hello', { ephemeralPrefix: '' }),
+      'ephemeralPrefix must be a non-empty string when provided',
+    );
+  });
+
+  it('historyToolTurns omit stores only user text and final reply', async () => {
+    const history = new InMemoryHistoryStore({ windowMinutes: 60 });
+    const adapter = new FakeAdapter([
+      { text: null, functionCalls: [{ name: 'echo', args: { message: 'hi' } }] },
+      { text: 'done', functionCalls: null },
+      { text: 'next', functionCalls: null },
+    ]);
+    const agent = new Agent({
+      adapter,
+      toolRegistry: registry,
+      systemInstruction: 'test',
+      history,
+      maxToolRounds: 8,
+      historyToolTurns: 'omit',
+    });
+
+    await agent.processMessage('chat:1', 'first');
+    await agent.processMessage('chat:1', 'second');
+
+    assert.deepStrictEqual({
+      stored: history.get('chat:1'),
+      secondGeneratePrior: adapter.generateParams[2].contents.slice(0, 2),
+      secondGenerateHasFunctionResponse: adapter.generateParams[2].contents.some((entry) => (
+        entry.parts && entry.parts[0] && entry.parts[0].functionResponse
+      )),
+    }, {
+      stored: [
+        { role: 'user', parts: [{ text: 'first' }] },
+        { role: 'model', parts: [{ text: 'done' }] },
+        { role: 'user', parts: [{ text: 'second' }] },
+        { role: 'model', parts: [{ text: 'next' }] },
+      ],
+      secondGeneratePrior: [
+        { role: 'user', parts: [{ text: 'first' }] },
+        { role: 'model', parts: [{ text: 'done' }] },
+      ],
+      secondGenerateHasFunctionResponse: false,
+    });
+  });
+
+  it('historyToolTurns full keeps tool parts in stored history', async () => {
+    const history = new InMemoryHistoryStore({ windowMinutes: 60 });
+    const adapter = new FakeAdapter([
+      { text: null, functionCalls: [{ name: 'echo', args: { message: 'hi' } }] },
+      { text: 'done', functionCalls: null },
+    ]);
+    const agent = new Agent({
+      adapter,
+      toolRegistry: registry,
+      systemInstruction: 'test',
+      history,
+      maxToolRounds: 8,
+      historyToolTurns: 'full',
+    });
+
+    await agent.processMessage('chat:1', 'first');
+
+    assert.deepStrictEqual(history.get('chat:1'), [
+      { role: 'user', parts: [{ text: 'first' }] },
+      { role: 'model', parts: [{ functionCall: { name: 'echo', args: { message: 'hi' } } }] },
+      {
+        role: 'user',
+        parts: [{
+          functionResponse: {
+            name: 'echo',
+            response: { result: { echoed: 'hi' } },
+          },
+        }],
+      },
+      { role: 'model', parts: [{ text: 'done' }] },
+    ]);
+  });
+
+  it('throws for invalid historyToolTurns', () => {
+    assert.throws(
+      () => new Agent({
+        adapter: new FakeAdapter([]),
+        toolRegistry: registry,
+        systemInstruction: 'test',
+        maxToolRounds: 8,
+        historyToolTurns: 'trim',
+      }),
+      /Invalid historyToolTurns: trim/,
+    );
   });
 
   it('throws when adapter is missing', () => {

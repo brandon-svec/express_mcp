@@ -192,7 +192,14 @@ const expressMcp = new ExpressMcp({
 
 Requires auth by default (`agent.allowUnauthenticated: true` to opt out). `@google/genai` is an optional peer dependency.
 
-Use `getAgent().processMessage(historyKey, text, options)` for inbound turns. For **host-initiated agent speech** (proactive reminders, notifications) that must appear in the next turn’s conversation history without calling the LLM, use `getAgent().recordAssistantMessage(historyKey, text)`. That method requires a history store and throws if none is configured. When recorded model turns leave history starting with a `model` role, `processMessage` prepends a synthetic user `[continued]` turn before calling Gemini so contents remain valid. Schema and tool execution errors are returned to the model as `{ ok: false, error }` functionResponses so further `maxToolRounds` can fix args and retry (same recovery Cursor gets over MCP JSON-RPC).
+Use `getAgent().processMessage(historyKey, text, options)` for inbound turns. Optional `options.ephemeralPrefix` is prepended to `text` for the model on **this turn only** (including tool rounds) and is **never** stored or replayed — hosts use it for working-memory fences and similar ephemeral context. Optional agent options:
+
+- `historyToolTurns: 'full' | 'omit'` — `'full'` (default) stores tool-loop `functionCall` / `functionResponse` parts; `'omit'` stores only the user text and final model reply so large tool payloads are not replayed.
+- `historyMaxTurns` — when using the default in-memory history, keep at most this many turns after TTL pruning (oldest first). Cannot be set together with a custom `agent.history`.
+
+For **host-initiated agent speech** (proactive reminders, notifications) that must appear in the next turn’s conversation history without calling the LLM, use `getAgent().recordAssistantMessage(historyKey, text)`. That method requires a history store and throws if none is configured. When recorded model turns leave history starting with a `model` role, `processMessage` prepends a synthetic user `[continued]` turn before calling Gemini so contents remain valid. Schema and tool execution errors are returned to the model as `{ ok: false, error }` functionResponses so further `maxToolRounds` can fix args and retry (same recovery Cursor gets over MCP JSON-RPC).
+
+Set `loggerOptions.level` to `trace` to log the exact model request (`contents`, `systemInstruction`, `toolDeclarations`) plus a per-content size breakdown before each generate. Trace payloads include raw user content. At `info`, each completed turn logs character totals (`contentsChars`, `systemInstructionChars`, `toolDeclarationChars`, `historyTurns`) without the request body.
 
 ## API Reference
 

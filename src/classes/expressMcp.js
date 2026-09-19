@@ -62,6 +62,8 @@ export class ExpressMcp {
    * @param {{ apiKey: string, model: string }} [options.agent.gemini] - Gemini config when adapter omitted
    * @param {import('../agents/historyStore.js').InMemoryHistoryStore} [options.agent.history] - Custom history store
    * @param {number} [options.agent.historyWindowMinutes=60] - TTL for default in-memory history
+   * @param {number} [options.agent.historyMaxTurns] - Max stored turns for default in-memory history (oldest first)
+   * @param {'full'|'omit'} [options.agent.historyToolTurns='full'] - Store tool-loop parts in history (`omit` keeps user text + final reply only)
    * @param {number} [options.agent.maxToolRounds=8] - Max tool-call rounds per message
    */
   constructor(options = {}) {
@@ -159,7 +161,34 @@ export class ExpressMcp {
       throw new Error(`Invalid agent.historyWindowMinutes: ${historyWindowMinutes}`);
     }
 
-    const history = agentOpts.history ?? new InMemoryHistoryStore({ windowMinutes: historyWindowMinutes });
+    let historyMaxTurns;
+    if (agentOpts.historyMaxTurns !== undefined) {
+      historyMaxTurns = agentOpts.historyMaxTurns;
+      if (typeof historyMaxTurns !== 'number' || !Number.isInteger(historyMaxTurns) || historyMaxTurns < 1) {
+        throw new Error(`Invalid agent.historyMaxTurns: ${historyMaxTurns}`);
+      }
+    }
+
+    const historyToolTurns = agentOpts.historyToolTurns === undefined
+      ? 'full'
+      : agentOpts.historyToolTurns;
+    if (historyToolTurns !== 'full' && historyToolTurns !== 'omit') {
+      throw new Error(`Invalid agent.historyToolTurns: ${historyToolTurns}`);
+    }
+
+    let history;
+    if (agentOpts.history) {
+      if (historyMaxTurns !== undefined) {
+        throw new Error('agent.historyMaxTurns applies only to the default in-memory history store');
+      }
+      history = agentOpts.history;
+    } else {
+      const storeOptions = { windowMinutes: historyWindowMinutes };
+      if (historyMaxTurns !== undefined) {
+        storeOptions.maxTurns = historyMaxTurns;
+      }
+      history = new InMemoryHistoryStore(storeOptions);
+    }
 
     const maxToolRounds = agentOpts.maxToolRounds ?? 8;
     if (typeof maxToolRounds !== 'number' || !Number.isInteger(maxToolRounds) || maxToolRounds < 1) {
@@ -191,6 +220,7 @@ export class ExpressMcp {
       systemInstruction: agentOpts.systemInstruction,
       history,
       maxToolRounds,
+      historyToolTurns,
       excludeTools: [...excludeTools],
       toolAllowlist,
       requireUser: authEnabled,
