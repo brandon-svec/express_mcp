@@ -1799,12 +1799,16 @@ export class AuthManager {
    * @param {Object} options
    * @param {import('express').Router} options.mcpRouter - MCP JSON-RPC router from ExpressMcp.router()
    * @param {string} [options.mcpPath='/mcp'] - Mount path for MCP OAuth, IdP, and protocol
+   * @param {boolean} [options.rootAliases=true] - Register OAuth AS routes at site root
    * @param {Object} [options.sessionOptions] - Passed to express-session (except secret)
    * @returns {import('express').Router}
    */
-  createHttpRouter({ mcpRouter, mcpPath = '/mcp', sessionOptions = {} }) {
+  createHttpRouter({ mcpRouter, mcpPath = '/mcp', rootAliases = true, sessionOptions = {} }) {
     if (!mcpRouter) {
       throw new Error('mcpRouter is required for createHttpRouter');
+    }
+    if (rootAliases !== true && rootAliases !== false) {
+      throw new Error('rootAliases must be a boolean');
     }
 
     this.authPath = `${mcpPath}/auth`;
@@ -1819,7 +1823,11 @@ export class AuthManager {
 
     // Some MCP clients (e.g. Cursor) still call OAuth AS routes at site root even when
     // issuer is under mcpPath. Canonical routes remain under mcpPath; these are aliases.
-    this._registerAuthorizationServerRoutes(root);
+    // Secondary mounts (e.g. /mcp/admin) must pass rootAliases: false to avoid colliding
+    // with the primary instance's root metadata and /register|/authorize|/token.
+    if (rootAliases === true) {
+      this._registerAuthorizationServerRoutes(root);
+    }
 
     const mcpMount = Router();
     this._registerAuthorizationServerRoutes(mcpMount);
