@@ -80,4 +80,49 @@ describe('ExpressMcp agent option', () => {
       /agent.systemInstruction is required/,
     );
   });
+
+  it('applies historyMaxTurns and historyToolTurns to the default agent', () => {
+    const mcp = new ExpressMcp(getTestExpressMcpOptions({
+      enableKnowledgeBase: false,
+      agent: {
+        enabled: true,
+        allowUnauthenticated: true,
+        exposeTool: false,
+        systemInstruction: 'You are a test assistant.',
+        adapter: new StaticAdapter(),
+        historyMaxTurns: 12,
+        historyToolTurns: 'omit',
+      },
+    }));
+
+    const agent = mcp.getAgent();
+    assert.deepStrictEqual(
+      {
+        historyToolTurns: agent.historyToolTurns,
+        maxTurns: agent.history.maxTurns,
+      },
+      {
+        historyToolTurns: 'omit',
+        maxTurns: 12,
+      },
+    );
+  });
+
+  it('rejects historyMaxTurns with a custom history store', () => {
+    assert.throws(
+      () => new ExpressMcp(getTestExpressMcpOptions({
+        enableKnowledgeBase: false,
+        agent: {
+          enabled: true,
+          allowUnauthenticated: true,
+          exposeTool: false,
+          systemInstruction: 'You are a test assistant.',
+          adapter: new StaticAdapter(),
+          history: { get () { return []; }, append () {} },
+          historyMaxTurns: 12,
+        },
+      })),
+      /agent.historyMaxTurns applies only to the default in-memory history store/,
+    );
+  });
 });

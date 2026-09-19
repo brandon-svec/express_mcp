@@ -1,5 +1,7 @@
 import { ToolExecution } from '../classes/toolExecution.js';
 
+const HISTORY_TOOL_TURNS = new Set(['full', 'omit']);
+
 /**
  * Gemini conversation contents must start with a user turn. Host-recorded
  * assistant messages may leave prior history starting with role model.
@@ -47,6 +49,84 @@ function modelPartsForEcho (response) {
 }
 
 /**
+ * @param {unknown} parts
+ * @returns {string[]}
+ */
+function partKinds (parts) {
+  if (!Array.isArray(parts)) {
+    return [];
+  }
+  return parts.map((part) => {
+    if (!part || typeof part !== 'object') {
+      return 'other';
+    }
+    if (part.functionCall) {
+      return 'functionCall';
+    }
+    if (part.functionResponse) {
+      return 'functionResponse';
+    }
+    if (typeof part.text === 'string') {
+      return 'text';
+    }
+    return 'other';
+  });
+}
+
+/**
+ * @param {Array<object>} contents
+ * @param {string} systemInstruction
+ * @param {Array<object>} toolDeclarations
+ * @returns {{
+ *   systemInstructionChars: number,
+ *   toolDeclarationChars: number,
+ *   toolCount: number,
+ *   contentsChars: number,
+ *   byContent: Array<{ index: number, role: string, partKinds: string[], chars: number }>
+ * }}
+ */
+export function buildGenerateSizes (contents, systemInstruction, toolDeclarations) {
+  return {
+    systemInstructionChars: typeof systemInstruction === 'string' ? systemInstruction.length : 0,
+    toolDeclarationChars: JSON.stringify(toolDeclarations).length,
+    toolCount: Array.isArray(toolDeclarations) ? toolDeclarations.length : 0,
+    contentsChars: JSON.stringify(contents).length,
+    byContent: contents.map((content, index) => ({
+      index,
+      role: content && typeof content === 'object' ? content.role : undefined,
+      partKinds: partKinds(content && content.parts),
+      chars: JSON.stringify(content).length,
+    })),
+  };
+}
+
+/**
+ * @param {Array<object>} turnContents
+ * @param {string} userText
+ * @param {'full'|'omit'} historyToolTurns
+ * @returns {Array<object>}
+ */
+function contentsForHistory (turnContents, userText, historyToolTurns) {
+  if (historyToolTurns === 'omit') {
+    const last = turnContents[turnContents.length - 1];
+    if (!last || last.role !== 'model') {
+      throw new Error('historyToolTurns omit requires a final model turn');
+    }
+    return [
+      { role: 'user', parts: [{ text: userText }] },
+      last,
+    ];
+  }
+
+  return turnContents.map((content, index) => {
+    if (index === 0 && content.role === 'user') {
+      return { role: 'user', parts: [{ text: userText }] };
+    }
+    return content;
+  });
+}
+
+/**
  * Generic tool-calling agent over a ToolRegistry and ModelAdapter.
  */
 export class Agent {
@@ -60,6 +140,7 @@ export class Agent {
    * @param {string[]} [options.excludeTools]
    * @param {string[]} [options.toolAllowlist] - When set, only these tool names are available
    * @param {boolean} [options.requireUser]
+   * @param {'full'|'omit'} [options.historyToolTurns='full'] - What tool-loop parts to store in history
    * @param {import('pino').Logger} [options.logger]
    */
   constructor (options) {
@@ -78,11 +159,19 @@ export class Agent {
       throw new Error(`Invalid maxToolRounds: ${maxToolRounds}`);
     }
 
+    const historyToolTurns = options.historyToolTurns === undefined
+      ? 'full'
+      : options.historyToolTurns;
+    if (!HISTORY_TOOL_TURNS.has(historyToolTurns)) {
+      throw new Error(`Invalid historyToolTurns: ${historyToolTurns}`);
+    }
+
     this.adapter = options.adapter;
     this.toolRegistry = options.toolRegistry;
     this.systemInstruction = options.systemInstruction;
     this.history = options.history;
     this.maxToolRounds = maxToolRounds;
+    this.historyToolTurns = historyToolTurns;
     this.excludeTools = new Set(options.excludeTools || []);
     this.toolAllowlist = Array.isArray(options.toolAllowlist)
       ? new Set(options.toolAllowlist)
@@ -120,9 +209,37 @@ export class Agent {
   }
 
   /**
+   * @param {number} round
+   * @param {number} historyTurns
+   * @param {Array<object>} contents
+   * @param {Array<object>} toolDeclarations
+   * @returns {object}
+   * @private
+   */
+  _logGenerateRequest (round, historyTurns, contents, toolDeclarations) {
+    const sizes = buildGenerateSizes(contents, this.systemInstruction, toolDeclarations);
+    this.logger?.trace?.(
+      {
+        round,
+        historyTurns,
+        contents,
+        systemInstruction: this.systemInstruction,
+        toolDeclarations,
+        sizes,
+      },
+      'Agent model generate request',
+    );
+    return sizes;
+  }
+
+  /**
    * @param {string} historyKey
    * @param {string} text
-   * @param {{ user?: Object|null, hostContext?: Record<string, string>|null }} [options]
+   * @param {{
+   *   user?: Object|null,
+   *   hostContext?: Record<string, string>|null,
+   *   ephemeralPrefix?: string,
+   * }} [options]
    * @returns {Promise<string>}
    */
   async processMessage (historyKey, text, options = {}) {
@@ -142,14 +259,25 @@ export class Agent {
       throw new Error('hostContext must be a plain object when provided');
     }
 
+    let modelUserText = text;
+    if (options.ephemeralPrefix !== undefined) {
+      if (typeof options.ephemeralPrefix !== 'string' || options.ephemeralPrefix.length === 0) {
+        throw new Error('ephemeralPrefix must be a non-empty string when provided');
+      }
+      modelUserText = `${options.ephemeralPrefix}${text}`;
+    }
+
     const priorHistory = this.history ? this.history.get(historyKey) : [];
+    const historyTurns = priorHistory.length;
     const turnContents = [
-      { role: 'user', parts: [{ text }] },
+      { role: 'user', parts: [{ text: modelUserText }] },
     ];
 
     const toolDeclarations = this.buildToolDeclarations();
+    let generateContents = ensureUserLeadingContents([...priorHistory, ...turnContents]);
+    let lastSizes = this._logGenerateRequest(0, historyTurns, generateContents, toolDeclarations);
     let response = await this.adapter.generate({
-      contents: ensureUserLeadingContents([...priorHistory, ...turnContents]),
+      contents: generateContents,
       systemInstruction: this.systemInstruction,
       toolDeclarations,
     });
@@ -229,8 +357,10 @@ export class Agent {
       }
       turnContents.push({ role: 'user', parts: responseParts });
 
+      generateContents = ensureUserLeadingContents([...priorHistory, ...turnContents]);
+      lastSizes = this._logGenerateRequest(rounds, historyTurns, generateContents, toolDeclarations);
       response = await this.adapter.generate({
-        contents: ensureUserLeadingContents([...priorHistory, ...turnContents]),
+        contents: generateContents,
         systemInstruction: this.systemInstruction,
         toolDeclarations,
       });
@@ -243,11 +373,22 @@ export class Agent {
 
     turnContents.push({ role: 'model', parts: [{ text: replyText }] });
     if (this.history) {
-      this.history.append(historyKey, turnContents);
+      this.history.append(
+        historyKey,
+        contentsForHistory(turnContents, text, this.historyToolTurns),
+      );
     }
 
     this.logger?.info?.(
-      { rounds, toolCalls, errorCalls },
+      {
+        rounds,
+        toolCalls,
+        errorCalls,
+        historyTurns,
+        contentsChars: lastSizes.contentsChars,
+        systemInstructionChars: lastSizes.systemInstructionChars,
+        toolDeclarationChars: lastSizes.toolDeclarationChars,
+      },
       'Agent processMessage completed',
     );
 

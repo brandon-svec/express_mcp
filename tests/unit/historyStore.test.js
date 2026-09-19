@@ -7,6 +7,13 @@ describe('InMemoryHistoryStore', () => {
     assert.throws(() => new InMemoryHistoryStore({}), /Invalid history windowMinutes/);
   });
 
+  it('throws for invalid maxTurns', () => {
+    assert.throws(
+      () => new InMemoryHistoryStore({ windowMinutes: 60, maxTurns: 0 }),
+      /Invalid history maxTurns/,
+    );
+  });
+
   it('isolates history by key', () => {
     const store = new InMemoryHistoryStore({ windowMinutes: 60 });
     store.append('a', [{ role: 'user', parts: [{ text: 'hello a' }] }]);
@@ -33,6 +40,19 @@ describe('InMemoryHistoryStore', () => {
     const history = store.get('k');
     assert.strictEqual(history.length, 1);
     assert.strictEqual(history[0].parts[0].text, 'fresh');
+  });
+
+  it('evicts oldest turns when maxTurns is exceeded', () => {
+    const store = new InMemoryHistoryStore({ windowMinutes: 60, maxTurns: 2 });
+    store.append('k', [{ role: 'user', parts: [{ text: 'one' }] }]);
+    store.append('k', [{ role: 'user', parts: [{ text: 'two' }] }]);
+    store.append('k', [{ role: 'user', parts: [{ text: 'three' }] }]);
+    store.append('k', [{ role: 'user', parts: [{ text: 'four' }] }]);
+
+    assert.deepStrictEqual(store.get('k'), [
+      { role: 'user', parts: [{ text: 'three' }] },
+      { role: 'user', parts: [{ text: 'four' }] },
+    ]);
   });
 
   it('get throws for empty key', () => {
