@@ -194,7 +194,7 @@ Requires auth by default (`agent.allowUnauthenticated: true` to opt out). `@goog
 
 Use `getAgent().processMessage(historyKey, text, options)` for inbound turns. Optional `options.ephemeralPrefix` is prepended to `text` for the model on **this turn only** (including tool rounds) and is **never** stored or replayed — hosts use it for working-memory fences and similar ephemeral context. Optional per-turn options:
 
-- `toolNames: string[]` — only these registered tools are declared and callable for this turn (must pass `excludeTools` / `toolAllowlist`).
+- `toolNames: string[]` — only these registered tools are declared and callable for this turn (must pass `excludeTools` / `toolAllowlist`). An empty list omits the `tools` key from the Gemini request entirely (Gemini rejects `functionDeclarations: []` with `INVALID_ARGUMENT`).
 - `systemInstruction: string` — replace the agent constructor system instruction for this turn only.
 - `escalation: { toolNames, systemInstruction }` — requires `toolNames`. Adds a synthetic `request_tools` declaration; when the model calls it, the agent swaps to the escalation tool set and instruction for the remaining rounds, logs `Agent tool set escalated`, and grants **+1** `maxToolRounds` budget. `request_tools` call/response pairs are stripped from stored history (atomic pair scrub) so Gemini function-pairing stays valid on replay.
 

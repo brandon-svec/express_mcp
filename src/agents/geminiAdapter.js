@@ -97,13 +97,19 @@ export class GeminiAdapter extends ModelAdapter {
     const ai = this.createClient
       ? this.createClient(this.apiKey)
       : new GoogleGenAI({ apiKey: this.apiKey });
+    if (!Array.isArray(toolDeclarations)) {
+      throw new Error('toolDeclarations must be an array');
+    }
+    // Gemini rejects `tools: [{ functionDeclarations: [] }]` with INVALID_ARGUMENT,
+    // so a turn with no declarations must omit the `tools` key entirely.
+    const config = { systemInstruction };
+    if (toolDeclarations.length > 0) {
+      config.tools = [{ functionDeclarations: toolDeclarations }];
+    }
     const response = await ai.models.generateContent({
       model: this.model,
       contents,
-      config: {
-        systemInstruction,
-        tools: [{ functionDeclarations: toolDeclarations }],
-      },
+      config,
     });
     return parseGeminiGenerateContentResponse(response);
   }

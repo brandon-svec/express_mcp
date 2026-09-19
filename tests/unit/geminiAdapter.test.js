@@ -71,6 +71,46 @@ describe('GeminiAdapter', () => {
     }]);
   });
 
+  it('generate omits the tools key entirely when there are no declarations', async () => {
+    const generateCalls = [];
+    const adapter = new GeminiAdapter({
+      apiKey: 'key-1',
+      model: 'gemini-2.5-flash',
+      createClient: createMockClient(async () => ({
+        text: 'hello',
+        functionCalls: [],
+      }), generateCalls),
+    });
+
+    const params = {
+      contents: [{ role: 'user', parts: [{ text: 'hey' }] }],
+      systemInstruction: 'You are helpful.',
+      toolDeclarations: [],
+    };
+
+    await adapter.generate(params);
+
+    assert.deepStrictEqual(generateCalls, [{
+      model: 'gemini-2.5-flash',
+      contents: params.contents,
+      config: { systemInstruction: params.systemInstruction },
+    }]);
+    assert.equal(Object.prototype.hasOwnProperty.call(generateCalls[0].config, 'tools'), false);
+  });
+
+  it('generate rejects a non-array toolDeclarations', async () => {
+    const adapter = new GeminiAdapter({
+      apiKey: 'key-1',
+      model: 'gemini-2.5-flash',
+      createClient: createMockClient(async () => ({ text: 'x', functionCalls: [] }), []),
+    });
+
+    await assert.rejects(
+      () => adapter.generate({ contents: [], systemInstruction: 'test', toolDeclarations: undefined }),
+      { message: 'toolDeclarations must be an array' },
+    );
+  });
+
   it('generate returns functionCalls when model requests tools', async () => {
     const calls = [{ name: 'echo', args: { message: 'hi' } }];
     const adapter = new GeminiAdapter({
