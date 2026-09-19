@@ -8,7 +8,8 @@ import {
   getTestExpressMcpOptions,
   mcpPost
 } from '../config.js';
-import { createTestAuthMcp, TEST_AUTH } from '../authTestUtils.js';
+import { createTestAuthMcp, issueTestJwtWithSession, TEST_AUTH } from '../authTestUtils.js';
+import { InMemoryStandaloneSessionStore } from '../../src/stores/inMemoryStandaloneSessionStore.js';
 import { HelloTool } from '../testUtils.js';
 
 describe('ExpressMcp.httpRouter', () => {
@@ -76,6 +77,74 @@ describe('ExpressMcp.httpRouter', () => {
     const login = await request(app).get('/mcp/auth/login');
     assert.strictEqual(login.status, 302);
     assert.include(login.headers.location, '/mcp/auth/login/github');
+  });
+
+  it('isolates a secondary /mcp/admin mount from primary auth and root aliases', async () => {
+    const sessionStore = new InMemoryStandaloneSessionStore();
+
+    const primary = createTestAuthMcp({ sessionStore });
+    primary.registerTool(new HelloTool());
+
+    const admin = createTestAuthMcp({
+      sessionStore,
+      resourcePath: '/mcp/admin',
+      callbackUrl: 'http://localhost:3000/mcp/admin/auth/callback',
+      issuer: 'http://localhost:3000/mcp/admin',
+      allowedUsers: ['operator@example.com'],
+    });
+    admin.registerTool(new HelloTool());
+
+    const app = express();
+    app.use(admin.httpRouter({ mcpPath: '/mcp/admin', rootAliases: false }));
+    app.use(primary.httpRouter({ mcpPath: '/mcp' }));
+
+    const adminUnauth = await mcpPost(request(app), '/mcp/admin')
+      .send(createInitializeRequest(1));
+    assert.strictEqual(adminUnauth.status, 401);
+    assert.include(
+      adminUnauth.headers['www-authenticate'],
+      getOAuthProtectedResourceMetadataUrl(new URL(`${TEST_AUTH.origin}/mcp/admin`)),
+    );
+
+    const primaryUnauth = await mcpPost(request(app), '/mcp')
+      .send(createInitializeRequest(1));
+    assert.strictEqual(primaryUnauth.status, 401);
+    assert.include(
+      primaryUnauth.headers['www-authenticate'],
+      getOAuthProtectedResourceMetadataUrl(new URL(`${TEST_AUTH.origin}/mcp`)),
+    );
+
+    const rootAs = await request(app).get('/.well-known/oauth-authorization-server');
+    assert.strictEqual(rootAs.status, 200);
+    assert.strictEqual(rootAs.body.issuer, TEST_AUTH.issuer);
+
+    const adminPathAs = await request(app).get('/.well-known/oauth-authorization-server/mcp/admin');
+    assert.strictEqual(adminPathAs.status, 200);
+    assert.strictEqual(adminPathAs.body.issuer, 'http://localhost:3000/mcp/admin');
+
+    const nonOperatorToken = await issueTestJwtWithSession(admin.authManager, {
+      sub: 'gh:2',
+      login: 'user',
+      name: 'User',
+      email: 'user@example.com',
+      provider: 'github',
+    });
+    const forbidden = await mcpPost(request(app), '/mcp/admin')
+      .set('Authorization', `Bearer ${nonOperatorToken}`)
+      .send(createInitializeRequest(2));
+    assert.strictEqual(forbidden.status, 403);
+
+    const operatorToken = await issueTestJwtWithSession(admin.authManager, {
+      sub: 'gh:3',
+      login: 'ops',
+      name: 'Ops',
+      email: 'operator@example.com',
+      provider: 'github',
+    });
+    const allowed = await mcpPost(request(app), '/mcp/admin')
+      .set('Authorization', `Bearer ${operatorToken}`)
+      .send(createInitializeRequest(3));
+    assert.strictEqual(allowed.status, 200);
   });
 
   it('exposes RFC 8414 path-based AS metadata via mcpOAuthRouter', async () => {

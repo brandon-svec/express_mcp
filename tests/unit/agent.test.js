@@ -1,5 +1,5 @@
 import { assert } from 'chai';
-import { Agent } from '../../src/agents/agent.js';
+import { Agent, REQUEST_TOOLS_NAME, canonicalizeValue, scrubRequestToolsFromContents } from '../../src/agents/agent.js';
 import { ModelAdapter } from '../../src/agents/modelAdapter.js';
 import { InMemoryHistoryStore } from '../../src/agents/historyStore.js';
 import { ToolRegistry } from '../../src/classes/toolRegistry.js';
@@ -33,11 +33,11 @@ const ECHO_INPUT_SCHEMA = {
   additionalProperties: false,
 };
 
-const ECHO_TOOL_DECLARATION = {
+const ECHO_TOOL_DECLARATION = canonicalizeValue({
   name: 'echo',
   description: 'Echo tool',
   parameters: ECHO_INPUT_SCHEMA,
-};
+});
 
 class EchoTool extends BaseTool {
   constructor () {
@@ -268,12 +268,16 @@ describe('Agent', () => {
         toolCalls: infoCalls[2].attrs.toolCalls,
         errorCalls: infoCalls[2].attrs.errorCalls,
         historyTurns: infoCalls[2].attrs.historyTurns,
+        escalated: infoCalls[2].attrs.escalated,
+        toolCount: infoCalls[2].attrs.toolCount,
       },
       {
         rounds: 2,
         toolCalls: 2,
         errorCalls: 1,
         historyTurns: 0,
+        escalated: false,
+        toolCount: 1,
       },
     );
     assert.strictEqual(typeof infoCalls[2].attrs.contentsChars, 'number');
@@ -947,5 +951,208 @@ describe('Agent', () => {
     ));
     assert.strictEqual(userToolTurns.length, 1);
     assert.strictEqual(userToolTurns[0].parts.length, 2);
+  });
+
+  it('buildToolDeclarations is byte-identical across calls and sorts schema keys', () => {
+    const agent = new Agent({
+      adapter: new FakeAdapter([]),
+      toolRegistry: registry,
+      systemInstruction: 'test',
+      maxToolRounds: 8,
+    });
+    const first = agent.buildToolDeclarations();
+    const second = agent.buildToolDeclarations();
+    assert.deepStrictEqual(first, second);
+    assert.strictEqual(JSON.stringify(first), JSON.stringify(second));
+    assert.deepStrictEqual(
+      Object.keys(first[0].parameters),
+      ['additionalProperties', 'properties', 'required', 'type'],
+    );
+  });
+
+  it('processMessage toolNames restricts declarations and rejects other tools', async () => {
+    class OtherTool extends BaseTool {
+      constructor () {
+        super('other', 'Other', {
+          type: 'object',
+          properties: {},
+          additionalProperties: false,
+        });
+      }
+
+      async execute () {
+        return { ok: true };
+      }
+    }
+    registry.register(new OtherTool());
+
+    const adapter = new FakeAdapter([
+      { text: null, functionCalls: [{ name: 'other', args: {} }] },
+    ]);
+    const agent = new Agent({
+      adapter,
+      toolRegistry: registry,
+      systemInstruction: 'full',
+      maxToolRounds: 8,
+    });
+
+    assert.deepStrictEqual(
+      agent.buildToolDeclarations(['echo']).map((d) => d.name),
+      ['echo'],
+    );
+
+    await assertRejectsWithMessage(
+      () => agent.processMessage('k', 'go', { toolNames: ['echo'] }),
+      'Tool is not available to the agent: other',
+    );
+  });
+
+  it('uses per-turn systemInstruction', async () => {
+    const adapter = new FakeAdapter([
+      { text: 'ok', functionCalls: null },
+    ]);
+    const agent = new Agent({
+      adapter,
+      toolRegistry: registry,
+      systemInstruction: 'default',
+      maxToolRounds: 8,
+    });
+
+    await agent.processMessage('k', 'hi', { systemInstruction: 'override' });
+    assert.strictEqual(adapter.generateParams[0].systemInstruction, 'override');
+  });
+
+  it('escalates via request_tools, adds round budget, and scrubs history', async () => {
+    class OtherTool extends BaseTool {
+      constructor () {
+        super('other', 'Other', {
+          type: 'object',
+          properties: {},
+          additionalProperties: false,
+        });
+      }
+
+      async execute () {
+        return { ok: true };
+      }
+    }
+    registry.register(new OtherTool());
+
+    const history = new InMemoryHistoryStore({ windowMinutes: 60 });
+    const infoCalls = [];
+    const adapter = new FakeAdapter([
+      {
+        text: null,
+        functionCalls: [{ name: REQUEST_TOOLS_NAME, args: { reason: 'need other' } }],
+      },
+      { text: null, functionCalls: [{ name: 'other', args: {} }] },
+      { text: null, functionCalls: [{ name: 'echo', args: { message: 'hi' } }] },
+      { text: 'done', functionCalls: null },
+    ]);
+    const agent = new Agent({
+      adapter,
+      toolRegistry: registry,
+      systemInstruction: 'narrow',
+      history,
+      maxToolRounds: 2,
+      historyToolTurns: 'full',
+      logger: {
+        info (attrs, msg) {
+          infoCalls.push({ attrs, msg });
+        },
+      },
+    });
+
+    const reply = await agent.processMessage('chat:1', 'go', {
+      toolNames: ['echo'],
+      systemInstruction: 'narrow',
+      escalation: {
+        toolNames: ['echo', 'other'],
+        systemInstruction: 'full prompt',
+      },
+    });
+
+    assert.strictEqual(reply, 'done');
+    assert.strictEqual(adapter.callIndex, 4);
+    assert.strictEqual(adapter.generateParams[0].systemInstruction, 'narrow');
+    assert.isTrue(
+      adapter.generateParams[0].toolDeclarations.some((d) => d.name === REQUEST_TOOLS_NAME),
+    );
+    assert.strictEqual(adapter.generateParams[1].systemInstruction, 'full prompt');
+    assert.isFalse(
+      adapter.generateParams[1].toolDeclarations.some((d) => d.name === REQUEST_TOOLS_NAME),
+    );
+
+    const stored = history.get('chat:1');
+    const serialized = JSON.stringify(stored);
+    assert.isFalse(serialized.includes(REQUEST_TOOLS_NAME));
+    assert.deepStrictEqual(
+      scrubRequestToolsFromContents([
+        { role: 'model', parts: [{ functionCall: { name: REQUEST_TOOLS_NAME, args: { reason: 'x' } } }] },
+        { role: 'user', parts: [{ functionResponse: { name: REQUEST_TOOLS_NAME, response: { ok: true } } }] },
+        { role: 'model', parts: [{ text: 'kept' }] },
+      ]),
+      [{ role: 'model', parts: [{ text: 'kept' }] }],
+    );
+
+    const escalateLog = infoCalls.find((c) => c.msg === 'Agent tool set escalated');
+    assert.deepStrictEqual(escalateLog.attrs.from, ['echo']);
+    assert.deepStrictEqual(escalateLog.attrs.to, ['echo', 'other']);
+    const completed = infoCalls.find((c) => c.msg === 'Agent processMessage completed');
+    assert.strictEqual(completed.attrs.escalated, true);
+  });
+
+  it('throws when escalation is set without toolNames', async () => {
+    const agent = new Agent({
+      adapter: new FakeAdapter([]),
+      toolRegistry: registry,
+      systemInstruction: 'test',
+      maxToolRounds: 8,
+    });
+
+    await assertRejectsWithMessage(
+      () => agent.processMessage('k', 'hi', {
+        escalation: {
+          toolNames: ['echo'],
+          systemInstruction: 'full',
+        },
+      }),
+      'escalation requires toolNames',
+    );
+  });
+
+  it('throws when escalation.toolNames is not a superset', async () => {
+    class OtherTool extends BaseTool {
+      constructor () {
+        super('other', 'Other', {
+          type: 'object',
+          properties: {},
+          additionalProperties: false,
+        });
+      }
+
+      async execute () {
+        return { ok: true };
+      }
+    }
+    registry.register(new OtherTool());
+
+    const agent = new Agent({
+      adapter: new FakeAdapter([]),
+      toolRegistry: registry,
+      systemInstruction: 'test',
+      maxToolRounds: 8,
+    });
+
+    await assertRejectsWithMessage(
+      () => agent.processMessage('k', 'hi', {
+        toolNames: ['echo', 'other'],
+        escalation: {
+          toolNames: ['echo'],
+          systemInstruction: 'full',
+        },
+      }),
+      'escalation.toolNames must be a superset of toolNames; missing other',
+    );
   });
 });

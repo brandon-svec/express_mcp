@@ -125,4 +125,25 @@ describe('ExpressMcp agent option', () => {
       /agent.historyMaxTurns applies only to the default in-memory history store/,
     );
   });
+
+  it('merges agent.excludeTools into the agent exclusion set', () => {
+    const mcp = new ExpressMcp(getTestExpressMcpOptions({
+      enableKnowledgeBase: true,
+      name: 'gillium',
+      agent: {
+        enabled: true,
+        allowUnauthenticated: true,
+        exposeTool: false,
+        systemInstruction: 'You are a test assistant.',
+        adapter: new StaticAdapter(),
+        excludeTools: ['gillium_kb_search', 'gillium_kb_list', 'gillium_kb_get'],
+      },
+    }));
+
+    const names = mcp.getAgent().buildToolDeclarations().map((d) => d.name);
+    assert.notInclude(names, 'gillium_kb_search');
+    assert.notInclude(names, 'gillium_kb_list');
+    assert.notInclude(names, 'gillium_kb_get');
+    assert.notInclude(names, 'gillium_session');
+  });
 });

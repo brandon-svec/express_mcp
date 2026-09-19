@@ -57,6 +57,7 @@ export class ExpressMcp {
    * @param {boolean} [options.agent.exposeTool=true] - Register agent_ask MCP tool when enabled
    * @param {boolean} [options.agent.allowUnauthenticated=false] - Allow agent when auth is disabled (default: require auth)
    * @param {string[]} [options.agent.toolAllowlist] - If set, agent may only call these tool names
+   * @param {string[]} [options.agent.excludeTools] - Additional tool names the agent must not call (merged with session/agent_ask exclusions)
    * @param {string} [options.agent.systemInstruction] - System prompt for the agent
    * @param {import('../agents/modelAdapter.js').ModelAdapter} [options.agent.adapter] - Custom model adapter
    * @param {{ apiKey: string, model: string }} [options.agent.gemini] - Gemini config when adapter omitted
@@ -203,6 +204,17 @@ export class ExpressMcp {
       excludeTools.add(`${this.name}_session`);
       if (exposeTool) {
         excludeTools.add(`${this.name}_agent_ask`);
+      }
+    }
+    if (agentOpts.excludeTools !== undefined) {
+      if (!Array.isArray(agentOpts.excludeTools)) {
+        throw new Error('agent.excludeTools must be an array of tool names when provided');
+      }
+      for (const name of agentOpts.excludeTools) {
+        if (typeof name !== 'string' || name.length === 0) {
+          throw new Error('agent.excludeTools entries must be non-empty strings');
+        }
+        excludeTools.add(name);
       }
     }
 
@@ -405,11 +417,16 @@ export class ExpressMcp {
    * Mount once on the host app (e.g. `app.use(expressMcp.httpRouter())`).
    * @param {Object} [options]
    * @param {string} [options.mcpPath='/mcp'] - Mount path for MCP OAuth, IdP login, and JSON-RPC
+   * @param {boolean} [options.rootAliases=true] - Register OAuth AS routes at site root (set false for secondary mounts)
    * @param {Object} [options.sessionOptions] - Options passed to express-session
    * @returns {import('express').Router}
    */
   httpRouter(options = {}) {
     const mcpPath = options.mcpPath || '/mcp';
+    const rootAliases = options.rootAliases === undefined ? true : options.rootAliases;
+    if (rootAliases !== true && rootAliases !== false) {
+      throw new Error('httpRouter rootAliases must be a boolean when provided');
+    }
 
     if (!this.authManager) {
       this.logger.warn(
@@ -434,6 +451,7 @@ export class ExpressMcp {
         callbackUrl: auth.callbackUrl,
         resourcePath: auth.resourcePath || mcpPath,
         mcpPath,
+        rootAliases,
         authPath: this.authManager.authPath,
         providers: this.enabledAuthProviders,
         ...allowlistInfo
@@ -444,6 +462,7 @@ export class ExpressMcp {
     return this.authManager.createHttpRouter({
       mcpRouter: this.router(),
       mcpPath,
+      rootAliases,
       sessionOptions: options.sessionOptions || {}
     });
   }
@@ -647,11 +666,12 @@ export class ExpressMcp {
     const sessions = new Map();
     const maxSessions = 1000;
 
-    if (this.authManager) {
-      for (const middleware of this.authManager.protectedMiddleware()) {
-        router.use(middleware);
-      }
-    }
+    // Attach auth only to exact '/' routes so a sibling mount under a longer
+    // path (e.g. /mcp/admin next to /mcp) is not captured by this router's
+    // path-agnostic Bearer middleware.
+    const protectedMiddleware = this.authManager
+      ? this.authManager.protectedMiddleware()
+      : [];
 
     const handlePost = async (req, res) => {
       const requestLogger = this.logger.child({
@@ -755,9 +775,9 @@ export class ExpressMcp {
       }
     };
 
-    router.post('/', handlePost);
-    router.get('/', handleSessionRequest);
-    router.delete('/', handleSessionRequest);
+    router.post('/', ...protectedMiddleware, handlePost);
+    router.get('/', ...protectedMiddleware, handleSessionRequest);
+    router.delete('/', ...protectedMiddleware, handleSessionRequest);
 
     return router;
   }

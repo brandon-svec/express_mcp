@@ -192,14 +192,23 @@ const expressMcp = new ExpressMcp({
 
 Requires auth by default (`agent.allowUnauthenticated: true` to opt out). `@google/genai` is an optional peer dependency.
 
-Use `getAgent().processMessage(historyKey, text, options)` for inbound turns. Optional `options.ephemeralPrefix` is prepended to `text` for the model on **this turn only** (including tool rounds) and is **never** stored or replayed — hosts use it for working-memory fences and similar ephemeral context. Optional agent options:
+Use `getAgent().processMessage(historyKey, text, options)` for inbound turns. Optional `options.ephemeralPrefix` is prepended to `text` for the model on **this turn only** (including tool rounds) and is **never** stored or replayed — hosts use it for working-memory fences and similar ephemeral context. Optional per-turn options:
+
+- `toolNames: string[]` — only these registered tools are declared and callable for this turn (must pass `excludeTools` / `toolAllowlist`). An empty list omits the `tools` key from the Gemini request entirely (Gemini rejects `functionDeclarations: []` with `INVALID_ARGUMENT`).
+- `systemInstruction: string` — replace the agent constructor system instruction for this turn only.
+- `escalation: { toolNames, systemInstruction }` — requires `toolNames`. Adds a synthetic `request_tools` declaration; when the model calls it, the agent swaps to the escalation tool set and instruction for the remaining rounds, logs `Agent tool set escalated`, and grants **+1** `maxToolRounds` budget. `request_tools` call/response pairs are stripped from stored history (atomic pair scrub) so Gemini function-pairing stays valid on replay.
+
+Optional agent constructor options:
 
 - `historyToolTurns: 'full' | 'omit'` — `'full'` (default) stores tool-loop `functionCall` / `functionResponse` parts; `'omit'` stores only the user text and final model reply so large tool payloads are not replayed.
 - `historyMaxTurns` — when using the default in-memory history, keep at most this many turns after TTL pruning (oldest first). Cannot be set together with a custom `agent.history`.
+- `excludeTools: string[]` — additional tool names the agent must not call (merged with built-in session / `agent_ask` exclusions).
+
+`httpRouter({ mcpPath, rootAliases, sessionOptions })`: set `rootAliases: false` for a secondary mount (e.g. `/mcp/admin`) so it does not register site-root OAuth AS aliases that would collide with the primary. Path-based discovery (`/.well-known/oauth-authorization-server{mcpPath}`) is always registered. Auth middleware is attached only to exact `/` MCP routes so a longer sibling path is not intercepted.
 
 For **host-initiated agent speech** (proactive reminders, notifications) that must appear in the next turn’s conversation history without calling the LLM, use `getAgent().recordAssistantMessage(historyKey, text)`. That method requires a history store and throws if none is configured. When recorded model turns leave history starting with a `model` role, `processMessage` prepends a synthetic user `[continued]` turn before calling Gemini so contents remain valid. Schema and tool execution errors are returned to the model as `{ ok: false, error }` functionResponses so further `maxToolRounds` can fix args and retry (same recovery Cursor gets over MCP JSON-RPC).
 
-Set `loggerOptions.level` to `trace` to log the exact model request (`contents`, `systemInstruction`, `toolDeclarations`) plus a per-content size breakdown before each generate. Trace payloads include raw user content. At `info`, each completed turn logs character totals (`contentsChars`, `systemInstructionChars`, `toolDeclarationChars`, `historyTurns`) without the request body.
+Set `loggerOptions.level` to `trace` to log the exact model request (`contents`, `systemInstruction`, `toolDeclarations`) plus a per-content size breakdown before each generate. Trace payloads include raw user content. At `info`, each completed turn logs character totals (`contentsChars`, `systemInstructionChars`, `toolDeclarationChars`, `historyTurns`, `toolCount`, `escalated`) without the request body.
 
 ## API Reference
 
