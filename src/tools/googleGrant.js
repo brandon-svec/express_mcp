@@ -11,7 +11,7 @@ export class GoogleGrantTool extends BaseTool {
   constructor(authManager) {
     super(
       'google_grant',
-      'Google IdP grant management for extra scopes (e.g. Contacts): status reports whether a grant is stored; revoke revokes the refresh token at Google and deletes the local grant. Owner is the signed-in user only.',
+      'Google IdP grant management for extra scopes (Contacts, Calendar, and other allowlisted scopes): status reports whether a grant is stored; revoke revokes the refresh token at Google and deletes the local grant. Owner is the signed-in user only.',
       {
         type: 'object',
         properties: {

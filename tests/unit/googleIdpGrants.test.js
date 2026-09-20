@@ -113,10 +113,12 @@ describe('Google IdP grants', () => {
       expect({
         name: err.name,
         reason: err.reason,
+        message: err.message,
         missingScopes: err.missingScopes
       }).to.deep.equal({
         name: 'GoogleScopeGrantRequiredError',
         reason: 'no_grant',
+        message: 'No Google extra-scope grant for this user',
         missingScopes: [GOOGLE_CONTACTS_READONLY_SCOPE]
       });
     }
@@ -297,6 +299,17 @@ describe('Google IdP grants', () => {
 });
 
 describe('GoogleGrantTool', () => {
+  it('describes extra scopes generally (not Contacts-only)', () => {
+    const authManager = createTestAuthManager({
+      providers: { google: TEST_AUTH.google },
+      googleExtraScopes: [GOOGLE_CONTACTS_READONLY_SCOPE],
+      idpTokenEncryptionKey: IDP_KEY
+    });
+    const tool = new GoogleGrantTool(authManager);
+    expect(tool.description).to.include('Contacts, Calendar');
+    expect(tool.description).to.not.match(/e\.g\. Contacts/);
+  });
+
   it('status with grant returns granted true and scopes', async () => {
     const store = new InMemoryStandaloneSessionStore();
     const authManager = createTestAuthManager({

@@ -530,7 +530,7 @@ export class AuthManager {
     const grant = await this.sessionStore.findIdpGrant(sub);
     if (!grant) {
       throw new GoogleScopeGrantRequiredError(
-        'No Google Contacts grant for this user',
+        'No Google extra-scope grant for this user',
         { sub, reason: 'no_grant', missingScopes: options.requiredScopes }
       );
     }
@@ -1700,7 +1700,7 @@ export class AuthManager {
             return res.redirect(this.postLoginRedirectUrl);
           }
           return res.send(
-            `<html><body><h1>Google Contacts connected</h1><p>Signed in as ${escapeHtml(user.email || user.login)}. You can close this window.</p></body></html>`
+            `<html><body><h1>Google connected</h1><p>Signed in as ${escapeHtml(user.email || user.login)}. You can close this window.</p></body></html>`
           );
         }
 

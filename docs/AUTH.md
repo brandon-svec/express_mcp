@@ -59,15 +59,15 @@ app.listen(3000);
 
 `jwtSecret` and `sessionSecret` must be at least 32 characters.
 
-### Google Contacts / People API grants
+### Google extra-scope grants (incremental consent)
 
-Base Google login still requests only `openid email profile`. Extra scopes such as Contacts are **not** added to every sign-in. Hosts that need People API access:
+Base Google login still requests only `openid email profile`. Extra scopes (Contacts, Calendar, and other allowlisted scopes) are **not** added to every sign-in. Hosts that need them:
 
 1. Set `googleExtraScopes` (allowlist) and `idpTokenEncryptionKey`.
-2. Call `expressMcp.createGoogleGrantUrl({ scopes, sub, context })` or `POST …/auth/google-grant-url` when the user needs Contacts.
-3. After the user consents, call `expressMcp.getGoogleAccessToken(sub, { requiredScopes })`.
+2. Call `expressMcp.createGoogleGrantUrl({ scopes, sub, context })` or `POST …/auth/google-grant-url` when the user needs an extra scope (for example Contacts).
+3. After the user consents, call `expressMcp.getGoogleAccessToken(sub, { requiredScopes })`. The success page says **Google connected** (not scope-specific).
 
-If no grant exists, `getGoogleAccessToken` throws `GoogleScopeGrantRequiredError` with `reason: 'no_grant'` (or `missing_scopes` / `refresh_failed`). Do not invent contact data when that error occurs.
+If no grant exists, `getGoogleAccessToken` throws `GoogleScopeGrantRequiredError` with `reason: 'no_grant'` (or `missing_scopes` / `refresh_failed`). Do not invent data from that Google API when that error occurs.
 
 Stored grants are **long-lived** and decoupled from the MCP login session (`jwtExpiresIn`). They remain until the user revokes them. Call `expressMcp.revokeGoogleIdpGrant(sub)` (or the MCP tool below) to revoke the refresh token at Google and delete the Redis row.
 
@@ -78,7 +78,7 @@ When `googleExtraScopes` is configured, the library registers `{name}_google_gra
 | `status` | `{ granted, scopes }` — whether a grant is stored (no tokens) |
 | `revoke` | Revokes at Google, deletes the local grant; `{ revoked: true }` or `{ revoked: false, reason: 'no_grant' }` |
 
-Owner is always `context.user.sub` — never a tool argument. Unlike `{name}_session`, this tool is **not** excluded from the in-process agent. After `revoked: true`, hosts must not invent contact data; the next People call should surface a new `grant_url`.
+Owner is always `context.user.sub` — never a tool argument. Unlike `{name}_session`, this tool is **not** excluded from the in-process agent. After `revoked: true`, hosts must not invent Google-sourced data; the next API call that needs the grant should surface a new `grant_url`.
 
 ```javascript
 import {
