@@ -708,6 +708,76 @@ describe('Agent', () => {
     assert.strictEqual(stored[stored.length - 1].parts[0].text, 'second reply');
   });
 
+  it('processMessage skips history.append when appendHistory is false', async () => {
+    const history = new InMemoryHistoryStore({ windowMinutes: 60 });
+    const adapter = new FakeAdapter([
+      { text: 'silent draft', functionCalls: null },
+    ]);
+    const agent = new Agent({
+      adapter,
+      toolRegistry: registry,
+      systemInstruction: 'test',
+      history,
+      maxToolRounds: 8,
+    });
+
+    await agent.recordAssistantMessage('owner:1', 'prior reminder');
+    const reply = await agent.processMessage('owner:1', 'check calendar', {
+      appendHistory: false,
+    });
+
+    assert.strictEqual(reply, 'silent draft');
+    assert.deepStrictEqual(history.get('owner:1'), [
+      { role: 'model', parts: [{ text: 'prior reminder' }] },
+    ]);
+    assert.deepStrictEqual(adapter.generateParams[0].contents, [
+      { role: 'user', parts: [{ text: '[continued]' }] },
+      { role: 'model', parts: [{ text: 'prior reminder' }] },
+      { role: 'user', parts: [{ text: 'check calendar' }] },
+    ]);
+  });
+
+  it('processMessage still appends history when appendHistory is true', async () => {
+    const history = new InMemoryHistoryStore({ windowMinutes: 60 });
+    const adapter = new FakeAdapter([
+      { text: 'recorded reply', functionCalls: null },
+    ]);
+    const agent = new Agent({
+      adapter,
+      toolRegistry: registry,
+      systemInstruction: 'test',
+      history,
+      maxToolRounds: 8,
+    });
+
+    const reply = await agent.processMessage('owner:1', 'hello', {
+      appendHistory: true,
+    });
+
+    assert.strictEqual(reply, 'recorded reply');
+    assert.deepStrictEqual(history.get('owner:1'), [
+      { role: 'user', parts: [{ text: 'hello' }] },
+      { role: 'model', parts: [{ text: 'recorded reply' }] },
+    ]);
+  });
+
+  it('processMessage rejects a non-boolean appendHistory', async () => {
+    const agent = new Agent({
+      adapter: new FakeAdapter([{ text: 'x', functionCalls: null }]),
+      toolRegistry: registry,
+      systemInstruction: 'test',
+      history: new InMemoryHistoryStore({ windowMinutes: 60 }),
+      maxToolRounds: 8,
+    });
+
+    try {
+      await agent.processMessage('k', 'hello', { appendHistory: 'no' });
+      assert.fail('expected processMessage to throw');
+    } catch (err) {
+      assert.match(err.message, /appendHistory must be a boolean/);
+    }
+  });
+
   it('recordAssistantMessage appends exactly one model turn', async () => {
     const history = new InMemoryHistoryStore({ windowMinutes: 60 });
     const agent = new Agent({
