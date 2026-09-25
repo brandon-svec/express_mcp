@@ -427,7 +427,7 @@ export class Agent {
    *   toolNames?: string[],
    *   systemInstruction?: string,
    *   escalation?: { toolNames: string[], systemInstruction: string },
-   *   recordHistory?: boolean,
+   *   appendHistory?: boolean,
    * }} [options]
    * @returns {Promise<string>}
    */
@@ -447,10 +447,10 @@ export class Agent {
     if (hostContext !== null && (typeof hostContext !== 'object' || Array.isArray(hostContext))) {
       throw new Error('hostContext must be a plain object when provided');
     }
-    if (options.recordHistory !== undefined && typeof options.recordHistory !== 'boolean') {
-      throw new Error('recordHistory must be a boolean when provided');
+    if (options.appendHistory !== undefined && typeof options.appendHistory !== 'boolean') {
+      throw new Error('appendHistory must be a boolean when provided');
     }
-    const recordHistory = options.recordHistory !== false;
+    const appendHistory = options.appendHistory !== false;
 
     let modelUserText = text;
     if (options.ephemeralPrefix !== undefined) {
@@ -638,7 +638,7 @@ export class Agent {
     }
 
     turnContents.push({ role: 'model', parts: [{ text: replyText }] });
-    if (recordHistory && this.history) {
+    if (appendHistory && this.history) {
       this.history.append(
         historyKey,
         contentsForHistory(turnContents, text, this.historyToolTurns),
@@ -653,7 +653,7 @@ export class Agent {
         historyTurns,
         toolCount: lastSizes.toolCount,
         escalated,
-        recordHistory,
+        appendHistory,
         contentsChars: lastSizes.contentsChars,
         systemInstructionChars: lastSizes.systemInstructionChars,
         toolDeclarationChars: lastSizes.toolDeclarationChars,

@@ -708,7 +708,7 @@ describe('Agent', () => {
     assert.strictEqual(stored[stored.length - 1].parts[0].text, 'second reply');
   });
 
-  it('processMessage skips history.append when recordHistory is false', async () => {
+  it('processMessage skips history.append when appendHistory is false', async () => {
     const history = new InMemoryHistoryStore({ windowMinutes: 60 });
     const adapter = new FakeAdapter([
       { text: 'silent draft', functionCalls: null },
@@ -723,7 +723,7 @@ describe('Agent', () => {
 
     await agent.recordAssistantMessage('owner:1', 'prior reminder');
     const reply = await agent.processMessage('owner:1', 'check calendar', {
-      recordHistory: false,
+      appendHistory: false,
     });
 
     assert.strictEqual(reply, 'silent draft');
@@ -737,7 +737,7 @@ describe('Agent', () => {
     ]);
   });
 
-  it('processMessage still appends history when recordHistory is true', async () => {
+  it('processMessage still appends history when appendHistory is true', async () => {
     const history = new InMemoryHistoryStore({ windowMinutes: 60 });
     const adapter = new FakeAdapter([
       { text: 'recorded reply', functionCalls: null },
@@ -751,7 +751,7 @@ describe('Agent', () => {
     });
 
     const reply = await agent.processMessage('owner:1', 'hello', {
-      recordHistory: true,
+      appendHistory: true,
     });
 
     assert.strictEqual(reply, 'recorded reply');
@@ -761,7 +761,7 @@ describe('Agent', () => {
     ]);
   });
 
-  it('processMessage rejects a non-boolean recordHistory', async () => {
+  it('processMessage rejects a non-boolean appendHistory', async () => {
     const agent = new Agent({
       adapter: new FakeAdapter([{ text: 'x', functionCalls: null }]),
       toolRegistry: registry,
@@ -771,10 +771,10 @@ describe('Agent', () => {
     });
 
     try {
-      await agent.processMessage('k', 'hello', { recordHistory: 'no' });
+      await agent.processMessage('k', 'hello', { appendHistory: 'no' });
       assert.fail('expected processMessage to throw');
     } catch (err) {
-      assert.match(err.message, /recordHistory must be a boolean/);
+      assert.match(err.message, /appendHistory must be a boolean/);
     }
   });
 
