@@ -517,6 +517,253 @@ describe('Agent', () => {
     );
   });
 
+  it('historyToolTurns digest requires historyToolDigest', () => {
+    assert.throws(
+      () => new Agent({
+        adapter: new FakeAdapter([]),
+        toolRegistry: registry,
+        systemInstruction: 'test',
+        maxToolRounds: 8,
+        historyToolTurns: 'digest',
+      }),
+      /historyToolDigest is required when historyToolTurns is digest/,
+    );
+  });
+
+  it('historyToolTurns digest stores HOST_TOOLS part smaller than live result', async () => {
+    const history = new InMemoryHistoryStore({ windowMinutes: 60 });
+    const largeResult = { body: 'x'.repeat(5000), echoed: 'hi' };
+    class FatEchoTool extends BaseTool {
+      constructor () {
+        super('echo', 'Echo tool', ECHO_INPUT_SCHEMA);
+      }
+
+      async execute (args) {
+        return { ...largeResult, echoed: args.message };
+      }
+    }
+    const fatRegistry = new ToolRegistry({ loggerOptions: { enabled: false } });
+    fatRegistry.register(new FatEchoTool());
+    const adapter = new FakeAdapter([
+      { text: null, functionCalls: [{ name: 'echo', args: { message: 'hi' } }] },
+      { text: 'done', functionCalls: null },
+    ]);
+    const agent = new Agent({
+      adapter,
+      toolRegistry: fatRegistry,
+      systemInstruction: 'test',
+      history,
+      maxToolRounds: 8,
+      historyToolTurns: 'digest',
+      historyToolDigest (toolName, args, result) {
+        return { operation: 'echo', label: result.echoed };
+      },
+    });
+
+    await agent.processMessage('chat:1', 'first');
+    const stored = history.get('chat:1');
+    const hostToolsPart = stored[1].parts[0].text;
+    const liveResponseChars = JSON.stringify(largeResult).length;
+
+    assert.deepStrictEqual({
+      roles: stored.map((c) => c.role),
+      partKinds: stored[1].parts.map((p) => (p.text.startsWith('HOST_TOOLS:') ? 'host_tools' : 'reply')),
+      hostTools: JSON.parse(hostToolsPart.slice('HOST_TOOLS: '.length)),
+      reply: stored[1].parts[1].text,
+      digestSmallerThanLive: hostToolsPart.length < liveResponseChars,
+      hasFunctionCall: JSON.stringify(stored).includes('functionCall'),
+      hasFunctionResponse: JSON.stringify(stored).includes('functionResponse'),
+    }, {
+      roles: ['user', 'model'],
+      partKinds: ['host_tools', 'reply'],
+      hostTools: [{ tool: 'echo', operation: 'echo', label: 'hi' }],
+      reply: 'done',
+      digestSmallerThanLive: true,
+      hasFunctionCall: false,
+      hasFunctionResponse: false,
+    });
+  });
+
+  it('historyToolTurns digest with no tools stores user and reply only', async () => {
+    const history = new InMemoryHistoryStore({ windowMinutes: 60 });
+    const adapter = new FakeAdapter([
+      { text: 'hello there', functionCalls: null },
+    ]);
+    const agent = new Agent({
+      adapter,
+      toolRegistry: registry,
+      systemInstruction: 'test',
+      history,
+      maxToolRounds: 8,
+      historyToolTurns: 'digest',
+      historyToolDigest () {
+        return {};
+      },
+    });
+
+    await agent.processMessage('chat:1', 'hi');
+    assert.deepStrictEqual(history.get('chat:1'), [
+      { role: 'user', parts: [{ text: 'hi' }] },
+      { role: 'model', parts: [{ text: 'hello there' }] },
+    ]);
+  });
+
+  it('historyToolTurns digest truncates errors and skips request_tools', async () => {
+    const history = new InMemoryHistoryStore({ windowMinutes: 60 });
+    const longError = `x${'e'.repeat(250)}`;
+    class BoomTool extends BaseTool {
+      constructor () {
+        super('boom', 'Boom', {
+          type: 'object',
+          properties: {},
+          additionalProperties: false,
+        });
+      }
+
+      validateInput () {
+        throw new Error(longError);
+      }
+
+      async execute () {
+        return {};
+      }
+    }
+    const boomRegistry = new ToolRegistry({ loggerOptions: { enabled: false } });
+    boomRegistry.register(new BoomTool());
+    boomRegistry.register(new EchoTool());
+    const adapter = new FakeAdapter([
+      {
+        text: null,
+        functionCalls: [
+          { name: REQUEST_TOOLS_NAME, args: { reason: 'need echo' } },
+        ],
+      },
+      { text: null, functionCalls: [{ name: 'boom', args: {} }] },
+      { text: null, functionCalls: [{ name: 'echo', args: { message: 'ok' } }] },
+      { text: 'recovered', functionCalls: null },
+    ]);
+    const agent = new Agent({
+      adapter,
+      toolRegistry: boomRegistry,
+      systemInstruction: 'narrow',
+      history,
+      maxToolRounds: 8,
+      historyToolTurns: 'digest',
+      historyToolDigest (toolName, _args, result) {
+        return { label: result.echoed };
+      },
+    });
+
+    await agent.processMessage('chat:1', 'go', {
+      toolNames: ['boom'],
+      escalation: {
+        toolNames: ['boom', 'echo'],
+        systemInstruction: 'wide',
+      },
+    });
+
+    const stored = history.get('chat:1');
+    const digests = JSON.parse(stored[1].parts[0].text.slice('HOST_TOOLS: '.length));
+    assert.deepStrictEqual({
+      digestTools: digests.map((d) => d.tool),
+      errorLen: digests[0].error.length,
+      errorOk: digests[0].ok,
+      success: digests[1],
+      serializedHasRequestTools: JSON.stringify(stored).includes(REQUEST_TOOLS_NAME),
+    }, {
+      digestTools: ['boom', 'echo'],
+      errorLen: 200,
+      errorOk: false,
+      success: { tool: 'echo', label: 'ok' },
+      serializedHasRequestTools: false,
+    });
+  });
+
+  it('historyUserText is stored instead of text', async () => {
+    const history = new InMemoryHistoryStore({ windowMinutes: 60 });
+    const adapter = new FakeAdapter([
+      { text: 'ok', functionCalls: null },
+      { text: 'again', functionCalls: null },
+    ]);
+    const agent = new Agent({
+      adapter,
+      toolRegistry: registry,
+      systemInstruction: 'test',
+      history,
+      maxToolRounds: 8,
+      historyToolTurns: 'omit',
+    });
+
+    await agent.processMessage('chat:1', 'plain body', {
+      historyUserText: 'SENT_AT 3:00 PM\nplain body',
+      ephemeralPrefix: 'CURRENT_CONTEXT:\n---\n',
+    });
+
+    assert.deepStrictEqual({
+      storedUser: history.get('chat:1')[0],
+      modelSaw: adapter.generateParams[0].contents[0].parts[0].text,
+    }, {
+      storedUser: { role: 'user', parts: [{ text: 'SENT_AT 3:00 PM\nplain body' }] },
+      modelSaw: 'CURRENT_CONTEXT:\n---\nplain body',
+    });
+  });
+
+  it('digest history then recordAssistantMessage keeps a valid role sequence', async () => {
+    const history = new InMemoryHistoryStore({ windowMinutes: 60 });
+    const adapter = new FakeAdapter([
+      { text: null, functionCalls: [{ name: 'echo', args: { message: 'hi' } }] },
+      { text: 'saved', functionCalls: null },
+      { text: 'noted', functionCalls: null },
+    ]);
+    const agent = new Agent({
+      adapter,
+      toolRegistry: registry,
+      systemInstruction: 'test',
+      history,
+      maxToolRounds: 8,
+      historyToolTurns: 'digest',
+      historyToolDigest () {
+        return { ok: true };
+      },
+    });
+
+    await agent.processMessage('chat:1', 'first');
+    await agent.recordAssistantMessage('chat:1', 'Reminder: call Brad');
+    await agent.processMessage('chat:1', 'thanks');
+
+    const roles = history.get('chat:1').map((c) => c.role);
+    assert.deepStrictEqual(roles, ['user', 'model', 'model', 'user', 'model']);
+    assert.strictEqual(
+      adapter.generateParams[2].contents[0].role,
+      'user',
+      'Gemini request must still start with user after consecutive model turns',
+    );
+  });
+
+  it('throws when historyToolDigest returns a non-object', async () => {
+    const history = new InMemoryHistoryStore({ windowMinutes: 60 });
+    const adapter = new FakeAdapter([
+      { text: null, functionCalls: [{ name: 'echo', args: { message: 'hi' } }] },
+      { text: 'done', functionCalls: null },
+    ]);
+    const agent = new Agent({
+      adapter,
+      toolRegistry: registry,
+      systemInstruction: 'test',
+      history,
+      maxToolRounds: 8,
+      historyToolTurns: 'digest',
+      historyToolDigest () {
+        return 'nope';
+      },
+    });
+
+    await assertRejectsWithMessage(
+      () => agent.processMessage('chat:1', 'first'),
+      'historyToolDigest must return a plain object',
+    );
+  });
+
   it('throws when adapter is missing', () => {
     assert.throws(
       () => new Agent({
