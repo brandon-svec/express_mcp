@@ -64,7 +64,8 @@ export class ExpressMcp {
    * @param {import('../agents/historyStore.js').InMemoryHistoryStore} [options.agent.history] - Custom history store
    * @param {number} [options.agent.historyWindowMinutes=60] - TTL for default in-memory history
    * @param {number} [options.agent.historyMaxTurns] - Max stored turns for default in-memory history (oldest first)
-   * @param {'full'|'omit'} [options.agent.historyToolTurns='full'] - Store tool-loop parts in history (`omit` keeps user text + final reply only)
+   * @param {'full'|'omit'|'digest'} [options.agent.historyToolTurns='full'] - Store tool-loop parts in history (`omit` keeps user text + final reply only; `digest` stores HOST_TOOLS JSON + reply via historyToolDigest)
+   * @param {(toolName: string, args: object, result: unknown) => object} [options.agent.historyToolDigest] - Required when historyToolTurns is digest
    * @param {number} [options.agent.maxToolRounds=8] - Max tool-call rounds per message
    */
   constructor(options = {}) {
@@ -173,8 +174,22 @@ export class ExpressMcp {
     const historyToolTurns = agentOpts.historyToolTurns === undefined
       ? 'full'
       : agentOpts.historyToolTurns;
-    if (historyToolTurns !== 'full' && historyToolTurns !== 'omit') {
+    if (
+      historyToolTurns !== 'full'
+      && historyToolTurns !== 'omit'
+      && historyToolTurns !== 'digest'
+    ) {
       throw new Error(`Invalid agent.historyToolTurns: ${historyToolTurns}`);
+    }
+
+    let historyToolDigest;
+    if (historyToolTurns === 'digest') {
+      if (typeof agentOpts.historyToolDigest !== 'function') {
+        throw new Error('agent.historyToolDigest is required when historyToolTurns is digest');
+      }
+      historyToolDigest = agentOpts.historyToolDigest;
+    } else if (agentOpts.historyToolDigest !== undefined) {
+      throw new Error('agent.historyToolDigest is only valid when historyToolTurns is digest');
     }
 
     let history;
@@ -233,6 +248,7 @@ export class ExpressMcp {
       history,
       maxToolRounds,
       historyToolTurns,
+      historyToolDigest,
       excludeTools: [...excludeTools],
       toolAllowlist,
       requireUser: authEnabled,

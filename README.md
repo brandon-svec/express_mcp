@@ -200,9 +200,12 @@ Use `getAgent().processMessage(historyKey, text, options)` for inbound turns. Op
 
 Optional agent constructor options:
 
-- `historyToolTurns: 'full' | 'omit'` — `'full'` (default) stores tool-loop `functionCall` / `functionResponse` parts; `'omit'` stores only the user text and final model reply so large tool payloads are not replayed.
+- `historyToolTurns: 'full' | 'omit' | 'digest'` — `'full'` (default) stores tool-loop `functionCall` / `functionResponse` parts; `'omit'` stores only the user text and final model reply so large tool payloads are not replayed; `'digest'` stores one model content with a `HOST_TOOLS:` JSON part (from required `historyToolDigest(toolName, args, result)`) plus the reply. Failed calls store `{ ok: false, error }` with error truncated to 200 characters. Turns with no tool calls store user + reply only. `request_tools` is never included in the digest.
+- `historyToolDigest` — required when `historyToolTurns` is `'digest'`; must return a plain object.
 - `historyMaxTurns` — when using the default in-memory history, keep at most this many turns after TTL pruning (oldest first). Cannot be set together with a custom `agent.history`.
 - `excludeTools: string[]` — additional tool names the agent must not call (merged with built-in session / `agent_ask` exclusions).
+
+`processMessage` also accepts optional `historyUserText`: when set, that string is stored for the user turn instead of `text` (the model still sees `text`, optionally with `ephemeralPrefix`).
 
 `httpRouter({ mcpPath, rootAliases, sessionOptions })`: set `rootAliases: false` for a secondary mount (e.g. `/mcp/admin`) so it does not register site-root OAuth AS aliases that would collide with the primary. Path-based discovery (`/.well-known/oauth-authorization-server{mcpPath}`) is always registered. Auth middleware is attached only to exact `/` MCP routes so a longer sibling path is not intercepted.
 

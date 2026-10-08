@@ -1,6 +1,22 @@
 import { ToolExecution } from '../classes/toolExecution.js';
 
-const HISTORY_TOOL_TURNS = new Set(['full', 'omit']);
+const HISTORY_TOOL_TURNS = new Set(['full', 'omit', 'digest']);
+
+const DIGEST_ERROR_MAX_CHARS = 200;
+
+/**
+ * @param {string} message
+ * @returns {string}
+ */
+function truncateDigestError (message) {
+  if (typeof message !== 'string') {
+    throw new Error('digest error must be a string');
+  }
+  if (message.length <= DIGEST_ERROR_MAX_CHARS) {
+    return message;
+  }
+  return message.slice(0, DIGEST_ERROR_MAX_CHARS);
+}
 
 export const REQUEST_TOOLS_NAME = 'request_tools';
 
@@ -182,10 +198,11 @@ export function scrubRequestToolsFromContents (contents) {
 /**
  * @param {Array<object>} turnContents
  * @param {string} userText
- * @param {'full'|'omit'} historyToolTurns
+ * @param {'full'|'omit'|'digest'} historyToolTurns
+ * @param {{ toolDigests?: Array<object> }} [digestOptions]
  * @returns {Array<object>}
  */
-function contentsForHistory (turnContents, userText, historyToolTurns) {
+function contentsForHistory (turnContents, userText, historyToolTurns, digestOptions = {}) {
   if (historyToolTurns === 'omit') {
     const last = turnContents[turnContents.length - 1];
     if (!last || last.role !== 'model') {
@@ -194,6 +211,35 @@ function contentsForHistory (turnContents, userText, historyToolTurns) {
     return [
       { role: 'user', parts: [{ text: userText }] },
       last,
+    ];
+  }
+
+  if (historyToolTurns === 'digest') {
+    const last = turnContents[turnContents.length - 1];
+    if (!last || last.role !== 'model') {
+      throw new Error('historyToolTurns digest requires a final model turn');
+    }
+    const replyPart = last.parts && last.parts.find((part) => typeof part.text === 'string');
+    if (!replyPart) {
+      throw new Error('historyToolTurns digest requires a final model text part');
+    }
+    const toolDigests = digestOptions.toolDigests;
+    if (!Array.isArray(toolDigests)) {
+      throw new Error('historyToolTurns digest requires toolDigests array');
+    }
+    const userContent = { role: 'user', parts: [{ text: userText }] };
+    if (toolDigests.length === 0) {
+      return [userContent, { role: 'model', parts: [{ text: replyPart.text }] }];
+    }
+    return [
+      userContent,
+      {
+        role: 'model',
+        parts: [
+          { text: `HOST_TOOLS: ${JSON.stringify(toolDigests)}` },
+          { text: replyPart.text },
+        ],
+      },
     ];
   }
 
@@ -220,7 +266,8 @@ export class Agent {
    * @param {string[]} [options.excludeTools]
    * @param {string[]} [options.toolAllowlist] - When set, only these tool names are available
    * @param {boolean} [options.requireUser]
-   * @param {'full'|'omit'} [options.historyToolTurns='full'] - What tool-loop parts to store in history
+   * @param {'full'|'omit'|'digest'} [options.historyToolTurns='full'] - What tool-loop parts to store in history
+   * @param {(toolName: string, args: object, result: unknown) => object} [options.historyToolDigest] - Required when historyToolTurns is digest
    * @param {import('pino').Logger} [options.logger]
    */
   constructor (options) {
@@ -246,12 +293,23 @@ export class Agent {
       throw new Error(`Invalid historyToolTurns: ${historyToolTurns}`);
     }
 
+    let historyToolDigest = null;
+    if (historyToolTurns === 'digest') {
+      if (typeof options.historyToolDigest !== 'function') {
+        throw new Error('historyToolDigest is required when historyToolTurns is digest');
+      }
+      historyToolDigest = options.historyToolDigest;
+    } else if (options.historyToolDigest !== undefined) {
+      throw new Error('historyToolDigest is only valid when historyToolTurns is digest');
+    }
+
     this.adapter = options.adapter;
     this.toolRegistry = options.toolRegistry;
     this.systemInstruction = options.systemInstruction;
     this.history = options.history;
     this.maxToolRounds = maxToolRounds;
     this.historyToolTurns = historyToolTurns;
+    this.historyToolDigest = historyToolDigest;
     this.excludeTools = new Set(options.excludeTools || []);
     this.toolAllowlist = Array.isArray(options.toolAllowlist)
       ? new Set(options.toolAllowlist)
@@ -428,6 +486,7 @@ export class Agent {
    *   systemInstruction?: string,
    *   escalation?: { toolNames: string[], systemInstruction: string },
    *   appendHistory?: boolean,
+   *   historyUserText?: string,
    * }} [options]
    * @returns {Promise<string>}
    */
@@ -451,6 +510,14 @@ export class Agent {
       throw new Error('appendHistory must be a boolean when provided');
     }
     const appendHistory = options.appendHistory !== false;
+
+    let historyUserText = text;
+    if (options.historyUserText !== undefined) {
+      if (typeof options.historyUserText !== 'string' || !options.historyUserText.trim()) {
+        throw new Error('historyUserText must be a non-empty string when provided');
+      }
+      historyUserText = options.historyUserText;
+    }
 
     let modelUserText = text;
     if (options.ephemeralPrefix !== undefined) {
@@ -496,6 +563,8 @@ export class Agent {
     let errorCalls = 0;
     let rounds = 0;
     const maxRounds = this.maxToolRounds;
+    /** @type {Array<object>} */
+    const toolDigests = [];
 
     for (let round = 0; round < maxRounds + escalationBudget; round += 1) {
       const functionCalls = response.functionCalls;
@@ -585,6 +654,13 @@ export class Agent {
             },
             'Agent tool call completed',
           );
+          if (this.historyToolTurns === 'digest') {
+            toolDigests.push({
+              tool: fc.name,
+              ok: false,
+              error: truncateDigestError(errorMessage),
+            });
+          }
           responseParts.push({
             functionResponse: {
               name: fc.name,
@@ -603,6 +679,17 @@ export class Agent {
           },
           'Agent tool call completed',
         );
+        if (this.historyToolTurns === 'digest') {
+          const digest = this.historyToolDigest(fc.name, args, execution.result);
+          if (
+            digest === null
+            || typeof digest !== 'object'
+            || Array.isArray(digest)
+          ) {
+            throw new Error('historyToolDigest must return a plain object');
+          }
+          toolDigests.push({ tool: fc.name, ...digest });
+        }
         responseParts.push({
           functionResponse: {
             name: fc.name,
@@ -641,7 +728,9 @@ export class Agent {
     if (appendHistory && this.history) {
       this.history.append(
         historyKey,
-        contentsForHistory(turnContents, text, this.historyToolTurns),
+        contentsForHistory(turnContents, historyUserText, this.historyToolTurns, {
+          toolDigests,
+        }),
       );
     }
 

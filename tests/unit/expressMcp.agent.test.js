@@ -108,6 +108,42 @@ describe('ExpressMcp agent option', () => {
     );
   });
 
+  it('applies historyToolTurns digest with historyToolDigest', () => {
+    const digest = () => ({ ok: true });
+    const mcp = new ExpressMcp(getTestExpressMcpOptions({
+      enableKnowledgeBase: false,
+      agent: {
+        enabled: true,
+        allowUnauthenticated: true,
+        exposeTool: false,
+        systemInstruction: 'You are a test assistant.',
+        adapter: new StaticAdapter(),
+        historyToolTurns: 'digest',
+        historyToolDigest: digest,
+      },
+    }));
+
+    assert.strictEqual(mcp.getAgent().historyToolTurns, 'digest');
+    assert.strictEqual(mcp.getAgent().historyToolDigest, digest);
+  });
+
+  it('rejects digest without historyToolDigest', () => {
+    assert.throws(
+      () => new ExpressMcp(getTestExpressMcpOptions({
+        enableKnowledgeBase: false,
+        agent: {
+          enabled: true,
+          allowUnauthenticated: true,
+          exposeTool: false,
+          systemInstruction: 'You are a test assistant.',
+          adapter: new StaticAdapter(),
+          historyToolTurns: 'digest',
+        },
+      })),
+      /agent.historyToolDigest is required when historyToolTurns is digest/,
+    );
+  });
+
   it('rejects historyMaxTurns with a custom history store', () => {
     assert.throws(
       () => new ExpressMcp(getTestExpressMcpOptions({
