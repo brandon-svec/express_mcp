@@ -11,6 +11,7 @@ export const DEFAULT_TRUSTED_REDIRECT_HOSTS = new Set([
   'www.cursor.com',
   'vscode.dev',
   'insiders.vscode.dev',
+  'antigravity.google',
   'oauth-redirect.googleusercontent.com',
   'oauth-redirect-sandbox.googleusercontent.com',
   'oauth-redirect-test.googleusercontent.com'
