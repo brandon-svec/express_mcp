@@ -20,7 +20,11 @@ describe('DCR redirect URI policy', () => {
     assert.isTrue(isRedirectUriAllowedByPolicy('https://cursor.com/oauth/callback'));
     assert.isTrue(isRedirectUriAllowedByPolicy('https://vscode.dev/redirect'));
     assert.isTrue(isRedirectUriAllowedByPolicy('https://insiders.vscode.dev/redirect'));
+    assert.isTrue(
+      isRedirectUriAllowedByPolicy('https://antigravity.google/oauth-callback')
+    );
     assert.isTrue(DEFAULT_TRUSTED_REDIRECT_HOSTS.has('www.cursor.com'));
+    assert.isTrue(DEFAULT_TRUSTED_REDIRECT_HOSTS.has('antigravity.google'));
   });
 
   it('allows Gemini Spark Account Linking redirect hosts by default', () => {
