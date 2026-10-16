@@ -246,6 +246,30 @@ describe('BaseTool', () => {
         inputSchema: undefined
       });
     });
+
+    it('should include annotations when provided via constructor', () => {
+      const annotations = { title: 'Hello', readOnlyHint: true };
+      const tool = new BaseTool('test-tool', 'Test description', undefined, annotations);
+      assert.deepStrictEqual(tool.annotations, annotations);
+      assert.deepStrictEqual(tool.getDefinition().annotations, annotations);
+    });
+
+    it('should omit annotations from definition when not set', () => {
+      const tool = new BaseTool('test-tool', 'Test description');
+      assert.isUndefined(tool.annotations);
+      assert.notProperty(tool.getDefinition(), 'annotations');
+    });
+
+    it('should throw for invalid annotations', () => {
+      assert.throws(
+        () => new BaseTool('t', 'd', undefined, 'bad'),
+        /Annotations must be a plain object/
+      );
+      assert.throws(
+        () => new BaseTool('t', 'd', undefined, null),
+        /Annotations must be a plain object/
+      );
+    });
   });
 
   describe('subclass implementation', () => {

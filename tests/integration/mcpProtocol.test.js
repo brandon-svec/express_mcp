@@ -2,7 +2,7 @@ import { assert } from 'chai';
 import request from 'supertest';
 import express from 'express';
 import { readFileSync } from 'fs';
-import { ExpressMcp, BaseTool } from '../../src/index.js';
+import { ExpressMcp, BaseTool, BaseHook } from '../../src/index.js';
 import { DataTypeTestTool } from '../testUtils.js';
 import { getTestExpressMcpOptions, MCP_STREAMABLE_HTTP_ACCEPT, MCP_SESSION_ID_HEADER, createInitializeRequest, createMcpSession, mcpPostWithSession } from '../config.js';
 
@@ -708,5 +708,148 @@ describe('MCP Protocol Functional Tests', () => {
         assert.include(response.body.error.message, 'not found');
       });
     });
+  });
+});
+
+describe('MCP Protocol Hook Integration', () => {
+  class ScriptedHook extends BaseHook {
+    constructor (name, events, handler, options = {}) {
+      super(name, events, options);
+      this.handler = handler;
+      this.calls = [];
+    }
+
+    async execute (event, context) {
+      this.calls.push({ event, context });
+      return this.handler.call(this, event, context);
+    }
+  }
+
+  class EchoAnnotatedTool extends BaseTool {
+    constructor () {
+      super(
+        'echo',
+        'Echoes a message',
+        {
+          type: 'object',
+          properties: { message: { type: 'string' } },
+          required: ['message']
+        },
+        { title: 'Echo', readOnlyHint: true }
+      );
+      this.executeCalls = [];
+    }
+
+    async execute (args) {
+      this.executeCalls.push(args);
+      return `echo:${args.message}`;
+    }
+  }
+
+  it('SessionStart injects additionalContext into InitializeResult.instructions', async () => {
+    const app = express();
+    app.use(express.json());
+    const expressMcp = new ExpressMcp(getTestExpressMcpOptions({
+      enableKnowledgeBase: false,
+      description: 'Base description'
+    }));
+    expressMcp.registerHook(new ScriptedHook('ss', 'SessionStart', function () {
+      return this.allow({ additionalContext: 'Hook instructions' });
+    }));
+    app.use('/mcp', expressMcp.router());
+
+    const response = await request(app)
+      .post('/mcp')
+      .set('Accept', MCP_STREAMABLE_HTTP_ACCEPT)
+      .send(createInitializeRequest(1));
+
+    assert.strictEqual(response.status, 200);
+    assert.include(response.body.result.instructions, 'Base description');
+    assert.include(response.body.result.instructions, 'Hook instructions');
+  });
+
+  it('PreToolUse allow, modify, deny (isError), PostToolUse, and traceparent', async () => {
+    const app = express();
+    app.use(express.json());
+    const expressMcp = new ExpressMcp(getTestExpressMcpOptions({ enableKnowledgeBase: false }));
+    const tool = new EchoAnnotatedTool();
+    expressMcp.registerTool(tool);
+
+    const pre = new ScriptedHook('pre', 'PreToolUse', function (event) {
+      if (event.tool_input?.message === 'deny-me') {
+        return this.deny('denied by hook', { additionalContext: 'why' });
+      }
+      if (event.tool_input?.message === 'modify-me') {
+        return this.modify({ message: 'modified' });
+      }
+      return this.allow();
+    });
+    const post = new ScriptedHook('post', 'PostToolUse', function () {
+      return this.allow({ additionalContext: 'post-ctx' });
+    });
+    expressMcp.registerHook(pre);
+    expressMcp.registerHook(post);
+    app.use('/mcp', expressMcp.router());
+
+    const baseAgent = request(app);
+    const initRes = await request(app)
+      .post('/mcp')
+      .set('Accept', MCP_STREAMABLE_HTTP_ACCEPT)
+      .set('traceparent', '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01')
+      .send(createInitializeRequest(1));
+    const sessionId = initRes.headers[MCP_SESSION_ID_HEADER];
+    assert.ok(sessionId);
+
+    const listRes = await mcpPostWithSession(baseAgent, sessionId, '/mcp')
+      .send({ jsonrpc: '2.0', method: 'tools/list', id: 2 });
+    const echoDef = listRes.body.result.tools.find((t) => t.name === 'echo');
+    assert.deepStrictEqual(echoDef.annotations, { title: 'Echo', readOnlyHint: true });
+
+    const allowRes = await mcpPostWithSession(baseAgent, sessionId, '/mcp')
+      .set('traceparent', '00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01')
+      .send({
+        jsonrpc: '2.0',
+        method: 'tools/call',
+        params: { name: 'echo', arguments: { message: 'hello' } },
+        id: 3
+      });
+    assert.strictEqual(allowRes.status, 200);
+    assert.property(allowRes.body, 'result');
+    assert.isUndefined(allowRes.body.error);
+    assert.strictEqual(allowRes.body.result.content[0].text, 'echo:hello');
+    assert.strictEqual(allowRes.body.result.content[1].text, 'post-ctx');
+    assert.isFalse(allowRes.body.result.isError === true);
+
+    const modifyRes = await mcpPostWithSession(baseAgent, sessionId, '/mcp')
+      .send({
+        jsonrpc: '2.0',
+        method: 'tools/call',
+        params: { name: 'echo', arguments: { message: 'modify-me' } },
+        id: 4
+      });
+    assert.strictEqual(modifyRes.body.result.content[0].text, 'echo:modified');
+    assert.deepStrictEqual(tool.executeCalls.at(-1), { message: 'modified' });
+
+    const denyRes = await mcpPostWithSession(baseAgent, sessionId, '/mcp')
+      .send({
+        jsonrpc: '2.0',
+        method: 'tools/call',
+        params: { name: 'echo', arguments: { message: 'deny-me' } },
+        id: 5
+      });
+    assert.strictEqual(denyRes.status, 200);
+    assert.property(denyRes.body, 'result');
+    assert.isTrue(denyRes.body.result.isError);
+    assert.strictEqual(denyRes.body.result.content[0].text, 'denied by hook');
+    assert.strictEqual(denyRes.body.result.content[1].text, 'why');
+
+    const toolCallPre = pre.calls.find((c) => c.event.tool_input?.message === 'hello');
+    assert.ok(toolCallPre);
+    // Prefer _meta.traceparent; header may also be present depending on SDK wiring
+    assert.ok(
+      toolCallPre.event.meta.traceparent === '00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01'
+      || toolCallPre.context?.extra?.requestInfo?.headers?.traceparent
+      || toolCallPre.context?.extra?._meta?.traceparent
+    );
   });
 });

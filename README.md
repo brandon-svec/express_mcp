@@ -13,6 +13,7 @@ Register tools against your existing business logic, optionally add OAuth SSO (G
 - **Built-in knowledge base** — Full-text document search via FlexSearch (`kb_search`, `kb_list`, `kb_get`)
 - **Tool name prefixing** — Avoid collisions when multiple MCP services share a client
 - **Optional agent** — Gemini-backed `agent_ask` that can call your registered tools
+- **Pluggable hooks** — In-process `BaseHook` middleware for SessionStart, PreToolUse, PermissionRequest, PostToolUse, UserPromptSubmit, and Stop
 
 ## Requirements
 
@@ -118,6 +119,59 @@ const stats = await expressMcp.getKnowledgeBaseStats();
 Tool descriptions update as you add documents: available tags and your custom `description` are included so AI clients know what is searchable.
 
 Disable the knowledge base with `enableKnowledgeBase: false`.
+
+## Lifecycle Hooks
+
+Register in-process hooks (no subprocesses) to intercept MCP tool calls and the optional agent. Subclass `BaseHook`, then call `registerHook()`:
+
+```javascript
+import { ExpressMcp, BaseHook, BaseTool } from '@brandon-svec/express_mcp';
+
+class BlockDestructiveHook extends BaseHook {
+  constructor() {
+    super('block-destructive', ['PreToolUse', 'PermissionRequest'], {
+      matcher: /delete|drop/i
+    });
+  }
+
+  async execute(event) {
+    if (event.tool_annotations?.destructiveHint) {
+      return this.deny(`Blocked destructive tool: ${event.tool_name}`);
+    }
+    return this.allow();
+  }
+}
+
+class AnnotatedTool extends BaseTool {
+  constructor() {
+    super(
+      'delete_record',
+      'Delete a record by id',
+      { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
+      { destructiveHint: true, title: 'Delete record' }
+    );
+  }
+
+  async execute({ id }) {
+    return { deleted: id };
+  }
+}
+
+const expressMcp = new ExpressMcp({ permissionMode: 'default' });
+expressMcp.registerTool(new AnnotatedTool());
+expressMcp.registerHook(new BlockDestructiveHook());
+```
+
+| Event | Where | Blocking |
+|-------|-------|----------|
+| `SessionStart` | New MCP session / empty agent history | No — injects `additionalContext` into instructions / turn |
+| `UserPromptSubmit` | `Agent.processMessage` | Yes — can rewrite or deny the prompt |
+| `PreToolUse` | MCP `tools/call` and agent tool loop | Yes — validate/modify args or deny (`isError: true`) |
+| `PermissionRequest` | After PreToolUse when `permissionMode` is `ask_for_approval`, `destructiveHint`, or a matcher hits | Yes |
+| `PostToolUse` | After successful tool execution | No — can append `additionalContext` |
+| `Stop` | Agent final reply | Yes — can force self-correction within `maxToolRounds` |
+
+Denied PreToolUse/PermissionRequest results return an MCP tool result with `isError: true` (JSON-RPC success) so the LLM can read the policy rejection. Unexpected hook errors fail open unless the hook was constructed with `{ failClosed: true }`.
 
 ## Authentication (OAuth SSO)
 
@@ -251,8 +305,12 @@ Management APIs (`hasRegisteredTool`, `unregisterTool`, etc.) accept the **origi
 - `unregisterTool(name)` — Unregister by original name
 - `hasRegisteredTool(name)` / `getRegisteredTool(name)`
 - `getRegisteredToolCount()` / `clearRegisteredTools()`
+- `registerHook(hook)` / `unregisterHook(name)` — Lifecycle hooks
+- `hasRegisteredHook(name)` / `getRegisteredHooks()` / `getRegisteredHookCount()` / `clearRegisteredHooks()`
 - `router()` — MCP-only Express router
 - `httpRouter()` — OAuth + MCP when auth is enabled
+
+Optional constructor `permissionMode` (`'default'` | `'ask_for_approval'`) controls when PermissionRequest hooks run in addition to `destructiveHint` / matcher matches.
 
 #### Knowledge base
 

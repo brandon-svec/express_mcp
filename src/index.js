@@ -4,6 +4,16 @@ export { ExpressMcp, AuthManager } from './classes/index.js';
 // Base tool interface for creating custom tools
 export { BaseTool } from './classes/index.js';
 
+// In-process lifecycle hooks
+export {
+  BaseHook,
+  HookRegistry,
+  HookBlockedError,
+  HOOK_EVENTS,
+  BLOCKING_HOOK_EVENTS,
+  HOOK_EXIT_CODES
+} from './classes/index.js';
+
 // Auth helpers for host apps
 export { buildAuthOptions } from './buildAuthOptions.js';
 

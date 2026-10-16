@@ -309,12 +309,22 @@ describe('ToolExecution', () => {
     });
 
     it('should reset all data', () => {
+      execution.hookAdditionalContext = 'ctx';
+      execution.hookUserMessages = ['msg'];
       execution.reset();
       
       assert.isEmpty(execution.logData);
       assert.isEmpty(execution.errorData);
       assert.isNull(execution.status);
       assert.isNull(execution.result);
+      assert.isNull(execution.hookAdditionalContext);
+      assert.deepStrictEqual(execution.hookUserMessages, []);
+    });
+
+    it('should initialize hook fields', () => {
+      const fresh = new ToolExecution('t', 'r', {});
+      assert.isNull(fresh.hookAdditionalContext);
+      assert.deepStrictEqual(fresh.hookUserMessages, []);
     });
 
     it('should reset start time', async () => {

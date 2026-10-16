@@ -5,6 +5,7 @@ import { randomUUID } from 'crypto';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { ToolRegistry } from './toolRegistry.js';
+import { HookRegistry } from './hookRegistry.js';
 import { KnowledgeBase } from './knowledgeBase.js';
 import { AuthManager } from './authManager.js';
 import { userLogFields } from '../authz.js';
@@ -67,6 +68,7 @@ export class ExpressMcp {
    * @param {'full'|'omit'|'digest'} [options.agent.historyToolTurns='full'] - Store tool-loop parts in history (`omit` keeps user text + final reply only; `digest` stores HOST_TOOLS JSON + reply via historyToolDigest)
    * @param {(toolName: string, args: object, result: unknown) => object} [options.agent.historyToolDigest] - Required when historyToolTurns is digest
    * @param {number} [options.agent.maxToolRounds=8] - Max tool-call rounds per message
+   * @param {string} [options.permissionMode='default'] - Default permission mode for hooks (`default` or `ask_for_approval`)
    */
   constructor(options = {}) {
     this.options = Object.assign({
@@ -88,12 +90,18 @@ export class ExpressMcp {
     // Store the instance name and description
     this.name = this.options.name;
     this.description = this.options.description;
+    this.permissionMode = this.options.permissionMode ?? 'default';
     
     // Initialize logger
     this._initializeLogger();
+
+    this.hookRegistry = new HookRegistry({
+      logger: this.logger
+    });
     
     this.toolRegistry = new ToolRegistry({
-      logger: this.logger
+      logger: this.logger,
+      hookRegistry: this.hookRegistry
     });
     this.knowledgeBase = new KnowledgeBase({
       logger: this.logger,
@@ -253,6 +261,8 @@ export class ExpressMcp {
       toolAllowlist,
       requireUser: authEnabled,
       logger: this.logger,
+      hookRegistry: this.hookRegistry,
+      permissionMode: this.permissionMode,
     });
 
     if (exposeTool) {
@@ -576,6 +586,57 @@ export class ExpressMcp {
   }
 
   /**
+   * Register a lifecycle hook with this MCP instance
+   * @param {import('./baseHook.js').BaseHook} hookInstance
+   */
+  registerHook(hookInstance) {
+    const result = this.hookRegistry.register(hookInstance);
+    this.logger.info({ hookName: hookInstance.name }, 'Hook registered successfully');
+    return result;
+  }
+
+  /**
+   * Unregister a hook by name
+   * @param {string} hookName
+   */
+  unregisterHook(hookName) {
+    const result = this.hookRegistry.unregister(hookName);
+    this.logger.info({ hookName }, 'Hook unregistered successfully');
+    return result;
+  }
+
+  /**
+   * @returns {Array} Registered hook instances in registration order
+   */
+  getRegisteredHooks() {
+    return this.hookRegistry.getAllHooks();
+  }
+
+  /**
+   * @param {string} hookName
+   * @returns {boolean}
+   */
+  hasRegisteredHook(hookName) {
+    return this.hookRegistry.hasHook(hookName);
+  }
+
+  /**
+   * @returns {number}
+   */
+  getRegisteredHookCount() {
+    return this.hookRegistry.getHookCount();
+  }
+
+  /**
+   * Clear all registered hooks
+   */
+  clearRegisteredHooks() {
+    const result = this.hookRegistry.clear();
+    this.logger.info('All registered hooks cleared');
+    return result;
+  }
+
+  /**
    * Get the knowledge base instance
    * @returns {KnowledgeBase} Knowledge base instance
    */
@@ -646,7 +707,7 @@ export class ExpressMcp {
 
   /**
    * Build an SDK McpServer with tools registered from ToolRegistry.
-   * @param {{ user?: Object|null }} [context]
+   * @param {{ user?: Object|null, extraInstructions?: string|null, permissionMode?: string, sessionId?: string|null, meta?: Object }} [context]
    * @returns {import('@modelcontextprotocol/sdk/server/mcp.js').McpServer}
    * @private
    */
@@ -657,8 +718,15 @@ export class ExpressMcp {
         tools: {}
       }
     };
+    const instructionParts = [];
     if (typeof this.description === 'string' && this.description.trim().length > 0) {
-      serverOptions.instructions = this.description.trim();
+      instructionParts.push(this.description.trim());
+    }
+    if (typeof context.extraInstructions === 'string' && context.extraInstructions.trim().length > 0) {
+      instructionParts.push(context.extraInstructions.trim());
+    }
+    if (instructionParts.length > 0) {
+      serverOptions.instructions = instructionParts.join('\n');
     }
 
     const mcpServer = new McpServer(
@@ -669,7 +737,12 @@ export class ExpressMcp {
       serverOptions
     );
 
-    this.toolRegistry.registerOnMcpServer(mcpServer, context);
+    this.toolRegistry.registerOnMcpServer(mcpServer, {
+      user: context.user ?? null,
+      sessionId: context.sessionId ?? null,
+      permissionMode: context.permissionMode ?? this.permissionMode,
+      meta: context.meta ?? {}
+    });
     return mcpServer;
   }
 
@@ -714,8 +787,35 @@ export class ExpressMcp {
         ({ transport, mcpServer } = session);
       } else {
         let sessionEntry;
+        const newSessionId = randomUUID();
+        const headerTraceparent = req.headers['traceparent'] ?? null;
+        const bodyTraceparent = req.body?.params?._meta?.traceparent ?? null;
+        const traceparent = headerTraceparent || bodyTraceparent || null;
+        const sessionMeta = {
+          ...(traceparent ? { traceparent } : {})
+        };
+
+        let extraInstructions = null;
+        if (this.hookRegistry.getHookCount() > 0) {
+          const sessionStartResult = await this.hookRegistry.runHooks(
+            'SessionStart',
+            {
+              session_id: newSessionId,
+              permission_mode: this.permissionMode,
+              meta: sessionMeta
+            },
+            {
+              user: req.mcpUser ?? null,
+              logger: this.logger
+            }
+          );
+          if (sessionStartResult.additionalContext) {
+            extraInstructions = sessionStartResult.additionalContext;
+          }
+        }
+
         transport = new StreamableHTTPServerTransport({
-          sessionIdGenerator: () => randomUUID(),
+          sessionIdGenerator: () => newSessionId,
           enableJsonResponse: true,
           onsessioninitialized: (sid) => {
             while (sessions.size >= maxSessions) {
@@ -739,7 +839,13 @@ export class ExpressMcp {
         transport.onerror = (error) => {
           requestLogger.error({ error: error.message, stack: error.stack }, 'MCP transport error');
         };
-        mcpServer = this._buildMcpServer({ user: req.mcpUser ?? null });
+        mcpServer = this._buildMcpServer({
+          user: req.mcpUser ?? null,
+          extraInstructions,
+          permissionMode: this.permissionMode,
+          sessionId: newSessionId,
+          meta: sessionMeta
+        });
         sessionEntry = { transport, mcpServer };
         await mcpServer.connect(transport);
       }

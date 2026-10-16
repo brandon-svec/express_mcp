@@ -1,4 +1,5 @@
 import { ToolExecution } from '../classes/toolExecution.js';
+import { HookBlockedError, HOOK_EXIT_CODES } from '../classes/baseHook.js';
 
 const HISTORY_TOOL_TURNS = new Set(['full', 'omit', 'digest']);
 
@@ -269,6 +270,8 @@ export class Agent {
    * @param {'full'|'omit'|'digest'} [options.historyToolTurns='full'] - What tool-loop parts to store in history
    * @param {(toolName: string, args: object, result: unknown) => object} [options.historyToolDigest] - Required when historyToolTurns is digest
    * @param {import('pino').Logger} [options.logger]
+   * @param {import('../classes/hookRegistry.js').HookRegistry|null} [options.hookRegistry]
+   * @param {string} [options.permissionMode='default']
    */
   constructor (options) {
     if (!options || !options.adapter) {
@@ -316,6 +319,8 @@ export class Agent {
       : null;
     this.requireUser = options.requireUser === true;
     this.logger = options.logger;
+    this.hookRegistry = options.hookRegistry || this.toolRegistry?.hookRegistry || null;
+    this.permissionMode = options.permissionMode ?? 'default';
   }
 
   /**
@@ -510,21 +515,82 @@ export class Agent {
       throw new Error('appendHistory must be a boolean when provided');
     }
     const appendHistory = options.appendHistory !== false;
+    const historyUserTextExplicit = options.historyUserText !== undefined;
+    const hookContext = {
+      user,
+      hostContext,
+      logger: this.logger,
+    };
+    const permissionMode = options.permissionMode ?? this.permissionMode;
+    const traceparent = options.meta?.traceparent ?? null;
 
-    let historyUserText = text;
-    if (options.historyUserText !== undefined) {
+    let promptText = text;
+    const contextPrefixes = [];
+
+    const priorHistory = this.history ? this.history.get(historyKey) : [];
+
+    if (this.hookRegistry && priorHistory.length === 0) {
+      const sessionStart = await this.hookRegistry.runHooks(
+        'SessionStart',
+        {
+          session_id: historyKey,
+          permission_mode: permissionMode,
+          meta: { traceparent, turn_index: 0 },
+        },
+        hookContext,
+      );
+      if (sessionStart.additionalContext) {
+        contextPrefixes.push(sessionStart.additionalContext);
+      }
+    }
+
+    if (this.hookRegistry) {
+      const promptResult = await this.hookRegistry.runHooks(
+        'UserPromptSubmit',
+        {
+          session_id: historyKey,
+          permission_mode: permissionMode,
+          user_prompt: promptText,
+          meta: { traceparent, turn_index: 0 },
+        },
+        hookContext,
+      );
+      if (promptResult.blocked) {
+        throw new HookBlockedError(promptResult.stderr || 'Prompt blocked by hook', {
+          hookEvent: promptResult.hookEvent,
+          exitCode: promptResult.exitCode ?? HOOK_EXIT_CODES.BLOCKING_ERROR,
+          stderr: promptResult.stderr,
+          additionalContext: promptResult.additionalContext,
+          userMessage: promptResult.userMessages?.[0] ?? null,
+        });
+      }
+      if (promptResult.decision === 'modify' && promptResult.updatedInput !== undefined) {
+        promptText = typeof promptResult.updatedInput === 'string'
+          ? promptResult.updatedInput
+          : promptResult.updatedInput?.user_prompt ?? promptText;
+      }
+      if (promptResult.additionalContext) {
+        contextPrefixes.push(promptResult.additionalContext);
+      }
+    }
+
+    let historyUserText = promptText;
+    if (historyUserTextExplicit) {
       if (typeof options.historyUserText !== 'string' || !options.historyUserText.trim()) {
         throw new Error('historyUserText must be a non-empty string when provided');
       }
       historyUserText = options.historyUserText;
     }
 
-    let modelUserText = text;
+    let modelUserText = promptText;
     if (options.ephemeralPrefix !== undefined) {
       if (typeof options.ephemeralPrefix !== 'string' || options.ephemeralPrefix.length === 0) {
         throw new Error('ephemeralPrefix must be a non-empty string when provided');
       }
-      modelUserText = `${options.ephemeralPrefix}${text}`;
+      modelUserText = `${options.ephemeralPrefix}${promptText}`;
+    }
+    if (contextPrefixes.length > 0) {
+      modelUserText = `${contextPrefixes.join('\n')}\n${modelUserText}`;
     }
 
     const {
@@ -538,7 +604,6 @@ export class Agent {
     let escalated = false;
     let escalationBudget = 0;
 
-    const priorHistory = this.history ? this.history.get(historyKey) : [];
     const historyTurns = priorHistory.length;
     const turnContents = [
       { role: 'user', parts: [{ text: modelUserText }] },
@@ -566,165 +631,276 @@ export class Agent {
     /** @type {Array<object>} */
     const toolDigests = [];
 
-    for (let round = 0; round < maxRounds + escalationBudget; round += 1) {
+    // Unified loop: tool rounds, Stop quality gate, and Stop self-correction.
+    // Budget is maxToolRounds (+ optional escalation). Stop only runs when there
+    // are no pending function calls; pending calls at budget exhaustion skip Stop.
+    while (true) {
       const functionCalls = response.functionCalls;
-      if (!functionCalls || functionCalls.length === 0) {
-        break;
-      }
+      const hasFunctionCalls = Array.isArray(functionCalls) && functionCalls.length > 0;
 
-      rounds += 1;
-      turnContents.push({ role: 'model', parts: modelPartsForEcho(response) });
-
-      const responseParts = [];
-      let escalatedThisRound = false;
-
-      for (const fc of functionCalls) {
-        if (!fc.name) {
-          throw new Error('Model function call missing name');
+      if (hasFunctionCalls) {
+        if (rounds >= maxRounds + escalationBudget) {
+          break;
         }
 
-        if (fc.name === REQUEST_TOOLS_NAME) {
-          if (!escalation) {
-            throw new Error('request_tools is not available without escalation');
+        const round = rounds;
+        rounds += 1;
+        turnContents.push({ role: 'model', parts: modelPartsForEcho(response) });
+
+        const responseParts = [];
+        let escalatedThisRound = false;
+
+        for (const fc of functionCalls) {
+          if (!fc.name) {
+            throw new Error('Model function call missing name');
           }
-          if (escalated) {
-            throw new Error('request_tools may only be called once per turn');
+
+          if (fc.name === REQUEST_TOOLS_NAME) {
+            if (!escalation) {
+              throw new Error('request_tools is not available without escalation');
+            }
+            if (escalated) {
+              throw new Error('request_tools may only be called once per turn');
+            }
+            const reason = fc.args && typeof fc.args.reason === 'string' ? fc.args.reason : '';
+            if (!reason.trim()) {
+              throw new Error('request_tools requires a non-empty reason');
+            }
+            const fromTools = activeToolNames ? [...activeToolNames] : [];
+            const toTools = [...escalation.toolNames];
+            this.logger?.info?.(
+              {
+                round,
+                reason,
+                from: fromTools,
+                to: toTools,
+              },
+              'Agent tool set escalated',
+            );
+            activeToolNames = escalation.toolNames;
+            activeSystemInstruction = escalation.systemInstruction;
+            escalated = true;
+            escalatedThisRound = true;
+            escalationBudget = 1;
+            toolDeclarations = this._declarationsForTurn(activeToolNames, false);
+            responseParts.push({
+              functionResponse: {
+                name: REQUEST_TOOLS_NAME,
+                response: { ok: true, tools: toTools },
+              },
+            });
+            continue;
           }
-          const reason = fc.args && typeof fc.args.reason === 'string' ? fc.args.reason : '';
-          if (!reason.trim()) {
-            throw new Error('request_tools requires a non-empty reason');
+
+          if (!this._isToolAvailable(fc.name)) {
+            throw new Error(`Tool is not available to the agent: ${fc.name}`);
           }
-          const fromTools = activeToolNames ? [...activeToolNames] : [];
-          const toTools = [...escalation.toolNames];
-          this.logger?.info?.(
+          if (activeToolNames !== undefined && !activeToolNames.includes(fc.name)) {
+            throw new Error(`Tool is not available to the agent: ${fc.name}`);
+          }
+
+          const args = fc.args || {};
+          const argKeys = Object.keys(args).sort();
+          const execution = await this.toolRegistry.executeTool(
+            fc.name,
+            args,
             {
-              round,
-              reason,
-              from: fromTools,
-              to: toTools,
+              execution: new ToolExecution(fc.name, null, args),
+              user,
+              hostContext,
+              sessionId: historyKey,
+              permissionMode,
+              meta: { traceparent, turn_index: round },
             },
-            'Agent tool set escalated',
           );
-          activeToolNames = escalation.toolNames;
-          activeSystemInstruction = escalation.systemInstruction;
-          escalated = true;
-          escalatedThisRound = true;
-          escalationBudget = 1;
-          toolDeclarations = this._declarationsForTurn(activeToolNames, false);
-          responseParts.push({
-            functionResponse: {
-              name: REQUEST_TOOLS_NAME,
-              response: { ok: true, tools: toTools },
-            },
-          });
-          continue;
-        }
 
-        if (!this._isToolAvailable(fc.name)) {
-          throw new Error(`Tool is not available to the agent: ${fc.name}`);
-        }
-        if (activeToolNames !== undefined && !activeToolNames.includes(fc.name)) {
-          throw new Error(`Tool is not available to the agent: ${fc.name}`);
-        }
+          toolCalls += 1;
+          if (execution.status === 'error') {
+            errorCalls += 1;
+            const errorData = execution.getErrorData();
+            const errorMessage = errorData.error || `Tool ${fc.name} failed`;
+            this.logger?.info?.(
+              {
+                round,
+                toolName: fc.name,
+                status: 'error',
+                argKeys,
+                error: errorMessage,
+              },
+              'Agent tool call completed',
+            );
+            if (this.historyToolTurns === 'digest') {
+              toolDigests.push({
+                tool: fc.name,
+                ok: false,
+                error: truncateDigestError(errorMessage),
+              });
+            }
+            const errorResponse = { ok: false, error: errorMessage };
+            if (execution.hookAdditionalContext) {
+              errorResponse.additionalContext = execution.hookAdditionalContext;
+            } else if (errorData.errorData?.additionalContext) {
+              errorResponse.additionalContext = errorData.errorData.additionalContext;
+            }
+            responseParts.push({
+              functionResponse: {
+                name: fc.name,
+                response: errorResponse,
+              },
+            });
+            continue;
+          }
 
-        const args = fc.args || {};
-        const argKeys = Object.keys(args).sort();
-        const execution = await this.toolRegistry.executeTool(
-          fc.name,
-          args,
-          {
-            execution: new ToolExecution(fc.name, null, args),
-            user,
-            hostContext,
-          },
-        );
-
-        toolCalls += 1;
-        if (execution.status === 'error') {
-          errorCalls += 1;
-          const errorData = execution.getErrorData();
-          const errorMessage = errorData.error || `Tool ${fc.name} failed`;
           this.logger?.info?.(
             {
               round,
               toolName: fc.name,
-              status: 'error',
+              status: 'success',
               argKeys,
-              error: errorMessage,
             },
             'Agent tool call completed',
           );
           if (this.historyToolTurns === 'digest') {
-            toolDigests.push({
-              tool: fc.name,
-              ok: false,
-              error: truncateDigestError(errorMessage),
-            });
+            const digest = this.historyToolDigest(fc.name, args, execution.result);
+            if (
+              digest === null
+              || typeof digest !== 'object'
+              || Array.isArray(digest)
+            ) {
+              throw new Error('historyToolDigest must return a plain object');
+            }
+            toolDigests.push({ tool: fc.name, ...digest });
+          }
+          const successResponse = { result: execution.result };
+          if (execution.hookAdditionalContext) {
+            successResponse.additionalContext = execution.hookAdditionalContext;
           }
           responseParts.push({
             functionResponse: {
               name: fc.name,
-              response: { ok: false, error: errorMessage },
+              response: successResponse,
             },
           });
-          continue;
+        }
+        turnContents.push({ role: 'user', parts: responseParts });
+
+        // Escalation-only rounds do not consume maxToolRounds budget beyond the +1.
+        if (escalatedThisRound && functionCalls.every((fc) => fc.name === REQUEST_TOOLS_NAME)) {
+          // no-op; budget already increased
         }
 
-        this.logger?.info?.(
-          {
-            round,
-            toolName: fc.name,
-            status: 'success',
-            argKeys,
-          },
-          'Agent tool call completed',
+        generateContents = ensureUserLeadingContents([...priorHistory, ...turnContents]);
+        lastSizes = this._logGenerateRequest(
+          rounds,
+          historyTurns,
+          generateContents,
+          toolDeclarations,
+          activeSystemInstruction,
         );
-        if (this.historyToolTurns === 'digest') {
-          const digest = this.historyToolDigest(fc.name, args, execution.result);
-          if (
-            digest === null
-            || typeof digest !== 'object'
-            || Array.isArray(digest)
-          ) {
-            throw new Error('historyToolDigest must return a plain object');
-          }
-          toolDigests.push({ tool: fc.name, ...digest });
-        }
-        responseParts.push({
-          functionResponse: {
-            name: fc.name,
-            response: { result: execution.result },
-          },
+        response = await this.adapter.generate({
+          contents: generateContents,
+          systemInstruction: activeSystemInstruction,
+          toolDeclarations,
         });
-      }
-      turnContents.push({ role: 'user', parts: responseParts });
-
-      // Escalation-only rounds do not consume maxToolRounds budget beyond the +1.
-      if (escalatedThisRound && functionCalls.every((fc) => fc.name === REQUEST_TOOLS_NAME)) {
-        // no-op; budget already increased
+        continue;
       }
 
-      generateContents = ensureUserLeadingContents([...priorHistory, ...turnContents]);
-      lastSizes = this._logGenerateRequest(
-        rounds,
-        historyTurns,
-        generateContents,
-        toolDeclarations,
-        activeSystemInstruction,
+      // No function calls — candidate final reply (Stop quality gate).
+      const replyText = response.text;
+      if (typeof replyText !== 'string' || !replyText.trim()) {
+        throw new Error('Model returned empty response');
+      }
+
+      if (this.hookRegistry) {
+        const stopResult = await this.hookRegistry.runHooks(
+          'Stop',
+          {
+            session_id: historyKey,
+            permission_mode: permissionMode,
+            meta: { traceparent, turn_index: rounds },
+            total_turn_count: rounds + 1,
+            exit_reason: 'stop',
+            tool_result: replyText,
+          },
+          hookContext,
+        );
+        if (stopResult.blocked) {
+          if (rounds < maxRounds + escalationBudget) {
+            turnContents.push({ role: 'model', parts: [{ text: replyText }] });
+            const correctionParts = [];
+            if (stopResult.stderr) {
+              correctionParts.push(stopResult.stderr);
+            }
+            if (stopResult.additionalContext) {
+              correctionParts.push(stopResult.additionalContext);
+            }
+            turnContents.push({
+              role: 'user',
+              parts: [{
+                text: correctionParts.join('\n') || 'Response rejected by Stop hook; please revise.',
+              }],
+            });
+            rounds += 1;
+            generateContents = ensureUserLeadingContents([...priorHistory, ...turnContents]);
+            lastSizes = this._logGenerateRequest(
+              rounds,
+              historyTurns,
+              generateContents,
+              toolDeclarations,
+              activeSystemInstruction,
+            );
+            response = await this.adapter.generate({
+              contents: generateContents,
+              systemInstruction: activeSystemInstruction,
+              toolDeclarations,
+            });
+            continue;
+          }
+          throw new HookBlockedError(stopResult.stderr || 'Stop hook blocked final reply', {
+            hookEvent: stopResult.hookEvent,
+            exitCode: stopResult.exitCode ?? HOOK_EXIT_CODES.BLOCKING_ERROR,
+            stderr: stopResult.stderr,
+            additionalContext: stopResult.additionalContext,
+            userMessage: stopResult.userMessages?.[0] ?? null,
+          });
+        }
+      }
+
+      turnContents.push({ role: 'model', parts: [{ text: replyText }] });
+      if (appendHistory && this.history) {
+        this.history.append(
+          historyKey,
+          contentsForHistory(turnContents, historyUserText, this.historyToolTurns, {
+            toolDigests,
+          }),
+        );
+      }
+
+      this.logger?.info?.(
+        {
+          rounds,
+          toolCalls,
+          errorCalls,
+          historyTurns,
+          toolCount: lastSizes.toolCount,
+          escalated,
+          appendHistory,
+          contentsChars: lastSizes.contentsChars,
+          systemInstructionChars: lastSizes.systemInstructionChars,
+          toolDeclarationChars: lastSizes.toolDeclarationChars,
+        },
+        'Agent processMessage completed',
       );
-      response = await this.adapter.generate({
-        contents: generateContents,
-        systemInstruction: activeSystemInstruction,
-        toolDeclarations,
-      });
+
+      return replyText;
     }
 
-    const replyText = response.text;
-    if (typeof replyText !== 'string' || !replyText.trim()) {
+    // Exhausted tool-round budget with pending function calls — do not run Stop.
+    const exhaustedReply = response.text;
+    if (typeof exhaustedReply !== 'string' || !exhaustedReply.trim()) {
       throw new Error('Model returned empty response');
     }
-
-    turnContents.push({ role: 'model', parts: [{ text: replyText }] });
+    turnContents.push({ role: 'model', parts: [{ text: exhaustedReply }] });
     if (appendHistory && this.history) {
       this.history.append(
         historyKey,
@@ -733,7 +909,6 @@ export class Agent {
         }),
       );
     }
-
     this.logger?.info?.(
       {
         rounds,
@@ -749,8 +924,7 @@ export class Agent {
       },
       'Agent processMessage completed',
     );
-
-    return replyText;
+    return exhaustedReply;
   }
 
   /**
