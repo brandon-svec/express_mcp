@@ -4,6 +4,8 @@ import { ModelAdapter } from '../../src/agents/modelAdapter.js';
 import { InMemoryHistoryStore } from '../../src/agents/historyStore.js';
 import { ToolRegistry } from '../../src/classes/toolRegistry.js';
 import { BaseTool } from '../../src/classes/baseTool.js';
+import { BaseHook, HookBlockedError } from '../../src/classes/baseHook.js';
+import { HookRegistry } from '../../src/classes/hookRegistry.js';
 
 class FakeAdapter extends ModelAdapter {
   constructor (script) {
@@ -1471,5 +1473,228 @@ describe('Agent', () => {
       }),
       'escalation.toolNames must be a superset of toolNames; missing other',
     );
+  });
+
+  describe('lifecycle hooks', () => {
+    class AgentHook extends BaseHook {
+      constructor (name, events, handler, options = {}) {
+        super(name, events, options);
+        this.handler = handler;
+        this.calls = [];
+      }
+
+      async execute (event, context) {
+        this.calls.push({ event, context });
+        return this.handler.call(this, event, context);
+      }
+    }
+
+    it('injects SessionStart context when priorHistory is empty', async () => {
+      const hookRegistry = new HookRegistry();
+      hookRegistry.register(new AgentHook('ss', 'SessionStart', function () {
+        return this.allow({ additionalContext: 'SESSION_CTX' });
+      }));
+      const adapter = new FakeAdapter([{ text: 'ok', functionCalls: null }]);
+      const agent = new Agent({
+        adapter,
+        toolRegistry: registry,
+        systemInstruction: 'test',
+        maxToolRounds: 8,
+        hookRegistry,
+      });
+
+      await agent.processMessage('k', 'hello');
+      const userText = adapter.generateParams[0].contents[0].parts[0].text;
+      assert.match(userText, /^SESSION_CTX\nhello$/);
+    });
+
+    it('runs SessionStart only once per historyKey when there is no history store', async () => {
+      const hookRegistry = new HookRegistry();
+      const ss = new AgentHook('ss', 'SessionStart', function () {
+        return this.allow({ additionalContext: 'SESSION_CTX' });
+      });
+      hookRegistry.register(ss);
+      const adapter = new FakeAdapter([
+        { text: 'ok1', functionCalls: null },
+        { text: 'ok2', functionCalls: null },
+      ]);
+      const agent = new Agent({
+        adapter,
+        toolRegistry: registry,
+        systemInstruction: 'test',
+        maxToolRounds: 8,
+        hookRegistry,
+      });
+
+      await agent.processMessage('k', 'hello');
+      await agent.processMessage('k', 'again');
+      assert.lengthOf(ss.calls, 1);
+      const secondUserText = adapter.generateParams[1].contents[0].parts[0].text;
+      assert.strictEqual(secondUserText, 'again');
+    });
+
+    it('wires constructor hookRegistry onto toolRegistry so PreToolUse runs', async () => {
+      const hookRegistry = new HookRegistry();
+      const pre = new AgentHook('pre', 'PreToolUse', function () {
+        return this.deny('tool blocked', { additionalContext: 'policy' });
+      });
+      hookRegistry.register(pre);
+      const isolatedRegistry = new ToolRegistry();
+      isolatedRegistry.register(new EchoTool());
+      const adapter = new FakeAdapter([
+        { text: null, functionCalls: [{ name: 'echo', args: { message: 'hi' } }] },
+        { text: 'recovered', functionCalls: null },
+      ]);
+      const agent = new Agent({
+        adapter,
+        toolRegistry: isolatedRegistry,
+        systemInstruction: 'test',
+        maxToolRounds: 8,
+        hookRegistry,
+      });
+
+      const reply = await agent.processMessage('k', 'go');
+      assert.strictEqual(reply, 'recovered');
+      assert.lengthOf(pre.calls, 1);
+      assert.strictEqual(isolatedRegistry.hookRegistry, hookRegistry);
+    });
+
+    it('UserPromptSubmit can modify prompt and inject context', async () => {
+      const hookRegistry = new HookRegistry();
+      hookRegistry.register(new AgentHook('ups', 'UserPromptSubmit', function () {
+        return this.modify('rewritten', { additionalContext: 'PROMPT_CTX' });
+      }));
+      const adapter = new FakeAdapter([{ text: 'ok', functionCalls: null }]);
+      const agent = new Agent({
+        adapter,
+        toolRegistry: registry,
+        systemInstruction: 'test',
+        maxToolRounds: 8,
+        hookRegistry,
+        history: new InMemoryHistoryStore({ windowMinutes: 60 }),
+      });
+
+      await agent.processMessage('k', 'original');
+      const userText = adapter.generateParams[0].contents[0].parts[0].text;
+      assert.match(userText, /PROMPT_CTX/);
+      assert.match(userText, /rewritten/);
+      const stored = agent.history.get('k');
+      assert.strictEqual(stored[0].parts[0].text, 'rewritten');
+    });
+
+    it('UserPromptSubmit deny throws HookBlockedError', async () => {
+      const hookRegistry = new HookRegistry();
+      hookRegistry.register(new AgentHook('ups', 'UserPromptSubmit', function () {
+        return this.deny('bad prompt');
+      }));
+      const agent = new Agent({
+        adapter: new FakeAdapter([]),
+        toolRegistry: registry,
+        systemInstruction: 'test',
+        maxToolRounds: 8,
+        hookRegistry,
+      });
+
+      try {
+        await agent.processMessage('k', 'nope');
+        assert.fail('expected throw');
+      } catch (err) {
+        assert.instanceOf(err, HookBlockedError);
+        assert.strictEqual(err.hookEvent, 'UserPromptSubmit');
+        assert.strictEqual(err.stderr, 'bad prompt');
+      }
+    });
+
+    it('PreToolUse deny returns error + additionalContext in functionResponse', async () => {
+      const hookRegistry = new HookRegistry();
+      hookRegistry.register(new AgentHook('pre', 'PreToolUse', function () {
+        return this.deny('tool blocked', { additionalContext: 'policy' });
+      }));
+      registry = new ToolRegistry({ hookRegistry });
+      registry.register(new EchoTool());
+      const adapter = new FakeAdapter([
+        { text: null, functionCalls: [{ name: 'echo', args: { message: 'hi' } }] },
+        { text: 'recovered', functionCalls: null },
+      ]);
+      const agent = new Agent({
+        adapter,
+        toolRegistry: registry,
+        systemInstruction: 'test',
+        maxToolRounds: 8,
+        hookRegistry,
+      });
+
+      const reply = await agent.processMessage('k', 'go');
+      assert.strictEqual(reply, 'recovered');
+      const fr = adapter.generateParams[1].contents
+        .flatMap((c) => c.parts || [])
+        .find((p) => p.functionResponse)?.functionResponse;
+      assert.deepStrictEqual(fr.response, {
+        ok: false,
+        error: 'tool blocked',
+        additionalContext: 'policy',
+      });
+    });
+
+    it('Stop hook triggers self-correction within maxToolRounds', async () => {
+      const hookRegistry = new HookRegistry();
+      let stopCalls = 0;
+      hookRegistry.register(new AgentHook('stop', 'Stop', function () {
+        stopCalls += 1;
+        if (stopCalls === 1) {
+          return this.deny('too short', { additionalContext: 'expand' });
+        }
+        return this.allow();
+      }));
+      const adapter = new FakeAdapter([
+        { text: 'short', functionCalls: null },
+        { text: 'a longer improved answer', functionCalls: null },
+      ]);
+      const agent = new Agent({
+        adapter,
+        toolRegistry: registry,
+        systemInstruction: 'test',
+        maxToolRounds: 2,
+        hookRegistry,
+      });
+
+      const reply = await agent.processMessage('k', 'write');
+      assert.strictEqual(reply, 'a longer improved answer');
+      assert.strictEqual(adapter.callIndex, 2);
+      const correction = adapter.generateParams[1].contents
+        .filter((c) => c.role === 'user')
+        .at(-1).parts[0].text;
+      assert.match(correction, /too short/);
+      assert.match(correction, /expand/);
+    });
+
+    it('Stop hook throws HookBlockedError when rounds are exhausted', async () => {
+      const hookRegistry = new HookRegistry();
+      hookRegistry.register(new AgentHook('stop', 'Stop', function () {
+        return this.deny('never good enough');
+      }));
+      const adapter = new FakeAdapter([
+        { text: 'try1', functionCalls: null },
+        { text: 'try2', functionCalls: null },
+      ]);
+      const agent = new Agent({
+        adapter,
+        toolRegistry: registry,
+        systemInstruction: 'test',
+        maxToolRounds: 1,
+        hookRegistry,
+      });
+
+      try {
+        await agent.processMessage('k', 'write');
+        assert.fail('expected throw');
+      } catch (err) {
+        assert.instanceOf(err, HookBlockedError);
+        assert.strictEqual(err.hookEvent, 'Stop');
+        assert.strictEqual(err.stderr, 'never good enough');
+      }
+      // Initial generate + one self-correction generate, then block
+      assert.strictEqual(adapter.callIndex, 2);
+    });
   });
 });

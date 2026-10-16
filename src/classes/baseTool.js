@@ -5,7 +5,14 @@ import addFormats from 'ajv-formats';
  * Base class for MCP tools
  */
 export class BaseTool {
-  constructor(name, description, inputSchema) {
+  /**
+   * @param {string} name
+   * @param {string} description
+   * @param {Object} [inputSchema]
+   * @param {Object} [annotations] - Optional MCP ToolAnnotations
+   *   ({ title, readOnlyHint, destructiveHint, idempotentHint, openWorldHint })
+   */
+  constructor(name, description, inputSchema, annotations) {
     // Validate required parameters
     if (!name || typeof name !== 'string') {
       throw new Error('Tool name is required and must be a string');
@@ -31,6 +38,13 @@ export class BaseTool {
         throw new Error(`Invalid JSON Schema: ${error.message}`);
       }
     }
+
+    if (annotations !== undefined) {
+      if (typeof annotations !== 'object' || annotations === null || Array.isArray(annotations)) {
+        throw new Error('Annotations must be a plain object if provided');
+      }
+      this.annotations = annotations;
+    }
     
     this.name = name;
     this.description = description;
@@ -41,11 +55,15 @@ export class BaseTool {
    * Get the tool definition for MCP tools/list
    */
   getDefinition() {
-    return {
+    const definition = {
       name: this.name,
       description: this.description,
-              inputSchema: this.inputSchema
+      inputSchema: this.inputSchema
     };
+    if (this.annotations !== undefined) {
+      definition.annotations = this.annotations;
+    }
+    return definition;
   }
 
   /**

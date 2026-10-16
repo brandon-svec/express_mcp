@@ -11,6 +11,10 @@ export class ToolExecution {
     this.status = null;
     this.result = null;
     this.errorData = {};
+    /** @type {string|null} */
+    this.hookAdditionalContext = null;
+    /** @type {string[]} */
+    this.hookUserMessages = [];
   }
 
   /**
@@ -118,5 +122,7 @@ export class ToolExecution {
     this.status = null;
     this.result = null;
     this.errorData = {};
+    this.hookAdditionalContext = null;
+    this.hookUserMessages = [];
   }
 }

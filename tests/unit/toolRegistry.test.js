@@ -1,6 +1,9 @@
 import { assert } from 'chai';
+import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { ToolRegistry } from '../../src/classes/toolRegistry.js';
 import { BaseTool } from '../../src/classes/baseTool.js';
+import { BaseHook } from '../../src/classes/baseHook.js';
+import { HookRegistry } from '../../src/classes/hookRegistry.js';
 import { ToolExecution } from '../../src/classes/toolExecution.js';
 
 describe('ToolRegistry', () => {
@@ -645,6 +648,264 @@ describe('ToolRegistry', () => {
       assert.isTrue(registry.hasTool('service1_search'));
       assert.isTrue(registry.hasTool('service2_find'));
       assert.isTrue(registry.hasTool('service1_list'));
+    });
+  });
+
+  describe('hooks integration', () => {
+    class SchemaTool extends BaseTool {
+      constructor() {
+        super('schema-tool', 'Needs message', {
+          type: 'object',
+          properties: { message: { type: 'string' } },
+          required: ['message']
+        }, { title: 'Schema', readOnlyHint: true });
+        this.executeCalls = [];
+      }
+
+      async execute(args) {
+        this.executeCalls.push(args);
+        return `ok:${args.message}`;
+      }
+    }
+
+    class SpyHook extends BaseHook {
+      constructor(name, events, handler, options = {}) {
+        super(name, events, options);
+        this.handler = handler;
+        this.calls = [];
+      }
+
+      async execute(event, context) {
+        this.calls.push({ event, context });
+        return this.handler.call(this, event, context);
+      }
+    }
+
+    it('exposes annotations on tool definitions and forwards tool_annotations', async () => {
+      const hookRegistry = new HookRegistry();
+      const pre = new SpyHook('pre', 'PreToolUse', function () {
+        return this.allow();
+      });
+      hookRegistry.register(pre);
+      registry = new ToolRegistry({ hookRegistry });
+      const tool = new SchemaTool();
+      registry.register(tool);
+
+      const defs = registry.getToolDefinitions();
+      assert.deepStrictEqual(defs[0].annotations, { title: 'Schema', readOnlyHint: true });
+
+      const execution = new ToolExecution('schema-tool', 'id', { message: 'hi' });
+      await registry.executeTool('schema-tool', { message: 'hi' }, { execution });
+      assert.deepStrictEqual(pre.calls[0].event.tool_annotations, {
+        title: 'Schema',
+        readOnlyHint: true
+      });
+    });
+
+    it('validates before PreToolUse so invalid args never invoke the hook', async () => {
+      const hookRegistry = new HookRegistry();
+      const pre = new SpyHook('pre', 'PreToolUse', function () {
+        return this.allow();
+      });
+      hookRegistry.register(pre);
+      registry = new ToolRegistry({ hookRegistry });
+      registry.register(new SchemaTool());
+
+      const execution = new ToolExecution('schema-tool', 'id', {});
+      const result = await registry.executeTool('schema-tool', {}, { execution });
+      assert.strictEqual(result.status, 'error');
+      assert.strictEqual(result.getErrorData().errorCode, -32602);
+      assert.lengthOf(pre.calls, 0);
+    });
+
+    it('re-validates updatedInput from PreToolUse modify', async () => {
+      const hookRegistry = new HookRegistry();
+      hookRegistry.register(new SpyHook('pre', 'PreToolUse', function () {
+        return this.modify({ notMessage: true });
+      }));
+      registry = new ToolRegistry({ hookRegistry });
+      const tool = new SchemaTool();
+      registry.register(tool);
+
+      const execution = new ToolExecution('schema-tool', 'id', { message: 'ok' });
+      const result = await registry.executeTool('schema-tool', { message: 'ok' }, { execution });
+      assert.strictEqual(result.status, 'error');
+      assert.strictEqual(result.getErrorData().errorCode, -32602);
+      assert.lengthOf(tool.executeCalls, 0);
+    });
+
+    it('PreToolUse deny blocks execute and sets hookBlocked', async () => {
+      const hookRegistry = new HookRegistry();
+      hookRegistry.register(new SpyHook('pre', 'PreToolUse', function () {
+        return this.deny('blocked by policy', { additionalContext: 'more' });
+      }));
+      registry = new ToolRegistry({ hookRegistry });
+      const tool = new SchemaTool();
+      registry.register(tool);
+
+      const execution = new ToolExecution('schema-tool', 'id', { message: 'x' });
+      const result = await registry.executeTool('schema-tool', { message: 'x' }, { execution });
+      assert.strictEqual(result.status, 'error');
+      assert.lengthOf(tool.executeCalls, 0);
+      const errorData = result.getErrorData();
+      assert.strictEqual(errorData.error, 'blocked by policy');
+      assert.isTrue(errorData.errorData.hookBlocked);
+      assert.strictEqual(errorData.errorData.hookEvent, 'PreToolUse');
+    });
+
+    it('PostToolUse receives tool_result and duration_ms and appends additionalContext', async () => {
+      const hookRegistry = new HookRegistry();
+      const post = new SpyHook('post', 'PostToolUse', function () {
+        return this.allow({ additionalContext: 'post-note' });
+      });
+      hookRegistry.register(post);
+      registry = new ToolRegistry({ hookRegistry });
+      registry.register(new SchemaTool());
+
+      const execution = new ToolExecution('schema-tool', 'id', { message: 'x' });
+      const result = await registry.executeTool('schema-tool', { message: 'x' }, { execution });
+      assert.strictEqual(result.status, 'success');
+      assert.strictEqual(result.hookAdditionalContext, 'post-note');
+      assert.strictEqual(post.calls[0].event.tool_result, 'ok:x');
+      assert.isNumber(post.calls[0].event.duration_ms);
+    });
+
+    it('registerOnMcpServer uses RequestHandlerExtra and returns isError on hook deny', async () => {
+      const hookRegistry = new HookRegistry();
+      hookRegistry.register(new SpyHook('pre', 'PreToolUse', function () {
+        return this.deny('nope', { additionalContext: 'detail' });
+      }));
+      registry = new ToolRegistry({ hookRegistry });
+      registry.register(new SchemaTool());
+
+      const handlers = new Map();
+      const mcpServer = {
+        server: {
+          registerCapabilities () {},
+          setRequestHandler (schema, handler) {
+            handlers.set(schema, handler);
+          }
+        }
+      };
+
+      registry.registerOnMcpServer(mcpServer, { user: { login: 'u' }, permissionMode: 'default' });
+      assert.isTrue(handlers.has(ListToolsRequestSchema));
+      assert.isTrue(handlers.has(CallToolRequestSchema));
+
+      const callHandler = handlers.get(CallToolRequestSchema);
+      const result = await callHandler(
+        { params: { name: 'schema-tool', arguments: { message: 'hi' } } },
+        {
+          requestId: 'req-1',
+          sessionId: 'sess-1',
+          _meta: { traceparent: 'meta-tp' },
+          requestInfo: { headers: { traceparent: 'header-tp' } }
+        }
+      );
+
+      assert.isTrue(result.isError);
+      assert.strictEqual(result.content[0].text, 'nope');
+      assert.strictEqual(result.content[1].text, 'detail');
+    });
+
+    it('forwards sessionId and traceparent from extra into executeTool context', async () => {
+      const hookRegistry = new HookRegistry();
+      const pre = new SpyHook('pre', 'PreToolUse', function (event, context) {
+        assert.strictEqual(event.session_id, 'sess-extra');
+        assert.strictEqual(event.meta.traceparent, 'from-meta');
+        assert.ok(context.extra);
+        assert.ok(context.mcpServer);
+        return this.allow();
+      });
+      hookRegistry.register(pre);
+      registry = new ToolRegistry({ hookRegistry });
+      registry.register(new SchemaTool());
+
+      const handlers = new Map();
+      const mcpServer = {
+        server: {
+          registerCapabilities () {},
+          setRequestHandler (schema, handler) {
+            handlers.set(schema, handler);
+          }
+        }
+      };
+      registry.registerOnMcpServer(mcpServer, {});
+
+      const callHandler = handlers.get(CallToolRequestSchema);
+      const result = await callHandler(
+        { params: { name: 'schema-tool', arguments: { message: 'hi' } } },
+        {
+          requestId: 'r1',
+          sessionId: 'sess-extra',
+          _meta: { traceparent: 'from-meta' }
+        }
+      );
+      assert.isUndefined(result.isError);
+      assert.match(result.content[0].text, /ok:hi/);
+    });
+
+    it('appends hookAdditionalContext on successful MCP tools/call', async () => {
+      const hookRegistry = new HookRegistry();
+      hookRegistry.register(new SpyHook('post', 'PostToolUse', function () {
+        return this.allow({ additionalContext: 'extra-note' });
+      }));
+      registry = new ToolRegistry({ hookRegistry });
+      registry.register(new SchemaTool());
+
+      const handlers = new Map();
+      const mcpServer = {
+        server: {
+          registerCapabilities () {},
+          setRequestHandler (schema, handler) {
+            handlers.set(schema, handler);
+          }
+        }
+      };
+      registry.registerOnMcpServer(mcpServer, {});
+      const result = await handlers.get(CallToolRequestSchema)(
+        { params: { name: 'schema-tool', arguments: { message: 'z' } } },
+        {}
+      );
+      assert.lengthOf(result.content, 2);
+      assert.strictEqual(result.content[1].text, 'extra-note');
+    });
+
+    it('runs PermissionRequest for destructiveHint tools and can deny', async () => {
+      class DestructiveTool extends BaseTool {
+        constructor () {
+          super('wipe', 'Wipe data', {
+            type: 'object',
+            properties: { confirm: { type: 'boolean' } },
+            required: ['confirm']
+          }, { destructiveHint: true });
+          this.executeCalls = 0;
+        }
+
+        async execute () {
+          this.executeCalls += 1;
+          return 'wiped';
+        }
+      }
+
+      const hookRegistry = new HookRegistry();
+      const perm = new SpyHook('perm', 'PermissionRequest', function () {
+        return this.deny('need approval');
+      });
+      hookRegistry.register(perm);
+      registry = new ToolRegistry({ hookRegistry });
+      const tool = new DestructiveTool();
+      registry.register(tool);
+
+      const execution = new ToolExecution('wipe', 'id', { confirm: true });
+      const result = await registry.executeTool('wipe', { confirm: true }, {
+        execution,
+        permissionMode: 'default'
+      });
+      assert.strictEqual(result.status, 'error');
+      assert.strictEqual(tool.executeCalls, 0);
+      assert.lengthOf(perm.calls, 1);
+      assert.isTrue(perm.calls[0].event.tool_annotations.destructiveHint);
     });
   });
 });

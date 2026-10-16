@@ -92,6 +92,14 @@ expressMcp.hasRegisteredTool(toolName)     // Check if tool exists
 expressMcp.getRegisteredToolCount()        // Count registered tools
 expressMcp.clearRegisteredTools()          // Remove all tools
 
+// Hook Management
+expressMcp.registerHook(hookInstance)      // Register a lifecycle hook
+expressMcp.unregisterHook(hookName)        // Remove a hook
+expressMcp.getRegisteredHooks()            // Get all hooks
+expressMcp.hasRegisteredHook(hookName)     // Check if hook exists
+expressMcp.getRegisteredHookCount()        // Count registered hooks
+expressMcp.clearRegisteredHooks()          // Remove all hooks
+
 // Router Creation
 expressMcp.router()                        // Get Express router
 ```

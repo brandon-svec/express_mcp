@@ -1,6 +1,7 @@
 import { assert } from 'chai';
 import { ExpressMcp } from '../../src/classes/expressMcp.js';
 import { BaseTool } from '../../src/classes/baseTool.js';
+import { BaseHook } from '../../src/classes/baseHook.js';
 import { getTestExpressMcpOptions } from '../config.js';
 
 describe('ExpressMcp', () => {
@@ -550,6 +551,42 @@ describe('ExpressMcp', () => {
         assert.isTrue(expressMcp.toolRegistry.hasTool(`${longName}_kb_search`));
         assert.isTrue(expressMcp.hasRegisteredTool('kb_search'));
       });
+    });
+  });
+
+  describe('hook management', () => {
+    class SimpleHook extends BaseHook {
+      constructor (name = 'simple-hook') {
+        super(name, 'PreToolUse');
+      }
+
+      async execute () {
+        return this.allow();
+      }
+    }
+
+    it('registers, lists, and clears hooks', () => {
+      assert.strictEqual(expressMcp.getRegisteredHookCount(), 0);
+      const hook = new SimpleHook();
+      expressMcp.registerHook(hook);
+      assert.isTrue(expressMcp.hasRegisteredHook('simple-hook'));
+      assert.strictEqual(expressMcp.getRegisteredHookCount(), 1);
+      assert.strictEqual(expressMcp.getRegisteredHooks()[0], hook);
+      assert.strictEqual(expressMcp.toolRegistry.hookRegistry, expressMcp.hookRegistry);
+      expressMcp.unregisterHook('simple-hook');
+      assert.isFalse(expressMcp.hasRegisteredHook('simple-hook'));
+      expressMcp.registerHook(new SimpleHook('a'));
+      expressMcp.clearRegisteredHooks();
+      assert.strictEqual(expressMcp.getRegisteredHookCount(), 0);
+    });
+
+    it('defaults permissionMode to default', () => {
+      assert.strictEqual(expressMcp.permissionMode, 'default');
+      const ask = new ExpressMcp(getTestExpressMcpOptions({
+        enableKnowledgeBase: false,
+        permissionMode: 'ask_for_approval'
+      }));
+      assert.strictEqual(ask.permissionMode, 'ask_for_approval');
     });
   });
 });
