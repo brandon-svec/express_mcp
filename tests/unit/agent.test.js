@@ -1508,6 +1508,57 @@ describe('Agent', () => {
       assert.match(userText, /^SESSION_CTX\nhello$/);
     });
 
+    it('runs SessionStart only once per historyKey when there is no history store', async () => {
+      const hookRegistry = new HookRegistry();
+      const ss = new AgentHook('ss', 'SessionStart', function () {
+        return this.allow({ additionalContext: 'SESSION_CTX' });
+      });
+      hookRegistry.register(ss);
+      const adapter = new FakeAdapter([
+        { text: 'ok1', functionCalls: null },
+        { text: 'ok2', functionCalls: null },
+      ]);
+      const agent = new Agent({
+        adapter,
+        toolRegistry: registry,
+        systemInstruction: 'test',
+        maxToolRounds: 8,
+        hookRegistry,
+      });
+
+      await agent.processMessage('k', 'hello');
+      await agent.processMessage('k', 'again');
+      assert.lengthOf(ss.calls, 1);
+      const secondUserText = adapter.generateParams[1].contents[0].parts[0].text;
+      assert.strictEqual(secondUserText, 'again');
+    });
+
+    it('wires constructor hookRegistry onto toolRegistry so PreToolUse runs', async () => {
+      const hookRegistry = new HookRegistry();
+      const pre = new AgentHook('pre', 'PreToolUse', function () {
+        return this.deny('tool blocked', { additionalContext: 'policy' });
+      });
+      hookRegistry.register(pre);
+      const isolatedRegistry = new ToolRegistry();
+      isolatedRegistry.register(new EchoTool());
+      const adapter = new FakeAdapter([
+        { text: null, functionCalls: [{ name: 'echo', args: { message: 'hi' } }] },
+        { text: 'recovered', functionCalls: null },
+      ]);
+      const agent = new Agent({
+        adapter,
+        toolRegistry: isolatedRegistry,
+        systemInstruction: 'test',
+        maxToolRounds: 8,
+        hookRegistry,
+      });
+
+      const reply = await agent.processMessage('k', 'go');
+      assert.strictEqual(reply, 'recovered');
+      assert.lengthOf(pre.calls, 1);
+      assert.strictEqual(isolatedRegistry.hookRegistry, hookRegistry);
+    });
+
     it('UserPromptSubmit can modify prompt and inject context', async () => {
       const hookRegistry = new HookRegistry();
       hookRegistry.register(new AgentHook('ups', 'UserPromptSubmit', function () {

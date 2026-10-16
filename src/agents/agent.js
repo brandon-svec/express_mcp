@@ -320,7 +320,12 @@ export class Agent {
     this.requireUser = options.requireUser === true;
     this.logger = options.logger;
     this.hookRegistry = options.hookRegistry || this.toolRegistry?.hookRegistry || null;
+    if (this.hookRegistry && this.toolRegistry) {
+      this.toolRegistry.hookRegistry = this.hookRegistry;
+    }
     this.permissionMode = options.permissionMode ?? 'default';
+    /** @type {Set<string>} historyKeys that have already fired SessionStart */
+    this._sessionStartKeys = new Set();
   }
 
   /**
@@ -529,7 +534,8 @@ export class Agent {
 
     const priorHistory = this.history ? this.history.get(historyKey) : [];
 
-    if (this.hookRegistry && priorHistory.length === 0) {
+    const isNewSession = priorHistory.length === 0 && !this._sessionStartKeys.has(historyKey);
+    if (this.hookRegistry && isNewSession) {
       const sessionStart = await this.hookRegistry.runHooks(
         'SessionStart',
         {
@@ -539,6 +545,7 @@ export class Agent {
         },
         hookContext,
       );
+      this._sessionStartKeys.add(historyKey);
       if (sessionStart.additionalContext) {
         contextPrefixes.push(sessionStart.additionalContext);
       }
@@ -956,6 +963,11 @@ export class Agent {
    * @param {string} [historyKey]
    */
   clearHistory (historyKey) {
+    if (historyKey === undefined) {
+      this._sessionStartKeys.clear();
+    } else if (typeof historyKey === 'string' && historyKey) {
+      this._sessionStartKeys.delete(historyKey);
+    }
     if (!this.history || typeof this.history.clear !== 'function') {
       return;
     }
