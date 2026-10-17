@@ -1,5 +1,8 @@
 import { strict as assert } from 'assert';
-import { GeminiAdapter } from '../../src/agents/geminiAdapter.js';
+import {
+  GeminiAdapter,
+  parseGeminiGenerateContentResponse,
+} from '../../src/agents/geminiAdapter.js';
 
 describe('GeminiAdapter', () => {
   function createMockClient (generateContentImpl, generateCalls) {
@@ -161,5 +164,57 @@ describe('GeminiAdapter', () => {
       thoughtSignature: 'sig-1',
     }]);
     assert.strictEqual(result.text, null);
+  });
+
+  it('parseGeminiGenerateContentResponse extracts thought parts and usageMetadata', () => {
+    const parsed = parseGeminiGenerateContentResponse({
+      candidates: [{
+        content: {
+          parts: [
+            { thought: true, text: 'Need auth docs.' },
+            { thought: true, text: 'Searching KB.' },
+            { text: 'Here is the answer.' },
+          ],
+        },
+      }],
+      usageMetadata: {
+        promptTokenCount: 100,
+        candidatesTokenCount: 40,
+        totalTokenCount: 140,
+      },
+    });
+
+    assert.strictEqual(parsed.thought, 'Need auth docs.\nSearching KB.');
+    assert.strictEqual(parsed.text, 'Here is the answer.');
+    assert.deepStrictEqual(parsed.usage, {
+      promptTokens: 100,
+      completionTokens: 40,
+      totalTokens: 140,
+    });
+  });
+
+  it('parseGeminiGenerateContentResponse omits thought and usage when absent', () => {
+    const parsed = parseGeminiGenerateContentResponse({
+      candidates: [{ content: { parts: [{ text: 'hi' }] } }],
+    });
+    assert.strictEqual(parsed.text, 'hi');
+    assert.equal(Object.prototype.hasOwnProperty.call(parsed, 'thought'), false);
+    assert.equal(Object.prototype.hasOwnProperty.call(parsed, 'usage'), false);
+  });
+
+  it('parseGeminiGenerateContentResponse does not put thought text into reply text', () => {
+    const parsed = parseGeminiGenerateContentResponse({
+      candidates: [{
+        content: {
+          parts: [
+            { thought: true, text: 'secret reasoning' },
+            { functionCall: { name: 'echo', args: {} } },
+          ],
+        },
+      }],
+    });
+    assert.strictEqual(parsed.text, null);
+    assert.strictEqual(parsed.thought, 'secret reasoning');
+    assert.deepStrictEqual(parsed.functionCalls, [{ name: 'echo', args: {} }]);
   });
 });

@@ -55,14 +55,16 @@ Both live in the same OTLP envelope (`resourceSpans` → `scopeSpans` → `spans
 W3C `traceparent` stitches host APM spans and ExpressMcp GenAI spans into a single journey:
 
 ```
-[SERVER]  POST /mcp                    ← host / Express auto-instrumentation (not this library)
- └── [CHAIN] agent.process_message    ← express_mcp (OpenInference CHAIN)
-      ├── [LLM] generateContent       ← model SDK / other instrumenters (not v1)
-      └── [TOOL] mcp.tool.kb_search   ← express_mcp (OpenInference TOOL)
-           └── [DB] flexsearch.search ← host instrumentation under the tool (not this library)
+[SERVER]  POST /mcp                         ← host / Express auto-instrumentation (not this library)
+ └── [CHAIN] agent.process_message         ← express_mcp (OpenInference CHAIN)
+      ├── [LLM] gen_ai.generateContent     ← express_mcp (one per model round)
+      ├── [TOOL] mcp.tool.kb_search        ← express_mcp (OpenInference TOOL)
+      ├── [TOOL] mcp.tool.request_tools    ← express_mcp (escalation)
+      └── [LLM] gen_ai.generateContent     ← …
+           └── [DB] flexsearch.search      ← host instrumentation under the tool (not this library)
 ```
 
-**This library emits CHAIN + TOOL only.** Host HTTP/DB spans and Gemini MODEL spans from other instrumenters nest in the **same** `traceId` when they propagate `traceparent`.
+**This library emits CHAIN, LLM, and TOOL spans** (including synthetic `mcp.tool.request_tools` for escalation). Host HTTP/DB spans nest in the **same** `traceId` when they propagate `traceparent`. LLM and TOOL children are siblings under the CHAIN (tools are not nested under LLM spans).
 
 ### Why LLM spans need extra care
 
@@ -210,7 +212,9 @@ Tool spans become children of that parent (`traceId` preserved, `parentSpanId` =
 
 ### In-process agent
 
-`getAgent().processMessage(...)` emits a CHAIN span `agent.process_message`. Nested tool calls are children of that CHAIN. Paths with no inbound `traceparent` (e.g. Telegram bots) start a new root CHAIN.
+`getAgent().processMessage(...)` emits a CHAIN span `agent.process_message` with `mcp.session_id` set to the history key. Each `adapter.generate` round emits a child LLM span `gen_ai.generateContent`. Nested tool calls and `request_tools` escalations are TOOL siblings of those LLM spans under the same CHAIN. Paths with no inbound `traceparent` (e.g. Telegram bots) start a new root CHAIN.
+
+Manual Phoenix verification uses constructor config only — for example `telemetry: { enabled: true, protocol: 'http/protobuf', endpoint: 'https://app.phoenix.arize.com/s/<space>', headers: { Authorization: 'Bearer …', 'phx-project-name': '…' } }`. ExpressMcp does not read `OTEL_EXPORTER_OTLP_*`.
 
 ### Shutdown
 
@@ -252,9 +256,32 @@ curl -X POST http://localhost:3000/mcp \
 | `openinference.span.kind` | `"CHAIN"` |
 | `gen_ai.system` | `"gemini"` for `GeminiAdapter`, else `"custom"` |
 | `gen_ai.operation.name` | `"process_message"` |
+| `mcp.session_id` | Agent history key / session id |
 | `input.value` / `output.value` | Prompt and final reply (when capture flags are on) |
 | `agent.rounds` | Tool-loop round count |
+| `agent.escalated` | `true` when `request_tools` ran this turn |
+| `agent.escalation_reason` | Sanitized reason from `request_tools` |
+| `agent.self_corrections` | Count of Stop-hook reject-and-retry iterations (omitted when 0) |
+| `gen_ai.usage.input_tokens` / `output_tokens` / `total_tokens` | Sum across LLM rounds when the adapter reports usage |
 | `user.id` | JWT `sub` when present |
+
+### LLM (`gen_ai.generateContent`)
+
+| Attribute | Description |
+| --- | --- |
+| `openinference.span.kind` | `"LLM"` |
+| `gen_ai.system` | `"gemini"` or `"custom"` |
+| `gen_ai.operation.name` | `"generateContent"` |
+| `gen_ai.request.model` | Adapter model id when present |
+| `agent.round` | Zero-based generate round index |
+| `mcp.session_id` | Same session id as the CHAIN |
+| `gen_ai.usage.input_tokens` / `output_tokens` / `total_tokens` | Per-round usage when reported (omitted when absent) |
+| `gen_ai.thought` | Thinking-model reasoning text (`part.thought === true`), when `captureResults` is on |
+| `output.value` | Function-call summary or final text (when `captureResults` is on) |
+
+### Escalation TOOL (`mcp.tool.request_tools`)
+
+Synthetic TOOL child when the model calls `request_tools`. Also sets `agent.escalated` / `agent.escalation_reason` on the parent CHAIN for aggregate filters.
 
 Sensitive keys matching `sanitizeKeys` are replaced with `[REDACTED]`. Strings longer than `maxAttributeLength` are truncated.
 

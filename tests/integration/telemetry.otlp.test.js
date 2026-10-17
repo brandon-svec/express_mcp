@@ -214,11 +214,17 @@ describe('Telemetry OTLP integration', () => {
     const spans = allSpans(collector.batches);
     const chain = spans.find((s) => s.name === 'agent.process_message');
     const tool = spans.find((s) => s.name === 'mcp.tool.hello');
+    const llms = spans.filter((s) => s.name === 'gen_ai.generateContent');
     assert.ok(chain, 'expected CHAIN span');
     assert.ok(tool, 'expected TOOL span');
+    assert.isAtLeast(llms.length, 1, 'expected LLM child span');
     assert.strictEqual(attr(chain, 'openinference.span.kind').stringValue, 'CHAIN');
+    assert.strictEqual(attr(chain, 'mcp.session_id').stringValue, 'hist-1');
     assert.strictEqual(tool.traceId, chain.traceId);
     assert.strictEqual(tool.parentSpanId, chain.spanId);
+    assert.strictEqual(llms[0].traceId, chain.traceId);
+    assert.strictEqual(llms[0].parentSpanId, chain.spanId);
+    assert.strictEqual(attr(llms[0], 'openinference.span.kind').stringValue, 'LLM');
   });
 
   it('tools/call succeeds when OTLP collector rejects export (fail-open)', async () => {

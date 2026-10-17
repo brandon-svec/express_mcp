@@ -3,7 +3,13 @@ import { ModelAdapter } from './modelAdapter.js';
 
 /**
  * @param {object} response Gemini generateContent SDK response
- * @returns {{ text: string|null, functionCalls: Array<object>|null, modelParts: Array<object> }}
+ * @returns {{
+ *   text: string|null,
+ *   functionCalls: Array<object>|null,
+ *   modelParts: Array<object>,
+ *   thought?: string,
+ *   usage?: { promptTokens?: number, completionTokens?: number, totalTokens?: number },
+ * }}
  */
 export function parseGeminiGenerateContentResponse (response) {
   if (!response || typeof response !== 'object') {
@@ -19,6 +25,7 @@ export function parseGeminiGenerateContentResponse (response) {
 
   const functionCalls = [];
   const textChunks = [];
+  const thoughtChunks = [];
   for (const part of rawParts) {
     if (!part || typeof part !== 'object') {
       continue;
@@ -35,6 +42,9 @@ export function parseGeminiGenerateContentResponse (response) {
       continue;
     }
     if (part.thought === true) {
+      if (typeof part.text === 'string' && part.text.length > 0) {
+        thoughtChunks.push(part.text);
+      }
       continue;
     }
     if (typeof part.text === 'string' && part.text.length > 0) {
@@ -63,11 +73,42 @@ export function parseGeminiGenerateContentResponse (response) {
     text = response.text;
   }
 
-  return {
+  /** @type {{
+   *   text: string|null,
+   *   functionCalls: Array<object>|null,
+   *   modelParts: Array<object>,
+   *   thought?: string,
+   *   usage?: { promptTokens?: number, completionTokens?: number, totalTokens?: number },
+   * }} */
+  const parsed = {
     text,
     functionCalls: functionCalls.length > 0 ? functionCalls : null,
     modelParts: rawParts,
   };
+
+  if (thoughtChunks.length > 0) {
+    parsed.thought = thoughtChunks.join('\n');
+  }
+
+  const meta = response.usageMetadata;
+  if (meta && typeof meta === 'object') {
+    /** @type {{ promptTokens?: number, completionTokens?: number, totalTokens?: number }} */
+    const usage = {};
+    if (typeof meta.promptTokenCount === 'number') {
+      usage.promptTokens = meta.promptTokenCount;
+    }
+    if (typeof meta.candidatesTokenCount === 'number') {
+      usage.completionTokens = meta.candidatesTokenCount;
+    }
+    if (typeof meta.totalTokenCount === 'number') {
+      usage.totalTokens = meta.totalTokenCount;
+    }
+    if (Object.keys(usage).length > 0) {
+      parsed.usage = usage;
+    }
+  }
+
+  return parsed;
 }
 
 /**

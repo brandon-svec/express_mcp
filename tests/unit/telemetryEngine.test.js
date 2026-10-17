@@ -103,9 +103,11 @@ describe('TelemetryEngine', () => {
     const agent = engine.startAgentSpan({
       prompt: 'hi',
       genAiSystem: 'gemini',
+      sessionId: 'sess-a',
     });
     assert.strictEqual(agent.name, 'agent.process_message');
     assert.strictEqual(agent.attributes['openinference.span.kind'], 'CHAIN');
+    assert.strictEqual(agent.attributes['mcp.session_id'], 'sess-a');
 
     const child = engine.startToolSpan({
       toolName: 'kb_search',
@@ -128,5 +130,114 @@ describe('TelemetryEngine', () => {
     assert.ok(chain);
     assert.ok(tool);
     assert.strictEqual(tool.parentSpanId, chain.spanId);
+  });
+
+  it('creates LLM spans with tokens and thought when present', async () => {
+    const { engine, exported } = createEngine();
+    const agent = engine.startAgentSpan({
+      prompt: 'hi',
+      genAiSystem: 'gemini',
+      sessionId: 'sess-1',
+    });
+    const llm = engine.startLlmSpan({
+      traceparent: agent.traceparent,
+      genAiSystem: 'gemini',
+      model: 'gemini-2.5-flash',
+      round: 0,
+      sessionId: 'sess-1',
+    });
+    assert.strictEqual(llm.name, 'gen_ai.generateContent');
+    assert.strictEqual(llm.attributes['openinference.span.kind'], 'LLM');
+    assert.strictEqual(llm.parentSpanId, agent.spanId);
+
+    engine.endLlmSpan(llm, {
+      usage: { promptTokens: 10, completionTokens: 4, totalTokens: 14 },
+      thought: 'Searching knowledge base.',
+      output: { functionCalls: [{ name: 'kb_search', args: { q: 'x' } }] },
+    });
+    engine.endAgentSpan(agent, {
+      output: 'done',
+      rounds: 1,
+      promptTokens: 10,
+      completionTokens: 4,
+      totalTokens: 14,
+    });
+    await engine.shutdown();
+
+    const llmOut = exported.find((s) => s.name === 'gen_ai.generateContent');
+    assert.ok(llmOut);
+    assert.strictEqual(
+      llmOut.attributes.find((a) => a.key === 'gen_ai.usage.input_tokens').value.intValue,
+      '10'
+    );
+    assert.strictEqual(
+      llmOut.attributes.find((a) => a.key === 'gen_ai.thought').value.stringValue,
+      'Searching knowledge base.'
+    );
+    const chain = exported.find((s) => s.name === 'agent.process_message');
+    assert.strictEqual(
+      chain.attributes.find((a) => a.key === 'gen_ai.usage.total_tokens').value.intValue,
+      '14'
+    );
+  });
+
+  it('omits thought and usage on LLM when absent or captureResults is false', async () => {
+    const { engine, exported } = createEngine({ captureResults: false });
+    const agent = engine.startAgentSpan({ prompt: 'hi' });
+    const llm = engine.startLlmSpan({
+      traceparent: agent.traceparent,
+      round: 0,
+    });
+    engine.endLlmSpan(llm, {
+      thought: 'should not appear',
+      output: 'reply',
+    });
+    engine.endAgentSpan(agent, { output: 'done', rounds: 0 });
+    await engine.shutdown();
+
+    const llmOut = exported.find((s) => s.name === 'gen_ai.generateContent');
+    assert.isUndefined(llmOut.attributes.find((a) => a.key === 'gen_ai.thought'));
+    assert.isUndefined(llmOut.attributes.find((a) => a.key === 'output.value'));
+    assert.isUndefined(llmOut.attributes.find((a) => a.key === 'gen_ai.usage.input_tokens'));
+  });
+
+  it('recordEscalation emits TOOL child and annotates CHAIN parent', async () => {
+    const { engine, exported } = createEngine();
+    const agent = engine.startAgentSpan({
+      prompt: 'hi',
+      sessionId: 'sess-e',
+    });
+    engine.recordEscalation(agent, {
+      reason: 'need filesystem',
+      grantedTools: ['fs_read'],
+      round: 1,
+      sessionId: 'sess-e',
+    });
+    assert.strictEqual(agent.attributes['agent.escalated'], true);
+    assert.strictEqual(agent.attributes['agent.escalation_reason'], 'need filesystem');
+
+    engine.endAgentSpan(agent, {
+      output: 'done',
+      rounds: 2,
+      selfCorrections: 1,
+    });
+    await engine.shutdown();
+
+    const esc = exported.find((s) => s.name === 'mcp.tool.request_tools');
+    assert.ok(esc);
+    assert.strictEqual(esc.parentSpanId, agent.spanId);
+    assert.strictEqual(
+      esc.attributes.find((a) => a.key === 'openinference.span.kind').value.stringValue,
+      'TOOL'
+    );
+    const chain = exported.find((s) => s.name === 'agent.process_message');
+    assert.strictEqual(
+      chain.attributes.find((a) => a.key === 'agent.escalated').value.boolValue,
+      true
+    );
+    assert.strictEqual(
+      chain.attributes.find((a) => a.key === 'agent.self_corrections').value.intValue,
+      '1'
+    );
   });
 });
