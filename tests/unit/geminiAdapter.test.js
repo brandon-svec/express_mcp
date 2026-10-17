@@ -193,6 +193,48 @@ describe('GeminiAdapter', () => {
     });
   });
 
+  it('parseGeminiGenerateContentResponse includes thoughtsTokenCount in completionTokens', () => {
+    const parsed = parseGeminiGenerateContentResponse({
+      candidates: [{
+        content: {
+          parts: [
+            { thought: true, text: 'Reasoning…' },
+            { text: 'Answer.' },
+          ],
+        },
+      }],
+      usageMetadata: {
+        promptTokenCount: 50,
+        candidatesTokenCount: 10,
+        thoughtsTokenCount: 200,
+        totalTokenCount: 260,
+      },
+    });
+
+    assert.deepStrictEqual(parsed.usage, {
+      promptTokens: 50,
+      completionTokens: 210,
+      totalTokens: 260,
+    });
+  });
+
+  it('parseGeminiGenerateContentResponse uses thoughtsTokenCount alone when candidates absent', () => {
+    const parsed = parseGeminiGenerateContentResponse({
+      candidates: [{ content: { parts: [{ thought: true, text: 'only thought' }] } }],
+      usageMetadata: {
+        promptTokenCount: 20,
+        thoughtsTokenCount: 80,
+        totalTokenCount: 100,
+      },
+    });
+
+    assert.deepStrictEqual(parsed.usage, {
+      promptTokens: 20,
+      completionTokens: 80,
+      totalTokens: 100,
+    });
+  });
+
   it('parseGeminiGenerateContentResponse omits thought and usage when absent', () => {
     const parsed = parseGeminiGenerateContentResponse({
       candidates: [{ content: { parts: [{ text: 'hi' }] } }],

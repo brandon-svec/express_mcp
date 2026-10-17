@@ -233,6 +233,27 @@ export class TelemetryEngine {
   }
 
   /**
+   * Overwrite a span's `input.value` after the model request is assembled.
+   * Fail-open: never throws into agent execution.
+   * @param {ActiveSpan|null} span
+   * @param {unknown} value
+   */
+  setSpanInput(span, value) {
+    if (!span || !span.attributes || !this.config.captureParameters || value === undefined) {
+      return;
+    }
+    try {
+      span.attributes['input.value'] = sanitizeToAttributeString(
+        value,
+        this.config.sanitizeKeys,
+        this.config.maxAttributeLength
+      );
+    } catch (err) {
+      this.logger?.debug?.({ error: err?.message }, 'Failed to set span input');
+    }
+  }
+
+  /**
    * Start an LLM span for one model generate round.
    * @param {Object} params
    * @param {string|null} [params.traceparent] - parent CHAIN traceparent
@@ -240,6 +261,8 @@ export class TelemetryEngine {
    * @param {string} [params.model]
    * @param {number} [params.round]
    * @param {string|null} [params.sessionId]
+   * @param {unknown} [params.contents] - generate contents (history + this turn)
+   * @param {string} [params.systemInstruction]
    * @returns {ActiveSpan|null}
    */
   startLlmSpan(params) {
@@ -260,6 +283,25 @@ export class TelemetryEngine {
       }
       if (params.sessionId) {
         attributes['mcp.session_id'] = String(params.sessionId);
+      }
+      if (this.config.captureParameters) {
+        if (params.contents !== undefined) {
+          attributes['input.value'] = sanitizeToAttributeString(
+            params.contents,
+            this.config.sanitizeKeys,
+            this.config.maxAttributeLength
+          );
+        }
+        if (
+          typeof params.systemInstruction === 'string'
+          && params.systemInstruction.trim().length > 0
+        ) {
+          attributes['gen_ai.system_instruction'] = sanitizeToAttributeString(
+            params.systemInstruction,
+            this.config.sanitizeKeys,
+            this.config.maxAttributeLength
+          );
+        }
       }
       return {
         traceId,

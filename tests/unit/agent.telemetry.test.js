@@ -1,6 +1,7 @@
 import { assert } from 'chai';
 import { Agent, REQUEST_TOOLS_NAME } from '../../src/agents/agent.js';
 import { ModelAdapter } from '../../src/agents/modelAdapter.js';
+import { InMemoryHistoryStore } from '../../src/agents/historyStore.js';
 import { ToolRegistry } from '../../src/classes/toolRegistry.js';
 import { BaseTool } from '../../src/classes/baseTool.js';
 import { BaseHook } from '../../src/classes/baseHook.js';
@@ -13,9 +14,11 @@ class FakeAdapter extends ModelAdapter {
     super();
     this.script = script;
     this.callIndex = 0;
+    this.generateParams = [];
   }
 
-  async generate () {
+  async generate (params) {
+    this.generateParams.push(params);
     const step = this.script[this.callIndex];
     this.callIndex += 1;
     if (!step) {
@@ -173,6 +176,97 @@ describe('Agent telemetry', () => {
     assert.strictEqual(attr(llm1, 'agent.round').intValue, '1');
     assert.strictEqual(attr(llm2, 'agent.round').intValue, '2');
     assert.strictEqual(attr(escalation, 'openinference.span.kind').stringValue, 'TOOL');
+
+    const expectedRound0 = [{ role: 'user', parts: [{ text: 'go' }] }];
+    assert.deepStrictEqual(JSON.parse(attr(chain, 'input.value').stringValue), expectedRound0);
+    assert.deepStrictEqual(JSON.parse(attr(llm0, 'input.value').stringValue), expectedRound0);
+    assert.strictEqual(attr(llm0, 'gen_ai.system_instruction').stringValue, 'narrow');
+    assert.strictEqual(attr(llm2, 'gen_ai.system_instruction').stringValue, 'full');
+  });
+
+  it('records ephemeralPrefix and prior history on CHAIN and LLM input.value', async () => {
+    const { engine, exported } = createTelemetryEngine();
+    const history = new InMemoryHistoryStore({ windowMinutes: 60 });
+    const registry = new ToolRegistry({ telemetryEngine: engine });
+    registry.register(new EchoTool());
+
+    const prefix = 'CURRENT_CONTEXT\nstay: home\nUSER_MESSAGE\n';
+    const adapter = new FakeAdapter([
+      { text: 'first', functionCalls: null },
+      {
+        text: null,
+        functionCalls: [{ name: 'echo', args: { message: 'hi' } }],
+      },
+      { text: 'second', functionCalls: null },
+    ]);
+    const agent = new Agent({
+      adapter,
+      toolRegistry: registry,
+      systemInstruction: 'test',
+      history,
+      maxToolRounds: 4,
+      telemetryEngine: engine,
+    });
+
+    await agent.processMessage('chat:1', 'hello', { ephemeralPrefix: prefix });
+    await agent.processMessage('chat:1', 'again', {
+      ephemeralPrefix: prefix,
+      toolNames: ['echo'],
+    });
+    await engine.shutdown();
+
+    const chains = exported.filter((s) => s.name === 'agent.process_message');
+    assert.strictEqual(chains.length, 2);
+
+    const turn1Expected = [
+      { role: 'user', parts: [{ text: `${prefix}hello` }] },
+    ];
+    assert.deepStrictEqual(
+      JSON.parse(attr(chains[0], 'input.value').stringValue),
+      turn1Expected,
+    );
+
+    const turn2Round0Expected = [
+      { role: 'user', parts: [{ text: 'hello' }] },
+      { role: 'model', parts: [{ text: 'first' }] },
+      { role: 'user', parts: [{ text: `${prefix}again` }] },
+    ];
+    assert.deepStrictEqual(
+      JSON.parse(attr(chains[1], 'input.value').stringValue),
+      turn2Round0Expected,
+    );
+
+    const turn2Llms = exported.filter(
+      (s) => s.name === 'gen_ai.generateContent' && s.parentSpanId === chains[1].spanId,
+    );
+    assert.strictEqual(turn2Llms.length, 2);
+    assert.deepStrictEqual(
+      JSON.parse(attr(turn2Llms[0], 'input.value').stringValue),
+      turn2Round0Expected,
+    );
+    const turn2Round1Expected = [
+      { role: 'user', parts: [{ text: 'hello' }] },
+      { role: 'model', parts: [{ text: 'first' }] },
+      { role: 'user', parts: [{ text: `${prefix}again` }] },
+      {
+        role: 'model',
+        parts: [{ functionCall: { name: 'echo', args: { message: 'hi' } } }],
+      },
+      {
+        role: 'user',
+        parts: [{
+          functionResponse: {
+            name: 'echo',
+            response: { result: { echoed: 'hi' } },
+          },
+        }],
+      },
+    ];
+    assert.deepStrictEqual(
+      JSON.parse(attr(turn2Llms[1], 'input.value').stringValue),
+      turn2Round1Expected,
+    );
+    assert.deepStrictEqual(adapter.generateParams[2].contents, turn2Round1Expected);
   });
 
   it('records agent.self_corrections when Stop rejects and retries', async () => {
