@@ -28,6 +28,17 @@ function createEngine(overrides = {}) {
   return { engine, exported, config };
 }
 
+function attr(span, key) {
+  if (!span || !Array.isArray(span.attributes)) {
+    throw new Error('span.attributes is required');
+  }
+  const found = span.attributes.find((a) => a.key === key);
+  if (!found) {
+    throw new Error(`missing attribute ${key} on ${span.name}`);
+  }
+  return found.value;
+}
+
 describe('TelemetryEngine', () => {
   it('creates TOOL spans with GenAI attributes and parent from traceparent', async () => {
     const { engine, exported } = createEngine();
@@ -58,10 +69,8 @@ describe('TelemetryEngine', () => {
     assert.strictEqual(otlp.traceId, '4bf92f3577b34da6a3ce929d0e0e4736');
     assert.strictEqual(otlp.parentSpanId, '00f067aa0ba902b7');
     assert.strictEqual(otlp.status.code, 1);
-    const kind = otlp.attributes.find((a) => a.key === 'openinference.span.kind');
-    assert.strictEqual(kind.value.stringValue, 'TOOL');
-    const userId = otlp.attributes.find((a) => a.key === 'user.id');
-    assert.strictEqual(userId.value.stringValue, 'gh:1');
+    assert.strictEqual(attr(otlp, 'openinference.span.kind').stringValue, 'TOOL');
+    assert.strictEqual(attr(otlp, 'user.id').stringValue, 'gh:1');
   });
 
   it('omits input/output when capture flags are false', async () => {
@@ -166,22 +175,13 @@ describe('TelemetryEngine', () => {
 
     const llmOut = exported.find((s) => s.name === 'gen_ai.generateContent');
     assert.ok(llmOut);
-    assert.strictEqual(
-      llmOut.attributes.find((a) => a.key === 'gen_ai.usage.input_tokens').value.intValue,
-      '10'
-    );
-    assert.strictEqual(
-      llmOut.attributes.find((a) => a.key === 'gen_ai.thought').value.stringValue,
-      'Searching knowledge base.'
-    );
+    assert.strictEqual(attr(llmOut, 'gen_ai.usage.input_tokens').intValue, '10');
+    assert.strictEqual(attr(llmOut, 'gen_ai.thought').stringValue, 'Searching knowledge base.');
     const chain = exported.find((s) => s.name === 'agent.process_message');
-    assert.strictEqual(
-      chain.attributes.find((a) => a.key === 'gen_ai.usage.total_tokens').value.intValue,
-      '14'
-    );
+    assert.strictEqual(attr(chain, 'gen_ai.usage.total_tokens').intValue, '14');
   });
 
-  it('omits thought and usage on LLM when absent or captureResults is false', async () => {
+  it('omits thought and output.value when captureResults is false', async () => {
     const { engine, exported } = createEngine({ captureResults: false });
     const agent = engine.startAgentSpan({ prompt: 'hi' });
     const llm = engine.startLlmSpan({
@@ -189,6 +189,7 @@ describe('TelemetryEngine', () => {
       round: 0,
     });
     engine.endLlmSpan(llm, {
+      usage: { promptTokens: 3, completionTokens: 1, totalTokens: 4 },
       thought: 'should not appear',
       output: 'reply',
     });
@@ -196,9 +197,28 @@ describe('TelemetryEngine', () => {
     await engine.shutdown();
 
     const llmOut = exported.find((s) => s.name === 'gen_ai.generateContent');
+    assert.ok(llmOut);
     assert.isUndefined(llmOut.attributes.find((a) => a.key === 'gen_ai.thought'));
     assert.isUndefined(llmOut.attributes.find((a) => a.key === 'output.value'));
+    assert.strictEqual(attr(llmOut, 'gen_ai.usage.input_tokens').intValue, '3');
+  });
+
+  it('omits usage token attributes when usage is absent', async () => {
+    const { engine, exported } = createEngine();
+    const agent = engine.startAgentSpan({ prompt: 'hi' });
+    const llm = engine.startLlmSpan({
+      traceparent: agent.traceparent,
+      round: 0,
+    });
+    engine.endLlmSpan(llm, { output: 'reply' });
+    engine.endAgentSpan(agent, { output: 'done', rounds: 0 });
+    await engine.shutdown();
+
+    const llmOut = exported.find((s) => s.name === 'gen_ai.generateContent');
+    assert.ok(llmOut);
     assert.isUndefined(llmOut.attributes.find((a) => a.key === 'gen_ai.usage.input_tokens'));
+    assert.isUndefined(llmOut.attributes.find((a) => a.key === 'gen_ai.usage.output_tokens'));
+    assert.isUndefined(llmOut.attributes.find((a) => a.key === 'gen_ai.usage.total_tokens'));
   });
 
   it('recordEscalation emits TOOL child and annotates CHAIN parent', async () => {
@@ -226,18 +246,9 @@ describe('TelemetryEngine', () => {
     const esc = exported.find((s) => s.name === 'mcp.tool.request_tools');
     assert.ok(esc);
     assert.strictEqual(esc.parentSpanId, agent.spanId);
-    assert.strictEqual(
-      esc.attributes.find((a) => a.key === 'openinference.span.kind').value.stringValue,
-      'TOOL'
-    );
+    assert.strictEqual(attr(esc, 'openinference.span.kind').stringValue, 'TOOL');
     const chain = exported.find((s) => s.name === 'agent.process_message');
-    assert.strictEqual(
-      chain.attributes.find((a) => a.key === 'agent.escalated').value.boolValue,
-      true
-    );
-    assert.strictEqual(
-      chain.attributes.find((a) => a.key === 'agent.self_corrections').value.intValue,
-      '1'
-    );
+    assert.strictEqual(attr(chain, 'agent.escalated').boolValue, true);
+    assert.strictEqual(attr(chain, 'agent.self_corrections').intValue, '1');
   });
 });

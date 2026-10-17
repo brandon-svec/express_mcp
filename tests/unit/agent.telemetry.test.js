@@ -89,14 +89,20 @@ function createTelemetryEngine () {
 }
 
 function attr (span, key) {
-  return span.attributes?.find((a) => a.key === key)?.value;
+  if (!span || !Array.isArray(span.attributes)) {
+    throw new Error('span.attributes is required');
+  }
+  const found = span.attributes.find((a) => a.key === key);
+  if (!found) {
+    throw new Error(`missing attribute ${key} on ${span.name}`);
+  }
+  return found.value;
 }
 
 describe('Agent telemetry', () => {
   it('emits CHAIN → LLM / TOOL / escalation / LLM hierarchy', async () => {
     const { engine, exported } = createTelemetryEngine();
     const registry = new ToolRegistry({
-      loggerOptions: { enabled: false },
       telemetryEngine: engine,
     });
     registry.register(new EchoTool());
@@ -141,36 +147,37 @@ describe('Agent telemetry', () => {
     assert.strictEqual(reply, 'done');
     await engine.shutdown();
 
-    const chain = exported.find((s) => s.name === 'agent.process_message');
-    assert.ok(chain);
+    assert.deepStrictEqual(exported.map((s) => s.name), [
+      'gen_ai.generateContent',
+      'mcp.tool.echo',
+      'gen_ai.generateContent',
+      'mcp.tool.request_tools',
+      'gen_ai.generateContent',
+      'agent.process_message',
+    ]);
+
+    const chain = exported[5];
     assert.strictEqual(attr(chain, 'openinference.span.kind').stringValue, 'CHAIN');
     assert.strictEqual(attr(chain, 'mcp.session_id').stringValue, 'sess-1');
     assert.strictEqual(attr(chain, 'agent.escalated').boolValue, true);
     assert.strictEqual(attr(chain, 'agent.escalation_reason').stringValue, 'need other');
     assert.strictEqual(attr(chain, 'gen_ai.usage.total_tokens').intValue, '85');
 
-    const llms = exported.filter((s) => s.name === 'gen_ai.generateContent');
-    assert.strictEqual(llms.length, 3);
-    for (const llm of llms) {
-      assert.strictEqual(llm.parentSpanId, chain.spanId);
-      assert.strictEqual(attr(llm, 'openinference.span.kind').stringValue, 'LLM');
+    const [llm0, tool, llm1, escalation, llm2] = exported;
+    for (const child of [llm0, tool, llm1, escalation, llm2]) {
+      assert.strictEqual(child.parentSpanId, chain.spanId);
     }
-    assert.strictEqual(attr(llms[0], 'gen_ai.thought').stringValue, 'Echo first.');
-    assert.strictEqual(attr(llms[0], 'agent.round').intValue, '0');
-
-    const tool = exported.find((s) => s.name === 'mcp.tool.echo');
-    assert.ok(tool);
-    assert.strictEqual(tool.parentSpanId, chain.spanId);
-
-    const escalation = exported.find((s) => s.name === 'mcp.tool.request_tools');
-    assert.ok(escalation);
-    assert.strictEqual(escalation.parentSpanId, chain.spanId);
+    assert.strictEqual(attr(llm0, 'openinference.span.kind').stringValue, 'LLM');
+    assert.strictEqual(attr(llm0, 'gen_ai.thought').stringValue, 'Echo first.');
+    assert.strictEqual(attr(llm0, 'agent.round').intValue, '0');
+    assert.strictEqual(attr(llm1, 'agent.round').intValue, '1');
+    assert.strictEqual(attr(llm2, 'agent.round').intValue, '2');
     assert.strictEqual(attr(escalation, 'openinference.span.kind').stringValue, 'TOOL');
   });
 
   it('records agent.self_corrections when Stop rejects and retries', async () => {
     const { engine, exported } = createTelemetryEngine();
-    const registry = new ToolRegistry({ loggerOptions: { enabled: false } });
+    const registry = new ToolRegistry();
     registry.register(new EchoTool());
 
     const hookRegistry = new HookRegistry();
