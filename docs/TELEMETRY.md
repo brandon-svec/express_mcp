@@ -93,7 +93,8 @@ const expressMcp = new ExpressMcp({
     endpoint: 'https://app.phoenix.arize.com/s/<space-id>',
     headers: {
       Authorization: 'Bearer <YOUR_PHOENIX_API_KEY>',
-      'phx-project-name': 'default',
+      // Routes all spans in the request to this Phoenix project (HTTP OTLP only).
+      'x-project-name': 'default',
     },
     serviceName: 'my-service',
   },
@@ -126,7 +127,7 @@ See [Quick start (Phoenix Cloud)](#quick-start-phoenix-cloud). Summary:
 | Collector origin | Space URL, e.g. `https://app.phoenix.arize.com/s/<space-id>` (library appends `/v1/traces`) |
 | Auth | `Authorization: Bearer <api key>` |
 | Protocol | `http/protobuf` |
-| Project | `phx-project-name` header (Phoenix UI project; often `default`) |
+| Project | `x-project-name` HTTP header (or resource attr `openinference.project.name`; else `default`) |
 
 Host `/v1/traces` on `app.phoenix.arize.com` (no `/s/<handle>`) returns **HTTP 410** — Phoenix apps are addressed at `/s/<handle>`.
 
@@ -191,7 +192,7 @@ Tool spans become children of that parent (`traceId` preserved, `parentSpanId` =
 
 `getAgent().processMessage(...)` emits a CHAIN span `agent.process_message` with `mcp.session_id` set to the history key. Each `adapter.generate` round emits a child LLM span `gen_ai.generateContent`. Nested tool calls and `request_tools` escalations are TOOL siblings of those LLM spans under the same CHAIN. Paths with no inbound `traceparent` (e.g. Telegram bots) start a new root CHAIN.
 
-Manual Phoenix verification uses constructor config only — for example `telemetry: { enabled: true, protocol: 'http/protobuf', endpoint: 'https://app.phoenix.arize.com/s/<space>', headers: { Authorization: 'Bearer …', 'phx-project-name': '…' } }`. ExpressMcp does not read `OTEL_EXPORTER_OTLP_*`.
+Manual Phoenix verification uses constructor config only — for example `telemetry: { enabled: true, protocol: 'http/protobuf', endpoint: 'https://app.phoenix.arize.com/s/<space>', headers: { Authorization: 'Bearer …', 'x-project-name': '…' } }`. ExpressMcp does not read `OTEL_EXPORTER_OTLP_*`. Do not use `phx-project-name` — Phoenix ignores it and spans land in `default`.
 
 ### Shutdown
 
