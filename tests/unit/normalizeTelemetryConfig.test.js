@@ -48,14 +48,14 @@ describe('normalizeTelemetryConfig', () => {
       {
         enabled: true,
         protocol: 'http/json',
-        endpoint: 'https://proudfield.example.com',
+        endpoint: 'https://collector.example.com',
         headers: { Authorization: 'Bearer key' },
       },
       { name: 'my-service' }
     );
     assert.strictEqual(cfg.enabled, true);
     assert.strictEqual(cfg.protocol, 'http/json');
-    assert.strictEqual(cfg.endpoint, 'https://proudfield.example.com/v1/traces');
+    assert.strictEqual(cfg.endpoint, 'https://collector.example.com/v1/traces');
     assert.strictEqual(cfg.serviceName, 'my-service');
     assert.strictEqual(cfg.batchMaxSpans, 50);
     assert.strictEqual(cfg.batchTimeoutMs, 1000);

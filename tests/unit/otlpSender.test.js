@@ -1,5 +1,5 @@
 import { assert } from 'chai';
-import http from 'http';
+import nock from 'nock';
 import {
   OtlpSender,
   toAnyValue,
@@ -8,6 +8,9 @@ import {
 import {
   decodeExportTraceServiceRequest,
 } from '../../src/telemetry/otlpProtobuf.js';
+
+const COLLECTOR = 'http://collector.test';
+const TRACES_PATH = '/v1/traces';
 
 const sampleSpan = {
   traceId: 'a'.repeat(32),
@@ -44,28 +47,14 @@ describe('OtlpSender', () => {
   });
 
   describe('send', () => {
-    it('POSTs OTLP JSON with Content-Type and custom headers', async () => {
+    it('builds OTLP JSON body with Content-Type and custom headers', async () => {
       /** @type {object|null} */
-      let received = null;
-      /** @type {http.IncomingHttpHeaders|null} */
-      let receivedHeaders = null;
-
-      const server = http.createServer((req, res) => {
-        receivedHeaders = req.headers;
-        const chunks = [];
-        req.on('data', (c) => chunks.push(c));
-        req.on('end', () => {
-          received = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end('{}');
-        });
-      });
-
-      await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-      const { port } = server.address();
+      let body = null;
+      /** @type {Record<string, string>|null} */
+      let headers = null;
 
       const sender = new OtlpSender({
-        endpoint: `http://127.0.0.1:${port}/v1/traces`,
+        endpoint: `${COLLECTOR}${TRACES_PATH}`,
         protocol: 'http/json',
         headers: { Authorization: 'Bearer test-key' },
         serviceName: 'svc',
@@ -75,49 +64,38 @@ describe('OtlpSender', () => {
         keepAliveTimeoutMs: 1000,
         maxRetries: 0,
         requestTimeoutMs: 2000,
+        request: async (_url, opts) => {
+          body = opts.json;
+          headers = opts.headers;
+        },
       });
 
       await sender.send([sampleSpan]);
 
-      assert.ok(received);
+      assert.ok(body);
       assert.strictEqual(
-        received.resourceSpans[0].resource.attributes.find((a) => a.key === 'service.name')
+        body.resourceSpans[0].resource.attributes.find((a) => a.key === 'service.name')
           .value.stringValue,
         'svc'
       );
       assert.strictEqual(
-        received.resourceSpans[0].scopeSpans[0].spans[0].name,
+        body.resourceSpans[0].scopeSpans[0].spans[0].name,
         'mcp.tool.hello'
       );
-      assert.include(receivedHeaders['content-type'], 'application/json');
-      assert.strictEqual(receivedHeaders.authorization, 'Bearer test-key');
+      assert.include(String(headers['Content-Type']), 'application/json');
+      assert.strictEqual(headers.Authorization, 'Bearer test-key');
 
       sender.destroy();
-      await new Promise((resolve) => server.close(resolve));
     });
 
-    it('POSTs application/x-protobuf for http/protobuf', async () => {
+    it('builds application/x-protobuf body for http/protobuf', async () => {
       /** @type {Buffer|null} */
       let receivedBody = null;
-      /** @type {string|null} */
-      let contentType = null;
-
-      const server = http.createServer((req, res) => {
-        contentType = req.headers['content-type'] || null;
-        const chunks = [];
-        req.on('data', (c) => chunks.push(c));
-        req.on('end', () => {
-          receivedBody = Buffer.concat(chunks);
-          res.writeHead(200);
-          res.end();
-        });
-      });
-
-      await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-      const { port } = server.address();
+      /** @type {Record<string, string>|null} */
+      let headers = null;
 
       const sender = new OtlpSender({
-        endpoint: `http://127.0.0.1:${port}/v1/traces`,
+        endpoint: `${COLLECTOR}${TRACES_PATH}`,
         protocol: 'http/protobuf',
         headers: { Authorization: 'Bearer proto-key' },
         serviceName: 'svc',
@@ -125,11 +103,16 @@ describe('OtlpSender', () => {
         scopeVersion: '0.0.0-test',
         maxRetries: 0,
         requestTimeoutMs: 2000,
+        request: async (_url, opts) => {
+          receivedBody = opts.body;
+          headers = opts.headers;
+        },
       });
 
       await sender.send([sampleSpan]);
 
-      assert.strictEqual(contentType, 'application/x-protobuf');
+      assert.strictEqual(headers['content-type'], 'application/x-protobuf');
+      assert.strictEqual(headers.Authorization, 'Bearer proto-key');
       assert.ok(Buffer.isBuffer(receivedBody));
       assert.ok(receivedBody.length > 0);
       assert.throws(() => JSON.parse(receivedBody.toString('utf8')));
@@ -143,75 +126,52 @@ describe('OtlpSender', () => {
       );
 
       sender.destroy();
-      await new Promise((resolve) => server.close(resolve));
     });
 
     it('retries on 503 with Retry-After', async () => {
+      nock.disableNetConnect();
       let hits = 0;
-      const server = http.createServer((req, res) => {
-        hits += 1;
-        if (hits === 1) {
-          res.writeHead(503, { 'Retry-After': '0' });
-          res.end('unavailable');
-          return;
-        }
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end('{}');
-      });
+      try {
+        const scope = nock(COLLECTOR)
+          .post(TRACES_PATH)
+          .times(1)
+          .reply(() => {
+            hits += 1;
+            return [503, 'unavailable', { 'Retry-After': '0' }];
+          })
+          .post(TRACES_PATH)
+          .times(1)
+          .reply(() => {
+            hits += 1;
+            return [200, '{}', { 'Content-Type': 'application/json' }];
+          });
 
-      await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-      const { port } = server.address();
+        const sender = new OtlpSender({
+          endpoint: `${COLLECTOR}${TRACES_PATH}`,
+          protocol: 'http/json',
+          headers: {},
+          serviceName: 'svc',
+          scopeName: 'express_mcp',
+          scopeVersion: '0.0.0-test',
+          maxRetries: 2,
+          requestTimeoutMs: 2000,
+        });
 
-      const sender = new OtlpSender({
-        endpoint: `http://127.0.0.1:${port}/v1/traces`,
-        protocol: 'http/json',
-        headers: {},
-        serviceName: 'svc',
-        scopeName: 'express_mcp',
-        scopeVersion: '0.0.0-test',
-        maxRetries: 2,
-        requestTimeoutMs: 2000,
-      });
+        await sender.send([{
+          ...sampleSpan,
+          traceId: 'c'.repeat(32),
+          spanId: 'd'.repeat(16),
+          name: 'test',
+          attributes: [],
+        }]);
 
-      await sender.send([{
-        ...sampleSpan,
-        traceId: 'c'.repeat(32),
-        spanId: 'd'.repeat(16),
-        name: 'test',
-        attributes: [],
-      }]);
-
-      assert.isAtLeast(hits, 2);
-      sender.destroy();
-      await new Promise((resolve) => server.close(resolve));
-    });
-
-    it('uses injectable request for tests', async () => {
-      /** @type {object|null} */
-      let body = null;
-      const sender = new OtlpSender({
-        endpoint: 'http://example.test/v1/traces',
-        protocol: 'http/json',
-        headers: { 'X-API-Key': 'k' },
-        serviceName: 'svc',
-        scopeName: 'express_mcp',
-        scopeVersion: '1',
-        request: async (_url, opts) => {
-          body = opts.json;
-          assert.strictEqual(opts.headers['X-API-Key'], 'k');
-          assert.include(opts.headers['Content-Type'], 'application/json');
-        },
-      });
-
-      await sender.send([{
-        ...sampleSpan,
-        traceId: 'e'.repeat(32),
-        spanId: 'f'.repeat(16),
-        name: 'n',
-        attributes: [],
-      }]);
-      assert.ok(body.resourceSpans);
-      sender.destroy();
+        assert.ok(scope.isDone());
+        assert.strictEqual(hits, 2);
+        sender.destroy();
+      } finally {
+        nock.cleanAll();
+        nock.enableNetConnect();
+      }
     });
 
     it('uses injectable grpcExport for grpc protocol', async () => {

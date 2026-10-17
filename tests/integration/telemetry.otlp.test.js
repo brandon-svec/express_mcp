@@ -55,7 +55,7 @@ class FakeAdapter extends ModelAdapter {
 }
 
 /**
- * In-process Proudfield-shaped OTLP/HTTP JSON collector.
+ * In-process OTLP/HTTP JSON collector for integration tests.
  * @returns {Promise<{ url: string, batches: object[], close: () => Promise<void> }>}
  */
 async function startCollector() {
@@ -221,6 +221,49 @@ describe('Telemetry OTLP integration', () => {
     assert.strictEqual(tool.parentSpanId, chain.spanId);
   });
 
+  it('tools/call succeeds when OTLP collector rejects export (fail-open)', async () => {
+    const expressMcp = new ExpressMcp(getTestExpressMcpOptions({
+      enableKnowledgeBase: false,
+      name: 'otlp-fail-open',
+      telemetry: {
+        enabled: true,
+        protocol: 'http/json',
+        endpoint: collector.url,
+        // Collector requires Bearer collector-key; wrong key → 401 (not retried).
+        headers: { Authorization: 'Bearer wrong-key' },
+        batchMaxSpans: 1,
+        batchTimeoutMs: 50,
+        maxRetries: 0,
+      },
+    }));
+    expressMcp.registerTool(new HelloTool());
+
+    const app = express();
+    app.use(express.json());
+    app.use('/mcp', expressMcp.router());
+
+    const baseAgent = request(app);
+    const sessionId = await createMcpSession(baseAgent);
+
+    const response = await mcpPostWithSession(baseAgent, sessionId, '/mcp')
+      .send({
+        jsonrpc: '2.0',
+        id: 12,
+        method: 'tools/call',
+        params: {
+          name: 'hello',
+          arguments: { name: 'Ada' },
+        },
+      });
+
+    assert.strictEqual(response.status, 200);
+    assert.ok(response.body.result);
+    assert.isUndefined(response.body.error);
+    assert.strictEqual(collector.batches.length, 0);
+
+    await expressMcp.close();
+  });
+
   it('exports ERROR status when tool throws but MCP still returns error', async () => {
     const expressMcp = new ExpressMcp(getTestExpressMcpOptions({
       enableKnowledgeBase: false,
@@ -261,7 +304,7 @@ describe('Telemetry OTLP integration', () => {
     assert.strictEqual(tool.status.code, 2);
   });
 
-  it('payload attribute keys would classify as GenAI in Proudfield', async () => {
+  it('payload includes OpenInference and gen_ai attribute keys', async () => {
     const expressMcp = new ExpressMcp(getTestExpressMcpOptions({
       enableKnowledgeBase: false,
       telemetry: {
