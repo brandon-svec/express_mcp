@@ -108,6 +108,12 @@ export class OtlpSender {
           http: this.httpAgent,
           https: this.httpsAgent,
         },
+        // Phoenix Cloud (and similar edges) 302 generic clients to /login;
+        // do not follow — throw so the batch fail-opens instead of looping.
+        followRedirect: false,
+        headers: {
+          'user-agent': `OTel-OTLP-Exporter-Node/${this.scopeVersion}`,
+        },
         timeout: { request: this.requestTimeoutMs },
         retry: {
           limit: this.maxRetries,
@@ -128,6 +134,20 @@ export class OtlpSender {
         // text: Phoenix and some collectors return empty 200 bodies
         responseType: 'text',
         throwHttpErrors: true,
+        hooks: {
+          afterResponse: [
+            (response) => {
+              if (response.statusCode >= 300 && response.statusCode < 400) {
+                throw new Error(
+                  `OTLP export redirected (${response.statusCode}) to ${
+                    response.headers.location || '(no location)'
+                  }`
+                );
+              }
+              return response;
+            },
+          ],
+        },
       });
       this._request = (url, opts) => this._client.post(url, opts);
     } else {
@@ -193,11 +213,14 @@ export class OtlpSender {
     }
     const body = this.buildExportRequest(spans);
 
+    const otelUserAgent = `OTel-OTLP-Exporter-Node/${this.scopeVersion}`;
+
     try {
       if (this.protocol === 'http/json') {
         return await this._request(this.endpoint, {
           json: body,
           headers: {
+            'user-agent': otelUserAgent,
             'Content-Type': 'application/json',
             ...this.headers,
           },
@@ -208,6 +231,7 @@ export class OtlpSender {
         return await this._request(this.endpoint, {
           body: encoded,
           headers: {
+            'user-agent': otelUserAgent,
             ...this.headers,
             'content-type': 'application/x-protobuf',
           },

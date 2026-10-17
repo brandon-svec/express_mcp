@@ -84,7 +84,37 @@ describe('OtlpSender', () => {
       );
       assert.include(String(headers['Content-Type']), 'application/json');
       assert.strictEqual(headers.Authorization, 'Bearer test-key');
+      assert.strictEqual(
+        headers['user-agent'],
+        'OTel-OTLP-Exporter-Node/0.0.0-test'
+      );
 
+      sender.destroy();
+    });
+
+    it('lets host user-agent override the OTel default', async () => {
+      /** @type {Record<string, string>|null} */
+      let headers = null;
+
+      const sender = new OtlpSender({
+        endpoint: `${COLLECTOR}${TRACES_PATH}`,
+        protocol: 'http/json',
+        headers: {
+          Authorization: 'Bearer test-key',
+          'user-agent': 'custom-exporter/1',
+        },
+        serviceName: 'svc',
+        scopeName: 'express_mcp',
+        scopeVersion: '0.0.0-test',
+        maxRetries: 0,
+        requestTimeoutMs: 2000,
+        request: async (_url, opts) => {
+          headers = opts.headers;
+        },
+      });
+
+      await sender.send([sampleSpan]);
+      assert.strictEqual(headers['user-agent'], 'custom-exporter/1');
       sender.destroy();
     });
 
@@ -113,6 +143,10 @@ describe('OtlpSender', () => {
 
       assert.strictEqual(headers['content-type'], 'application/x-protobuf');
       assert.strictEqual(headers.Authorization, 'Bearer proto-key');
+      assert.strictEqual(
+        headers['user-agent'],
+        'OTel-OTLP-Exporter-Node/0.0.0-test'
+      );
       assert.ok(Buffer.isBuffer(receivedBody));
       assert.ok(receivedBody.length > 0);
       assert.throws(() => JSON.parse(receivedBody.toString('utf8')));
@@ -126,6 +160,40 @@ describe('OtlpSender', () => {
       );
 
       sender.destroy();
+    });
+
+    it('does not follow HTTP redirects on export', async () => {
+      nock.disableNetConnect();
+      try {
+        const scope = nock(COLLECTOR)
+          .post(TRACES_PATH)
+          .reply(302, '', { Location: `${COLLECTOR}/login` });
+
+        const sender = new OtlpSender({
+          endpoint: `${COLLECTOR}${TRACES_PATH}`,
+          protocol: 'http/json',
+          headers: {},
+          serviceName: 'svc',
+          scopeName: 'express_mcp',
+          scopeVersion: '0.0.0-test',
+          maxRetries: 0,
+          requestTimeoutMs: 2000,
+        });
+
+        let err = null;
+        try {
+          await sender.send([sampleSpan]);
+        } catch (e) {
+          err = e;
+        }
+        assert.ok(err);
+        assert.match(String(err.message), /OTLP export redirected \(302\)/);
+        assert.ok(scope.isDone());
+        sender.destroy();
+      } finally {
+        nock.cleanAll();
+        nock.enableNetConnect();
+      }
     });
 
     it('retries on 503 with Retry-After', async () => {

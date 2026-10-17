@@ -123,12 +123,16 @@ See [Quick start (Phoenix Cloud)](#quick-start-phoenix-cloud). Summary:
 
 | Item | Value |
 | --- | --- |
-| Collector origin | Space URL, e.g. `https://app.phoenix.arize.com/s/<space-id>` |
+| Collector origin | Space URL, e.g. `https://app.phoenix.arize.com/s/<space-id>` (library appends `/v1/traces`) |
 | Auth | `Authorization: Bearer <api key>` |
 | Protocol | `http/protobuf` |
 | Project | `phx-project-name` header (Phoenix UI project; often `default`) |
 
-Create a key at your Phoenix workspace settings (e.g. `https://app.phoenix.arize.com/…/settings/api-keys`).
+Host `/v1/traces` on `app.phoenix.arize.com` (no `/s/<handle>`) returns **HTTP 410** — Phoenix apps are addressed at `/s/<handle>`.
+
+ExpressMcp sends `User-Agent: OTel-OTLP-Exporter-Node/<version>` on HTTP exports (host `headers['user-agent']` still wins). Cloudflare / GCLB in front of Phoenix Cloud treats generic clients such as `got`'s default User-Agent as UI scrapers and **302**s them to `/login` before uvicorn. HTTP exports set `followRedirect: false` and throw on 3xx so a mis-routed redirect fails open immediately instead of looping.
+
+Create a key at your Phoenix workspace settings (e.g. `https://app.phoenix.arize.com/…/settings/api-keys`). Space Settings → API Keys & Collector typically shows `PHOENIX_COLLECTOR_ENDPOINT=https://app.phoenix.arize.com/s/<space>` — pass that origin as `telemetry.endpoint`.
 
 `npm test` stays offline (hermetic mock collector).
 
