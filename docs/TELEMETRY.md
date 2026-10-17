@@ -10,7 +10,7 @@ There is **no separate LLM protocol or endpoint**. An “LLM trace” is a stand
 
 | `protocol` | Wire | Typical collectors |
 | --- | --- | --- |
-| `http/json` | `POST /v1/traces` with `Content-Type: application/json` | Proudfield, any OTLP/HTTP JSON receiver |
+| `http/json` | `POST /v1/traces` with `Content-Type: application/json` | OTLP Collector JSON receiver, Jaeger, any OTLP/HTTP JSON endpoint |
 | `http/protobuf` | `POST /v1/traces` with `Content-Type: application/x-protobuf` | Phoenix Cloud, many cloud OTLP collectors |
 | `grpc` | gRPC `TraceService/Export` (optional peer `@grpc/grpc-js`) | OpenTelemetry Collector on port 4317, etc. |
 
@@ -76,7 +76,9 @@ W3C `traceparent` stitches host APM spans and ExpressMcp GenAI spans into a sing
 
 That is why ExpressMcp **batches**, **truncates** (`maxAttributeLength`), and **redacts** (`sanitizeKeys`) before export — not because LLM tracing uses a different transport.
 
-## Quick start (Proudfield)
+## Quick start (Phoenix Cloud)
+
+Phoenix Cloud expects **http/protobuf**. JSON `POST /v1/traces` to the space origin is treated as the web app (HTTP 302 `/login`). ExpressMcp does not read `PHOENIX_*` or `OTEL_EXPORTER_OTLP_*` env vars — pass constructor options:
 
 ```javascript
 import express from 'express';
@@ -86,13 +88,12 @@ const expressMcp = new ExpressMcp({
   name: 'my-service',
   telemetry: {
     enabled: true,
-    protocol: 'http/json',
+    protocol: 'http/protobuf',
     // Origin only — library appends /v1/traces for HTTP protocols
-    endpoint: 'https://proudfield.example.com',
-    // Or full URL: 'https://proudfield.example.com/v1/traces'
+    endpoint: 'https://app.phoenix.arize.com/s/<space-id>',
     headers: {
-      Authorization: 'Bearer <ingest-api-key>',
-      // Or: 'X-API-Key': '<ingest-api-key>'
+      Authorization: 'Bearer <YOUR_PHOENIX_API_KEY>',
+      'phx-project-name': 'default',
     },
     serviceName: 'my-service',
   },
@@ -112,45 +113,17 @@ process.once('SIGTERM', async () => {
 });
 ```
 
-Proudfield maps the ingest API key to a **tenant**. ExpressMcp does not send `X-Tenant-ID`.
-
 Hosts that use a `config` package should pass `config.get('…')` into `options.telemetry` — this library never reads `process.env` for telemetry.
 
 ## Where to send it
 
-### Proudfield (intended sink)
-
-| Item | Value |
-| --- | --- |
-| Protocol | `http/json` (Proudfield also accepts `http/protobuf`) |
-| Method / path | `POST {origin}/v1/traces` |
-| Auth | `Authorization: Bearer <key>` or `X-API-Key: <key>` |
-
-Proudfield classifies a span as GenAI when attribute keys match `openinference.span.kind`, `gen_ai.*`, `llm.*`, or `traceloop.*` (compact `genai: true`). Stored rows keep ids, names, kind, timestamps, status — **not attribute values**. Prompts and tool payloads are on the wire for ingest, then stripped. Operators query `proudfield_traces` / `proudfield_bullmq`.
-
 ### Arize Phoenix Cloud
 
-Phoenix Cloud expects **http/protobuf**. JSON `POST /v1/traces` to the space origin is treated as the web app (HTTP 302 `/login`). ExpressMcp does not read `PHOENIX_*` env vars — pass constructor options:
-
-```javascript
-const expressMcp = new ExpressMcp({
-  name: 'my-service',
-  telemetry: {
-    enabled: true,
-    protocol: 'http/protobuf',
-    endpoint: 'https://app.phoenix.arize.com/s/<space-id>',
-    headers: {
-      Authorization: 'Bearer <YOUR_PHOENIX_API_KEY>',
-      'phx-project-name': 'default',
-    },
-    serviceName: 'my-service',
-  },
-});
-```
+See [Quick start (Phoenix Cloud)](#quick-start-phoenix-cloud). Summary:
 
 | Item | Value |
 | --- | --- |
-| Collector origin | Space URL, e.g. `https://app.phoenix.arize.com/s/brandon-svec` |
+| Collector origin | Space URL, e.g. `https://app.phoenix.arize.com/s/<space-id>` |
 | Auth | `Authorization: Bearer <api key>` |
 | Protocol | `http/protobuf` |
 | Project | `phx-project-name` header (Phoenix UI project; often `default`) |
@@ -230,7 +203,7 @@ curl -X POST http://localhost:3000/mcp \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hello","arguments":{"name":"Ada"}}}'
 ```
 
-(Use a real MCP session: initialize first, then pass `mcp-session-id`.) Confirm Proudfield (or your collector) received `traceId` = `4bf92f3577b34da6a3ce929d0e0e4736`.
+(Use a real MCP session: initialize first, then pass `mcp-session-id`.) Confirm Phoenix (or your collector) received `traceId` = `4bf92f3577b34da6a3ce929d0e0e4736`.
 
 ## Span attributes
 
