@@ -43,3 +43,12 @@ export { InMemoryStandaloneSessionStore } from './stores/inMemoryStandaloneSessi
 export { RedisStandaloneSessionStore } from './stores/redisStandaloneSessionStore.js';
 export { ContextAuthRequiredError, GoogleScopeGrantRequiredError } from './stores/errors.js';
 export { sanitizeHostContext } from './stores/sessionContext.js';
+
+export {
+  TelemetryEngine,
+  normalizeTelemetryConfig,
+  BatchSpanQueue,
+  OtlpSender,
+  parseTraceparent,
+  serializeTraceparent,
+} from './telemetry/index.js';

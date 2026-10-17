@@ -11,6 +11,7 @@
   "files": [
     "src",
     "docs/AUTH.md",
+    "docs/TELEMETRY.md",
     "README.md",
     "LICENSE"
   ],
@@ -58,16 +59,22 @@
     "ajv-formats": "^3.0.1",
     "express-session": "^1.19.0",
     "flexsearch": "^0.8.205",
+    "got": "^14.6.6",
     "jsonwebtoken": "^9.0.3",
-    "pino": "^9.9.0"
+    "pino": "^9.9.0",
+    "protobufjs": "^7.6.6"
   },
   "peerDependencies": {
     "@google/genai": "^1.0.0",
+    "@grpc/grpc-js": "^1.12.0",
     "express": "^4.18.0 || ^5.0.0",
     "ioredis": "^5.0.0"
   },
   "peerDependenciesMeta": {
     "@google/genai": {
+      "optional": true
+    },
+    "@grpc/grpc-js": {
       "optional": true
     },
     "ioredis": {
@@ -77,12 +84,12 @@
   "devDependencies": {
     "@eslint/js": "^9.33.0",
     "@google/genai": "^1.52.0",
-    "ioredis": "^5.6.1",
     "c8": "^8.0.1",
     "chai": "^4.3.10",
     "eslint": "^9.33.0",
     "express": "^5.2.1",
     "globals": "^16.3.0",
+    "ioredis": "^5.6.1",
     "mocha": "^11.7.6",
     "nodemon": "^3.1.10",
     "supertest": "^6.3.3",

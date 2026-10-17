@@ -74,7 +74,8 @@ tests/
 ├── testUtils.js            # Test utilities
 └── authTestUtils.js        # OAuth test helpers
 examples/
-└── example.js             # Example application with knowledge base
+├── example.js             # Example application with knowledge base
+└── example-with-auth.js   # OAuth SSO example
 ```
 
 ## Pull requests

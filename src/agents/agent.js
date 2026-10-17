@@ -1,5 +1,6 @@
 import { ToolExecution } from '../classes/toolExecution.js';
 import { HookBlockedError, HOOK_EXIT_CODES } from '../classes/baseHook.js';
+import { GeminiAdapter } from './geminiAdapter.js';
 
 const HISTORY_TOOL_TURNS = new Set(['full', 'omit', 'digest']);
 
@@ -272,6 +273,7 @@ export class Agent {
    * @param {import('pino').Logger} [options.logger]
    * @param {import('../classes/hookRegistry.js').HookRegistry|null} [options.hookRegistry]
    * @param {string} [options.permissionMode='default']
+   * @param {import('../telemetry/telemetryEngine.js').TelemetryEngine|null} [options.telemetryEngine]
    */
   constructor (options) {
     if (!options || !options.adapter) {
@@ -324,6 +326,8 @@ export class Agent {
       this.toolRegistry.hookRegistry = this.hookRegistry;
     }
     this.permissionMode = options.permissionMode ?? 'default';
+    /** @type {import('../telemetry/telemetryEngine.js').TelemetryEngine|null} */
+    this.telemetryEngine = options.telemetryEngine ?? null;
     /** @type {Set<string>} historyKeys that have already fired SessionStart */
     this._sessionStartKeys = new Set();
   }
@@ -527,8 +531,29 @@ export class Agent {
       logger: this.logger,
     };
     const permissionMode = options.permissionMode ?? this.permissionMode;
-    const traceparent = options.meta?.traceparent ?? null;
 
+    /** @type {import('../telemetry/telemetryEngine.js').ActiveSpan|null} */
+    let agentSpan = null;
+    if (this.telemetryEngine) {
+      try {
+        agentSpan = this.telemetryEngine.startAgentSpan({
+          prompt: text,
+          genAiSystem: this.adapter instanceof GeminiAdapter ? 'gemini' : 'custom',
+          traceparent: options.meta?.traceparent ?? null,
+          user,
+        });
+      } catch {
+        agentSpan = null;
+      }
+    }
+    let traceparent = agentSpan?.traceparent ?? options.meta?.traceparent ?? null;
+    /** @type {string|undefined} */
+    let finalReply;
+    let telemetryRounds = 0;
+    /** @type {Error|null} */
+    let telemetryError = null;
+
+    try {
     let promptText = text;
     const contextPrefixes = [];
 
@@ -899,6 +924,8 @@ export class Agent {
         'Agent processMessage completed',
       );
 
+      telemetryRounds = rounds;
+      finalReply = replyText;
       return replyText;
     }
 
@@ -931,7 +958,25 @@ export class Agent {
       },
       'Agent processMessage completed',
     );
+    telemetryRounds = rounds;
+    finalReply = exhaustedReply;
     return exhaustedReply;
+    } catch (err) {
+      telemetryError = err instanceof Error ? err : new Error(String(err));
+      throw err;
+    } finally {
+      if (agentSpan && this.telemetryEngine) {
+        try {
+          this.telemetryEngine.endAgentSpan(agentSpan, {
+            output: finalReply,
+            rounds: telemetryRounds,
+            error: telemetryError,
+          });
+        } catch {
+          // Telemetry must never affect agent execution
+        }
+      }
+    }
   }
 
   /**
