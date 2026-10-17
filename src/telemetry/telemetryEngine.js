@@ -190,6 +190,7 @@ export class TelemetryEngine {
    * @param {string} params.prompt
    * @param {string} [params.genAiSystem='custom']
    * @param {string|null} [params.traceparent]
+   * @param {string|null} [params.sessionId]
    * @param {object|null} [params.user]
    * @returns {ActiveSpan|null}
    */
@@ -203,6 +204,9 @@ export class TelemetryEngine {
         'gen_ai.system': params.genAiSystem || 'custom',
         'gen_ai.operation.name': 'process_message',
       };
+      if (params.sessionId) {
+        attributes['mcp.session_id'] = String(params.sessionId);
+      }
       if (params.user?.sub) {
         attributes['user.id'] = String(params.user.sub);
       }
@@ -229,11 +233,183 @@ export class TelemetryEngine {
   }
 
   /**
+   * Start an LLM span for one model generate round.
+   * @param {Object} params
+   * @param {string|null} [params.traceparent] - parent CHAIN traceparent
+   * @param {string} [params.genAiSystem='custom']
+   * @param {string} [params.model]
+   * @param {number} [params.round]
+   * @param {string|null} [params.sessionId]
+   * @returns {ActiveSpan|null}
+   */
+  startLlmSpan(params) {
+    try {
+      const { traceId, parentSpanId } = this._resolveParent(params.traceparent);
+      const spanId = generateSpanId();
+      /** @type {Record<string, string|number|boolean>} */
+      const attributes = {
+        'openinference.span.kind': 'LLM',
+        'gen_ai.system': params.genAiSystem || 'custom',
+        'gen_ai.operation.name': 'generateContent',
+      };
+      if (typeof params.model === 'string' && params.model) {
+        attributes['gen_ai.request.model'] = params.model;
+      }
+      if (typeof params.round === 'number') {
+        attributes['agent.round'] = params.round;
+      }
+      if (params.sessionId) {
+        attributes['mcp.session_id'] = String(params.sessionId);
+      }
+      return {
+        traceId,
+        spanId,
+        parentSpanId,
+        name: 'gen_ai.generateContent',
+        startTimeUnixNano: nowUnixNano(),
+        attributes,
+        traceparent: serializeTraceparent(traceId, spanId),
+      };
+    } catch (err) {
+      this.logger?.debug?.({ error: err?.message }, 'Failed to start LLM span');
+      return null;
+    }
+  }
+
+  /**
+   * End an LLM span and enqueue for export.
+   * @param {ActiveSpan|null} span
+   * @param {Object} [result]
+   * @param {{ promptTokens?: number, completionTokens?: number, totalTokens?: number }} [result.usage]
+   * @param {string} [result.thought]
+   * @param {unknown} [result.output]
+   * @param {Error|null} [result.error]
+   */
+  endLlmSpan(span, result = {}) {
+    if (!span) {
+      return;
+    }
+    try {
+      const usage = result.usage;
+      if (usage && typeof usage === 'object') {
+        if (typeof usage.promptTokens === 'number') {
+          span.attributes['gen_ai.usage.input_tokens'] = usage.promptTokens;
+        }
+        if (typeof usage.completionTokens === 'number') {
+          span.attributes['gen_ai.usage.output_tokens'] = usage.completionTokens;
+        }
+        if (typeof usage.totalTokens === 'number') {
+          span.attributes['gen_ai.usage.total_tokens'] = usage.totalTokens;
+        }
+      }
+      if (this.config.captureResults) {
+        if (typeof result.thought === 'string' && result.thought) {
+          span.attributes['gen_ai.thought'] = sanitizeToAttributeString(
+            result.thought,
+            this.config.sanitizeKeys,
+            this.config.maxAttributeLength
+          );
+        }
+        if (result.output !== undefined) {
+          span.attributes['output.value'] = sanitizeToAttributeString(
+            result.output,
+            this.config.sanitizeKeys,
+            this.config.maxAttributeLength
+          );
+        }
+      }
+      if (result.error) {
+        span.attributes['error.message'] = sanitizeToAttributeString(
+          result.error.message || String(result.error),
+          this.config.sanitizeKeys,
+          this.config.maxAttributeLength
+        );
+        this._enqueueCompleted(span, STATUS_ERROR);
+        return;
+      }
+      this._enqueueCompleted(span, STATUS_OK);
+    } catch (err) {
+      this.logger?.debug?.({ error: err?.message }, 'Failed to end LLM span');
+    }
+  }
+
+  /**
+   * Record a request_tools escalation as a TOOL child and annotate the CHAIN parent.
+   * @param {ActiveSpan|null} parentSpan - agent CHAIN span
+   * @param {Object} params
+   * @param {string} params.reason
+   * @param {string[]} params.grantedTools
+   * @param {number} [params.round]
+   * @param {string|null} [params.sessionId]
+   */
+  recordEscalation(parentSpan, params) {
+    if (!parentSpan) {
+      return;
+    }
+    try {
+      parentSpan.attributes['agent.escalated'] = true;
+      parentSpan.attributes['agent.escalation_reason'] = sanitizeToAttributeString(
+        params.reason,
+        this.config.sanitizeKeys,
+        this.config.maxAttributeLength
+      );
+
+      const spanId = generateSpanId();
+      /** @type {Record<string, string|number|boolean>} */
+      const attributes = {
+        'openinference.span.kind': 'TOOL',
+        'gen_ai.system': 'express_mcp',
+        'gen_ai.tool.name': 'request_tools',
+        'gen_ai.operation.name': 'execute_tool',
+        'mcp.tool.status': 'success',
+      };
+      if (typeof params.round === 'number') {
+        attributes['agent.round'] = params.round;
+      }
+      if (params.sessionId) {
+        attributes['mcp.session_id'] = String(params.sessionId);
+      }
+      if (this.config.captureParameters) {
+        attributes['input.value'] = sanitizeToAttributeString(
+          { reason: params.reason },
+          this.config.sanitizeKeys,
+          this.config.maxAttributeLength
+        );
+      }
+      if (this.config.captureResults) {
+        attributes['output.value'] = sanitizeToAttributeString(
+          { ok: true, tools: params.grantedTools },
+          this.config.sanitizeKeys,
+          this.config.maxAttributeLength
+        );
+      }
+      const now = nowUnixNano();
+      this.queue.enqueue({
+        traceId: parentSpan.traceId,
+        spanId,
+        parentSpanId: parentSpan.spanId,
+        name: 'mcp.tool.request_tools',
+        kind: SPAN_KIND_INTERNAL,
+        startTimeUnixNano: now,
+        endTimeUnixNano: now,
+        status: { code: STATUS_OK },
+        attributes: attributesToOtlp(attributes),
+      });
+    } catch (err) {
+      this.logger?.debug?.({ error: err?.message }, 'Failed to record escalation span');
+    }
+  }
+
+  /**
    * End an agent CHAIN span.
    * @param {ActiveSpan|null} span
    * @param {Object} result
    * @param {string} [result.output]
    * @param {number} [result.rounds]
+   * @param {number} [result.promptTokens]
+   * @param {number} [result.completionTokens]
+   * @param {number} [result.totalTokens]
+   * @param {number} [result.selfCorrections]
    * @param {Error|null} [result.error]
    */
   endAgentSpan(span, result = {}) {
@@ -243,6 +419,18 @@ export class TelemetryEngine {
     try {
       if (typeof result.rounds === 'number') {
         span.attributes['agent.rounds'] = result.rounds;
+      }
+      if (typeof result.promptTokens === 'number') {
+        span.attributes['gen_ai.usage.input_tokens'] = result.promptTokens;
+      }
+      if (typeof result.completionTokens === 'number') {
+        span.attributes['gen_ai.usage.output_tokens'] = result.completionTokens;
+      }
+      if (typeof result.totalTokens === 'number') {
+        span.attributes['gen_ai.usage.total_tokens'] = result.totalTokens;
+      }
+      if (typeof result.selfCorrections === 'number' && result.selfCorrections > 0) {
+        span.attributes['agent.self_corrections'] = result.selfCorrections;
       }
       if (result.error) {
         span.attributes['error.message'] = sanitizeToAttributeString(

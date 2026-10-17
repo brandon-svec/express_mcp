@@ -336,7 +336,7 @@ Responses follow JSON-RPC 2.0 with proper error handling.
 | Topic | Document |
 |-------|----------|
 | OAuth SSO, sessions, DCR, agent auth | [docs/AUTH.md](docs/AUTH.md) |
-| OTLP telemetry, Proudfield, sanitization | [docs/TELEMETRY.md](docs/TELEMETRY.md) |
+| OTLP telemetry, Phoenix, sanitization | [docs/TELEMETRY.md](docs/TELEMETRY.md) |
 | Host security (TLS, CORS, rate limits) | [SECURITY.md](SECURITY.md) |
 | Local development, tests, releasing | [CONTRIBUTING.md](CONTRIBUTING.md) |
 

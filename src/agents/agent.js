@@ -411,6 +411,105 @@ export class Agent {
   }
 
   /**
+   * Run adapter.generate wrapped in an LLM span; accumulate token totals.
+   * Fail-open: telemetry errors never interrupt generation.
+   *
+   * @param {Object} params
+   * @param {Array<object>} params.contents
+   * @param {string} params.systemInstruction
+   * @param {Array<object>} params.toolDeclarations
+   * @param {import('../telemetry/telemetryEngine.js').ActiveSpan|null} params.agentSpan
+   * @param {string|null} params.traceparent
+   * @param {string} params.sessionId
+   * @param {number} params.round
+   * @param {{ promptTokens: number, completionTokens: number, totalTokens: number }} params.tokenTotals
+   * @returns {Promise<object>}
+   * @private
+   */
+  async _generateWithTelemetry ({
+    contents,
+    systemInstruction,
+    toolDeclarations,
+    agentSpan,
+    traceparent,
+    sessionId,
+    round,
+    tokenTotals,
+  }) {
+    /** @type {import('../telemetry/telemetryEngine.js').ActiveSpan|null} */
+    let llmSpan = null;
+    if (this.telemetryEngine && agentSpan) {
+      try {
+        llmSpan = this.telemetryEngine.startLlmSpan({
+          traceparent,
+          genAiSystem: this.adapter instanceof GeminiAdapter ? 'gemini' : 'custom',
+          model: typeof this.adapter.model === 'string' ? this.adapter.model : undefined,
+          round,
+          sessionId,
+        });
+      } catch {
+        llmSpan = null;
+      }
+    }
+
+    try {
+      const response = await this.adapter.generate({
+        contents,
+        systemInstruction,
+        toolDeclarations,
+      });
+
+      if (response?.usage && typeof response.usage === 'object') {
+        if (typeof response.usage.promptTokens === 'number') {
+          tokenTotals.promptTokens += response.usage.promptTokens;
+        }
+        if (typeof response.usage.completionTokens === 'number') {
+          tokenTotals.completionTokens += response.usage.completionTokens;
+        }
+        if (typeof response.usage.totalTokens === 'number') {
+          tokenTotals.totalTokens += response.usage.totalTokens;
+        }
+      }
+
+      if (llmSpan && this.telemetryEngine) {
+        try {
+          let output;
+          if (Array.isArray(response.functionCalls) && response.functionCalls.length > 0) {
+            output = {
+              functionCalls: response.functionCalls.map((fc) => ({
+                name: fc.name,
+                args: fc.args,
+              })),
+            };
+          } else if (typeof response.text === 'string') {
+            output = response.text;
+          }
+          this.telemetryEngine.endLlmSpan(llmSpan, {
+            usage: response.usage,
+            thought: response.thought,
+            output,
+          });
+        } catch {
+          // Telemetry must never affect agent execution
+        }
+      }
+
+      return response;
+    } catch (err) {
+      if (llmSpan && this.telemetryEngine) {
+        try {
+          this.telemetryEngine.endLlmSpan(llmSpan, {
+            error: err instanceof Error ? err : new Error(String(err)),
+          });
+        } catch {
+          // Telemetry must never affect agent execution
+        }
+      }
+      throw err;
+    }
+  }
+
+  /**
    * @param {{
    *   toolNames?: string[],
    *   systemInstruction?: string,
@@ -540,6 +639,7 @@ export class Agent {
           prompt: text,
           genAiSystem: this.adapter instanceof GeminiAdapter ? 'gemini' : 'custom',
           traceparent: options.meta?.traceparent ?? null,
+          sessionId: historyKey,
           user,
         });
       } catch {
@@ -552,6 +652,8 @@ export class Agent {
     let telemetryRounds = 0;
     /** @type {Error|null} */
     let telemetryError = null;
+    const tokenTotals = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+    let selfCorrections = 0;
 
     try {
     let promptText = text;
@@ -650,10 +752,15 @@ export class Agent {
       toolDeclarations,
       activeSystemInstruction,
     );
-    let response = await this.adapter.generate({
+    let response = await this._generateWithTelemetry({
       contents: generateContents,
       systemInstruction: activeSystemInstruction,
       toolDeclarations,
+      agentSpan,
+      traceparent,
+      sessionId: historyKey,
+      round: 0,
+      tokenTotals,
     });
 
     let toolCalls = 0;
@@ -715,6 +822,18 @@ export class Agent {
             escalatedThisRound = true;
             escalationBudget = 1;
             toolDeclarations = this._declarationsForTurn(activeToolNames, false);
+            if (this.telemetryEngine && agentSpan) {
+              try {
+                this.telemetryEngine.recordEscalation(agentSpan, {
+                  reason,
+                  grantedTools: toTools,
+                  round,
+                  sessionId: historyKey,
+                });
+              } catch {
+                // Telemetry must never affect agent execution
+              }
+            }
             responseParts.push({
               functionResponse: {
                 name: REQUEST_TOOLS_NAME,
@@ -829,10 +948,15 @@ export class Agent {
           toolDeclarations,
           activeSystemInstruction,
         );
-        response = await this.adapter.generate({
+        response = await this._generateWithTelemetry({
           contents: generateContents,
           systemInstruction: activeSystemInstruction,
           toolDeclarations,
+          agentSpan,
+          traceparent,
+          sessionId: historyKey,
+          round: rounds,
+          tokenTotals,
         });
         continue;
       }
@@ -872,6 +996,10 @@ export class Agent {
                 text: correctionParts.join('\n') || 'Response rejected by Stop hook; please revise.',
               }],
             });
+            selfCorrections += 1;
+            if (agentSpan) {
+              agentSpan.attributes['agent.self_corrections'] = selfCorrections;
+            }
             rounds += 1;
             generateContents = ensureUserLeadingContents([...priorHistory, ...turnContents]);
             lastSizes = this._logGenerateRequest(
@@ -881,10 +1009,15 @@ export class Agent {
               toolDeclarations,
               activeSystemInstruction,
             );
-            response = await this.adapter.generate({
+            response = await this._generateWithTelemetry({
               contents: generateContents,
               systemInstruction: activeSystemInstruction,
               toolDeclarations,
+              agentSpan,
+              traceparent,
+              sessionId: historyKey,
+              round: rounds,
+              tokenTotals,
             });
             continue;
           }
@@ -967,11 +1100,23 @@ export class Agent {
     } finally {
       if (agentSpan && this.telemetryEngine) {
         try {
-          this.telemetryEngine.endAgentSpan(agentSpan, {
+          /** @type {Object} */
+          const endResult = {
             output: finalReply,
             rounds: telemetryRounds,
             error: telemetryError,
-          });
+            selfCorrections,
+          };
+          if (tokenTotals.promptTokens > 0) {
+            endResult.promptTokens = tokenTotals.promptTokens;
+          }
+          if (tokenTotals.completionTokens > 0) {
+            endResult.completionTokens = tokenTotals.completionTokens;
+          }
+          if (tokenTotals.totalTokens > 0) {
+            endResult.totalTokens = tokenTotals.totalTokens;
+          }
+          this.telemetryEngine.endAgentSpan(agentSpan, endResult);
         } catch {
           // Telemetry must never affect agent execution
         }

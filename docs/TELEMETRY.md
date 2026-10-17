@@ -10,7 +10,7 @@ There is **no separate LLM protocol or endpoint**. An “LLM trace” is a stand
 
 | `protocol` | Wire | Typical collectors |
 | --- | --- | --- |
-| `http/json` | `POST /v1/traces` with `Content-Type: application/json` | Proudfield, any OTLP/HTTP JSON receiver |
+| `http/json` | `POST /v1/traces` with `Content-Type: application/json` | OTLP Collector JSON receiver, Jaeger, any OTLP/HTTP JSON endpoint |
 | `http/protobuf` | `POST /v1/traces` with `Content-Type: application/x-protobuf` | Phoenix Cloud, many cloud OTLP collectors |
 | `grpc` | gRPC `TraceService/Export` (optional peer `@grpc/grpc-js`) | OpenTelemetry Collector on port 4317, etc. |
 
@@ -55,14 +55,16 @@ Both live in the same OTLP envelope (`resourceSpans` → `scopeSpans` → `spans
 W3C `traceparent` stitches host APM spans and ExpressMcp GenAI spans into a single journey:
 
 ```
-[SERVER]  POST /mcp                    ← host / Express auto-instrumentation (not this library)
- └── [CHAIN] agent.process_message    ← express_mcp (OpenInference CHAIN)
-      ├── [LLM] generateContent       ← model SDK / other instrumenters (not v1)
-      └── [TOOL] mcp.tool.kb_search   ← express_mcp (OpenInference TOOL)
-           └── [DB] flexsearch.search ← host instrumentation under the tool (not this library)
+[SERVER]  POST /mcp                         ← host / Express auto-instrumentation (not this library)
+ └── [CHAIN] agent.process_message         ← express_mcp (OpenInference CHAIN)
+      ├── [LLM] gen_ai.generateContent     ← express_mcp (one per model round)
+      ├── [TOOL] mcp.tool.kb_search        ← express_mcp (OpenInference TOOL)
+      ├── [TOOL] mcp.tool.request_tools    ← express_mcp (escalation)
+      └── [LLM] gen_ai.generateContent     ← …
+           └── [DB] flexsearch.search      ← host instrumentation under the tool (not this library)
 ```
 
-**This library emits CHAIN + TOOL only.** Host HTTP/DB spans and Gemini MODEL spans from other instrumenters nest in the **same** `traceId` when they propagate `traceparent`.
+**This library emits CHAIN, LLM, and TOOL spans** (including synthetic `mcp.tool.request_tools` for escalation). Host HTTP/DB spans nest in the **same** `traceId` when they propagate `traceparent`. LLM and TOOL children are siblings under the CHAIN (tools are not nested under LLM spans).
 
 ### Why LLM spans need extra care
 
@@ -74,7 +76,9 @@ W3C `traceparent` stitches host APM spans and ExpressMcp GenAI spans into a sing
 
 That is why ExpressMcp **batches**, **truncates** (`maxAttributeLength`), and **redacts** (`sanitizeKeys`) before export — not because LLM tracing uses a different transport.
 
-## Quick start (Proudfield)
+## Quick start (Phoenix Cloud)
+
+Phoenix Cloud expects **http/protobuf**. JSON `POST /v1/traces` to the space origin is treated as the web app (HTTP 302 `/login`). ExpressMcp does not read `PHOENIX_*` or `OTEL_EXPORTER_OTLP_*` env vars — pass constructor options:
 
 ```javascript
 import express from 'express';
@@ -84,13 +88,12 @@ const expressMcp = new ExpressMcp({
   name: 'my-service',
   telemetry: {
     enabled: true,
-    protocol: 'http/json',
+    protocol: 'http/protobuf',
     // Origin only — library appends /v1/traces for HTTP protocols
-    endpoint: 'https://proudfield.example.com',
-    // Or full URL: 'https://proudfield.example.com/v1/traces'
+    endpoint: 'https://app.phoenix.arize.com/s/<space-id>',
     headers: {
-      Authorization: 'Bearer <ingest-api-key>',
-      // Or: 'X-API-Key': '<ingest-api-key>'
+      Authorization: 'Bearer <YOUR_PHOENIX_API_KEY>',
+      'phx-project-name': 'default',
     },
     serviceName: 'my-service',
   },
@@ -110,45 +113,17 @@ process.once('SIGTERM', async () => {
 });
 ```
 
-Proudfield maps the ingest API key to a **tenant**. ExpressMcp does not send `X-Tenant-ID`.
-
 Hosts that use a `config` package should pass `config.get('…')` into `options.telemetry` — this library never reads `process.env` for telemetry.
 
 ## Where to send it
 
-### Proudfield (intended sink)
-
-| Item | Value |
-| --- | --- |
-| Protocol | `http/json` (Proudfield also accepts `http/protobuf`) |
-| Method / path | `POST {origin}/v1/traces` |
-| Auth | `Authorization: Bearer <key>` or `X-API-Key: <key>` |
-
-Proudfield classifies a span as GenAI when attribute keys match `openinference.span.kind`, `gen_ai.*`, `llm.*`, or `traceloop.*` (compact `genai: true`). Stored rows keep ids, names, kind, timestamps, status — **not attribute values**. Prompts and tool payloads are on the wire for ingest, then stripped. Operators query `proudfield_traces` / `proudfield_bullmq`.
-
 ### Arize Phoenix Cloud
 
-Phoenix Cloud expects **http/protobuf**. JSON `POST /v1/traces` to the space origin is treated as the web app (HTTP 302 `/login`). ExpressMcp does not read `PHOENIX_*` env vars — pass constructor options:
-
-```javascript
-const expressMcp = new ExpressMcp({
-  name: 'my-service',
-  telemetry: {
-    enabled: true,
-    protocol: 'http/protobuf',
-    endpoint: 'https://app.phoenix.arize.com/s/<space-id>',
-    headers: {
-      Authorization: 'Bearer <YOUR_PHOENIX_API_KEY>',
-      'phx-project-name': 'default',
-    },
-    serviceName: 'my-service',
-  },
-});
-```
+See [Quick start (Phoenix Cloud)](#quick-start-phoenix-cloud). Summary:
 
 | Item | Value |
 | --- | --- |
-| Collector origin | Space URL, e.g. `https://app.phoenix.arize.com/s/brandon-svec` |
+| Collector origin | Space URL, e.g. `https://app.phoenix.arize.com/s/<space-id>` |
 | Auth | `Authorization: Bearer <api key>` |
 | Protocol | `http/protobuf` |
 | Project | `phx-project-name` header (Phoenix UI project; often `default`) |
@@ -210,7 +185,9 @@ Tool spans become children of that parent (`traceId` preserved, `parentSpanId` =
 
 ### In-process agent
 
-`getAgent().processMessage(...)` emits a CHAIN span `agent.process_message`. Nested tool calls are children of that CHAIN. Paths with no inbound `traceparent` (e.g. Telegram bots) start a new root CHAIN.
+`getAgent().processMessage(...)` emits a CHAIN span `agent.process_message` with `mcp.session_id` set to the history key. Each `adapter.generate` round emits a child LLM span `gen_ai.generateContent`. Nested tool calls and `request_tools` escalations are TOOL siblings of those LLM spans under the same CHAIN. Paths with no inbound `traceparent` (e.g. Telegram bots) start a new root CHAIN.
+
+Manual Phoenix verification uses constructor config only — for example `telemetry: { enabled: true, protocol: 'http/protobuf', endpoint: 'https://app.phoenix.arize.com/s/<space>', headers: { Authorization: 'Bearer …', 'phx-project-name': '…' } }`. ExpressMcp does not read `OTEL_EXPORTER_OTLP_*`.
 
 ### Shutdown
 
@@ -226,7 +203,7 @@ curl -X POST http://localhost:3000/mcp \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hello","arguments":{"name":"Ada"}}}'
 ```
 
-(Use a real MCP session: initialize first, then pass `mcp-session-id`.) Confirm Proudfield (or your collector) received `traceId` = `4bf92f3577b34da6a3ce929d0e0e4736`.
+(Use a real MCP session: initialize first, then pass `mcp-session-id`.) Confirm Phoenix (or your collector) received `traceId` = `4bf92f3577b34da6a3ce929d0e0e4736`.
 
 ## Span attributes
 
@@ -252,9 +229,32 @@ curl -X POST http://localhost:3000/mcp \
 | `openinference.span.kind` | `"CHAIN"` |
 | `gen_ai.system` | `"gemini"` for `GeminiAdapter`, else `"custom"` |
 | `gen_ai.operation.name` | `"process_message"` |
+| `mcp.session_id` | Agent history key / session id |
 | `input.value` / `output.value` | Prompt and final reply (when capture flags are on) |
 | `agent.rounds` | Tool-loop round count |
+| `agent.escalated` | `true` when `request_tools` ran this turn |
+| `agent.escalation_reason` | Sanitized reason from `request_tools` |
+| `agent.self_corrections` | Count of Stop-hook reject-and-retry iterations (omitted when 0) |
+| `gen_ai.usage.input_tokens` / `output_tokens` / `total_tokens` | Sum across LLM rounds when the adapter reports usage |
 | `user.id` | JWT `sub` when present |
+
+### LLM (`gen_ai.generateContent`)
+
+| Attribute | Description |
+| --- | --- |
+| `openinference.span.kind` | `"LLM"` |
+| `gen_ai.system` | `"gemini"` or `"custom"` |
+| `gen_ai.operation.name` | `"generateContent"` |
+| `gen_ai.request.model` | Adapter model id when present |
+| `agent.round` | Zero-based generate round index |
+| `mcp.session_id` | Same session id as the CHAIN |
+| `gen_ai.usage.input_tokens` / `output_tokens` / `total_tokens` | Per-round usage when reported (omitted when absent) |
+| `gen_ai.thought` | Thinking-model reasoning text (`part.thought === true`), when `captureResults` is on |
+| `output.value` | Function-call summary or final text (when `captureResults` is on) |
+
+### Escalation TOOL (`mcp.tool.request_tools`)
+
+Synthetic TOOL child when the model calls `request_tools`. Also sets `agent.escalated` / `agent.escalation_reason` on the parent CHAIN for aggregate filters.
 
 Sensitive keys matching `sanitizeKeys` are replaced with `[REDACTED]`. Strings longer than `maxAttributeLength` are truncated.
 

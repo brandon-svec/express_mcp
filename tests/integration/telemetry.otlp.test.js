@@ -23,7 +23,10 @@ class HelloTool extends BaseTool {
   }
 
   async execute(args) {
-    return `Hello, ${args?.name || 'World'}`;
+    if (!args || typeof args.name !== 'string') {
+      throw new Error('name is required');
+    }
+    return `Hello, ${args.name}`;
   }
 }
 
@@ -99,9 +102,18 @@ async function startCollector() {
 function allSpans(batches) {
   const spans = [];
   for (const batch of batches) {
-    for (const rs of batch.resourceSpans || []) {
-      for (const ss of rs.scopeSpans || []) {
-        spans.push(...(ss.spans || []));
+    if (!Array.isArray(batch.resourceSpans)) {
+      throw new Error('export batch missing resourceSpans');
+    }
+    for (const rs of batch.resourceSpans) {
+      if (!Array.isArray(rs.scopeSpans)) {
+        throw new Error('resourceSpans missing scopeSpans');
+      }
+      for (const ss of rs.scopeSpans) {
+        if (!Array.isArray(ss.spans)) {
+          throw new Error('scopeSpans missing spans');
+        }
+        spans.push(...ss.spans);
       }
     }
   }
@@ -109,7 +121,14 @@ function allSpans(batches) {
 }
 
 function attr(span, key) {
-  return span.attributes?.find((a) => a.key === key)?.value;
+  if (!span || !Array.isArray(span.attributes)) {
+    throw new Error('span.attributes is required');
+  }
+  const found = span.attributes.find((a) => a.key === key);
+  if (!found) {
+    throw new Error(`missing attribute ${key} on ${span.name}`);
+  }
+  return found.value;
 }
 
 describe('Telemetry OTLP integration', () => {
@@ -214,11 +233,17 @@ describe('Telemetry OTLP integration', () => {
     const spans = allSpans(collector.batches);
     const chain = spans.find((s) => s.name === 'agent.process_message');
     const tool = spans.find((s) => s.name === 'mcp.tool.hello');
+    const llms = spans.filter((s) => s.name === 'gen_ai.generateContent');
     assert.ok(chain, 'expected CHAIN span');
     assert.ok(tool, 'expected TOOL span');
+    assert.isAtLeast(llms.length, 1, 'expected LLM child span');
     assert.strictEqual(attr(chain, 'openinference.span.kind').stringValue, 'CHAIN');
+    assert.strictEqual(attr(chain, 'mcp.session_id').stringValue, 'hist-1');
     assert.strictEqual(tool.traceId, chain.traceId);
     assert.strictEqual(tool.parentSpanId, chain.spanId);
+    assert.strictEqual(llms[0].traceId, chain.traceId);
+    assert.strictEqual(llms[0].parentSpanId, chain.spanId);
+    assert.strictEqual(attr(llms[0], 'openinference.span.kind').stringValue, 'LLM');
   });
 
   it('tools/call succeeds when OTLP collector rejects export (fail-open)', async () => {
