@@ -22,6 +22,10 @@ import { Agent } from '../agents/agent.js';
 import { GeminiAdapter } from '../agents/geminiAdapter.js';
 import { InMemoryHistoryStore } from '../agents/historyStore.js';
 import { AgentTool } from '../tools/agent.js';
+import {
+  normalizeTelemetryConfig,
+  TelemetryEngine,
+} from '../telemetry/index.js';
 
 const packageVersion = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')).version;
 
@@ -69,6 +73,23 @@ export class ExpressMcp {
    * @param {(toolName: string, args: object, result: unknown) => object} [options.agent.historyToolDigest] - Required when historyToolTurns is digest
    * @param {number} [options.agent.maxToolRounds=8] - Max tool-call rounds per message
    * @param {string} [options.permissionMode='default'] - Default permission mode for hooks (`default` or `ask_for_approval`)
+   * @param {Object} [options.telemetry] - Optional OTLP GenAI / OpenInference exporter (see docs/TELEMETRY.md)
+   * @param {boolean} [options.telemetry.enabled=false] - Enable span export when true
+   * @param {'http/json'|'http/protobuf'|'grpc'} [options.telemetry.protocol] - Required when enabled (no inference)
+   * @param {string} [options.telemetry.endpoint] - Collector URL (HTTP appends /v1/traces; gRPC does not)
+   * @param {Record<string, string>} [options.telemetry.headers] - Extra HTTP headers / gRPC metadata
+   * @param {string} [options.telemetry.serviceName] - Resource service.name (default: options.name or express-mcp)
+   * @param {boolean} [options.telemetry.captureParameters=true] - Include sanitized input.value
+   * @param {boolean} [options.telemetry.captureResults=true] - Include sanitized output.value
+   * @param {number} [options.telemetry.maxAttributeLength=4096] - Max chars for stringified attributes
+   * @param {string[]} [options.telemetry.sanitizeKeys] - Keys redacted to [REDACTED] at any depth
+   * @param {number} [options.telemetry.batchMaxSpans=50] - Flush when this many spans are queued
+   * @param {number} [options.telemetry.batchTimeoutMs=1000] - Max wait before background flush
+   * @param {number} [options.telemetry.maxQueueSize=1000] - Bounded queue; drops oldest when full
+   * @param {number} [options.telemetry.maxSockets=10] - Max keep-alive TCP sockets
+   * @param {number} [options.telemetry.keepAliveTimeoutMs=30000] - Keep-alive duration
+   * @param {number} [options.telemetry.maxRetries=3] - Retries on 429/502/503/504
+   * @param {number} [options.telemetry.requestTimeoutMs=5000] - Per-dispatch timeout
    */
   constructor(options = {}) {
     this.options = Object.assign({
@@ -95,13 +116,30 @@ export class ExpressMcp {
     // Initialize logger
     this._initializeLogger();
 
+    this.telemetryEngine = null;
+    const telemetryConfig = normalizeTelemetryConfig(this.options.telemetry, {
+      name: this.name,
+    });
+    if (telemetryConfig.enabled) {
+      this.telemetryEngine = new TelemetryEngine({
+        config: telemetryConfig,
+        packageVersion,
+        logger: this.logger,
+      });
+      this.logger.info(
+        { endpoint: telemetryConfig.endpoint, serviceName: telemetryConfig.serviceName },
+        'Telemetry enabled'
+      );
+    }
+
     this.hookRegistry = new HookRegistry({
       logger: this.logger
     });
     
     this.toolRegistry = new ToolRegistry({
       logger: this.logger,
-      hookRegistry: this.hookRegistry
+      hookRegistry: this.hookRegistry,
+      telemetryEngine: this.telemetryEngine,
     });
     this.knowledgeBase = new KnowledgeBase({
       logger: this.logger,
@@ -263,6 +301,7 @@ export class ExpressMcp {
       logger: this.logger,
       hookRegistry: this.hookRegistry,
       permissionMode: this.permissionMode,
+      telemetryEngine: this.telemetryEngine,
     });
 
     if (exposeTool) {
@@ -271,6 +310,17 @@ export class ExpressMcp {
     }
 
     this.logger.info('Agent enabled');
+  }
+
+  /**
+   * Drain the telemetry batch queue and destroy keep-alive sockets.
+   * Hosts should call this on process shutdown when telemetry is enabled.
+   * @returns {Promise<void>}
+   */
+  async close() {
+    if (this.telemetryEngine) {
+      await this.telemetryEngine.shutdown();
+    }
   }
 
   /**

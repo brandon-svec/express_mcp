@@ -18,6 +18,8 @@ export class ToolRegistry {
     this.nameMapping = new Map();
     /** @type {import('./hookRegistry.js').HookRegistry|null} */
     this.hookRegistry = options.hookRegistry || null;
+    /** @type {import('../telemetry/telemetryEngine.js').TelemetryEngine|null} */
+    this.telemetryEngine = options.telemetryEngine || null;
   }
 
   /**
@@ -280,102 +282,81 @@ export class ToolRegistry {
     const finalName = this.nameMapping.get(toolName) || toolName;
     const tool = this.tools.get(finalName);
     const { execution } = context;
-    
-    if (!tool) {
-      execution.setError(`Tool '${toolName}' not found`, -32601);
-      return execution;
-    }
-
-    // Validate input if tool has schema - handle validation errors separately
-    try {
-      tool.validateInput(args);
-    } catch (validationError) {
-      this._setValidationError(tool, validationError, execution);
-      return execution;
-    }
-
-    let effectiveArgs = args;
-    const contextParts = [];
-    const userMessages = [];
-    const permissionMode = context.permissionMode ?? 'default';
     const sessionId = context.sessionId ?? null;
     const meta = context.meta ?? {};
-    const hookContext = {
-      user: context.user ?? null,
-      hostContext: context.hostContext ?? null,
-      execution,
-      logger: this.logger,
-      extra: context.extra ?? null,
-      mcpServer: context.mcpServer ?? null
-    };
 
-    if (this.hookRegistry) {
-      const toolFields = {
-        session_id: sessionId ?? 'default',
-        permission_mode: permissionMode,
-        meta,
-        tool_name: finalName,
-        tool_input: effectiveArgs,
-        tool_annotations: tool.annotations ?? null
-      };
-
-      const preResult = await this.hookRegistry.runHooks('PreToolUse', toolFields, hookContext);
-      if (preResult.additionalContext) {
-        contextParts.push(preResult.additionalContext);
-      }
-      if (preResult.userMessages?.length) {
-        userMessages.push(...preResult.userMessages);
-      }
-      if (preResult.blocked) {
-        execution.setError(preResult.stderr || 'Tool call blocked by hook', -32002, {
-          hookBlocked: true,
-          hookEvent: preResult.hookEvent,
-          additionalContext: preResult.additionalContext,
-          userMessage: preResult.userMessages?.[0] ?? null
+    let toolSpan = null;
+    if (this.telemetryEngine) {
+      try {
+        toolSpan = this.telemetryEngine.startToolSpan({
+          toolName: finalName,
+          sessionId,
+          traceparent: meta.traceparent ?? null,
+          user: context.user ?? null,
+          args,
         });
-        execution.hookAdditionalContext = contextParts.length > 0 ? contextParts.join('\n') : null;
-        execution.hookUserMessages = userMessages;
+      } catch {
+        toolSpan = null;
+      }
+    }
+
+    try {
+      if (!tool) {
+        execution.setError(`Tool '${toolName}' not found`, -32601);
         return execution;
       }
-      if (preResult.decision === 'modify' && preResult.updatedInput !== undefined) {
-        effectiveArgs = preResult.updatedInput;
-        try {
-          tool.validateInput(effectiveArgs);
-        } catch (validationError) {
-          this._setValidationError(tool, validationError, execution);
-          return execution;
-        }
+
+      // Validate input if tool has schema - handle validation errors separately
+      try {
+        tool.validateInput(args);
+      } catch (validationError) {
+        this._setValidationError(tool, validationError, execution);
+        return execution;
       }
 
-      const permissionFields = {
-        ...toolFields,
-        tool_input: effectiveArgs
+      let effectiveArgs = args;
+      const contextParts = [];
+      const userMessages = [];
+      const permissionMode = context.permissionMode ?? 'default';
+      const hookContext = {
+        user: context.user ?? null,
+        hostContext: context.hostContext ?? null,
+        execution,
+        logger: this.logger,
+        extra: context.extra ?? null,
+        mcpServer: context.mcpServer ?? null
       };
-      if (this._shouldRunPermissionRequest(tool, permissionMode, permissionFields)) {
-        const permResult = await this.hookRegistry.runHooks(
-          'PermissionRequest',
-          permissionFields,
-          hookContext
-        );
-        if (permResult.additionalContext) {
-          contextParts.push(permResult.additionalContext);
+
+      if (this.hookRegistry) {
+        const toolFields = {
+          session_id: sessionId ?? 'default',
+          permission_mode: permissionMode,
+          meta,
+          tool_name: finalName,
+          tool_input: effectiveArgs,
+          tool_annotations: tool.annotations ?? null
+        };
+
+        const preResult = await this.hookRegistry.runHooks('PreToolUse', toolFields, hookContext);
+        if (preResult.additionalContext) {
+          contextParts.push(preResult.additionalContext);
         }
-        if (permResult.userMessages?.length) {
-          userMessages.push(...permResult.userMessages);
+        if (preResult.userMessages?.length) {
+          userMessages.push(...preResult.userMessages);
         }
-        if (permResult.blocked) {
-          execution.setError(permResult.stderr || 'Tool call blocked by hook', -32002, {
+        if (preResult.blocked) {
+          execution.setError(preResult.stderr || 'Tool call blocked by hook', -32002, {
             hookBlocked: true,
-            hookEvent: permResult.hookEvent,
-            additionalContext: permResult.additionalContext,
-            userMessage: permResult.userMessages?.[0] ?? null
+            hookEvent: preResult.hookEvent,
+            additionalContext: preResult.additionalContext,
+            userMessage: preResult.userMessages?.[0] ?? null
           });
           execution.hookAdditionalContext = contextParts.length > 0 ? contextParts.join('\n') : null;
           execution.hookUserMessages = userMessages;
           return execution;
         }
-        if (permResult.decision === 'modify' && permResult.updatedInput !== undefined) {
-          effectiveArgs = permResult.updatedInput;
+        if (preResult.decision === 'modify' && preResult.updatedInput !== undefined) {
+          effectiveArgs = preResult.updatedInput;
           try {
             tool.validateInput(effectiveArgs);
           } catch (validationError) {
@@ -383,72 +364,123 @@ export class ToolRegistry {
             return execution;
           }
         }
-      }
-    }
 
-    // Execute the tool - handle execution errors separately  
-    try {
-      const result = await tool.execute(effectiveArgs, context);
-      
-      // Always set the result unless it's an error status
-      // setResult() will automatically set status to 'success' if not already set
-      if (execution.status !== 'error') {
-        execution.setResult(result);
-      }
-    } catch (executionError) {
-      if (executionError instanceof HookBlockedError) {
-        execution.setError(executionError.stderr || executionError.message, -32002, {
-          hookBlocked: true,
-          hookEvent: executionError.hookEvent,
-          additionalContext: executionError.additionalContext,
-          userMessage: executionError.userMessage
-        });
-        if (executionError.additionalContext) {
-          contextParts.push(executionError.additionalContext);
+        const permissionFields = {
+          ...toolFields,
+          tool_input: effectiveArgs
+        };
+        if (this._shouldRunPermissionRequest(tool, permissionMode, permissionFields)) {
+          const permResult = await this.hookRegistry.runHooks(
+            'PermissionRequest',
+            permissionFields,
+            hookContext
+          );
+          if (permResult.additionalContext) {
+            contextParts.push(permResult.additionalContext);
+          }
+          if (permResult.userMessages?.length) {
+            userMessages.push(...permResult.userMessages);
+          }
+          if (permResult.blocked) {
+            execution.setError(permResult.stderr || 'Tool call blocked by hook', -32002, {
+              hookBlocked: true,
+              hookEvent: permResult.hookEvent,
+              additionalContext: permResult.additionalContext,
+              userMessage: permResult.userMessages?.[0] ?? null
+            });
+            execution.hookAdditionalContext = contextParts.length > 0 ? contextParts.join('\n') : null;
+            execution.hookUserMessages = userMessages;
+            return execution;
+          }
+          if (permResult.decision === 'modify' && permResult.updatedInput !== undefined) {
+            effectiveArgs = permResult.updatedInput;
+            try {
+              tool.validateInput(effectiveArgs);
+            } catch (validationError) {
+              this._setValidationError(tool, validationError, execution);
+              return execution;
+            }
+          }
         }
-        execution.hookAdditionalContext = contextParts.length > 0 ? contextParts.join('\n') : null;
-        execution.hookUserMessages = userMessages;
+      }
+
+      // Execute the tool - handle execution errors separately  
+      try {
+        const result = await tool.execute(effectiveArgs, context);
+        
+        // Always set the result unless it's an error status
+        // setResult() will automatically set status to 'success' if not already set
+        if (execution.status !== 'error') {
+          execution.setResult(result);
+        }
+      } catch (executionError) {
+        if (executionError instanceof HookBlockedError) {
+          execution.setError(executionError.stderr || executionError.message, -32002, {
+            hookBlocked: true,
+            hookEvent: executionError.hookEvent,
+            additionalContext: executionError.additionalContext,
+            userMessage: executionError.userMessage
+          });
+          if (executionError.additionalContext) {
+            contextParts.push(executionError.additionalContext);
+          }
+          execution.hookAdditionalContext = contextParts.length > 0 ? contextParts.join('\n') : null;
+          execution.hookUserMessages = userMessages;
+          return execution;
+        }
+        this.logger?.error?.(
+          { toolName: finalName, error: executionError.message, stack: executionError.stack },
+          'Tool execution failed'
+        );
+        execution.setError('Tool execution failed', -32603, null);
         return execution;
       }
-      this.logger?.error?.(
-        { toolName: finalName, error: executionError.message, stack: executionError.stack },
-        'Tool execution failed'
-      );
-      execution.setError('Tool execution failed', -32603, null);
+
+      if (execution.status === 'success' && this.hookRegistry) {
+        const postResult = await this.hookRegistry.runHooks(
+          'PostToolUse',
+          {
+            session_id: sessionId ?? 'default',
+            permission_mode: permissionMode,
+            meta,
+            tool_name: finalName,
+            tool_input: effectiveArgs,
+            tool_result: execution.result,
+            tool_annotations: tool.annotations ?? null,
+            duration_ms: execution.getDuration()
+          },
+          hookContext
+        );
+        if (postResult.additionalContext) {
+          contextParts.push(postResult.additionalContext);
+        }
+        if (postResult.userMessages?.length) {
+          userMessages.push(...postResult.userMessages);
+        }
+      }
+
+      if (contextParts.length > 0) {
+        execution.hookAdditionalContext = contextParts.join('\n');
+      }
+      if (userMessages.length > 0) {
+        execution.hookUserMessages = userMessages;
+      }
+
       return execution;
-    }
-
-    if (execution.status === 'success' && this.hookRegistry) {
-      const postResult = await this.hookRegistry.runHooks(
-        'PostToolUse',
-        {
-          session_id: sessionId ?? 'default',
-          permission_mode: permissionMode,
-          meta,
-          tool_name: finalName,
-          tool_input: effectiveArgs,
-          tool_result: execution.result,
-          tool_annotations: tool.annotations ?? null,
-          duration_ms: execution.getDuration()
-        },
-        hookContext
-      );
-      if (postResult.additionalContext) {
-        contextParts.push(postResult.additionalContext);
-      }
-      if (postResult.userMessages?.length) {
-        userMessages.push(...postResult.userMessages);
+    } finally {
+      if (toolSpan && this.telemetryEngine) {
+        try {
+          this.telemetryEngine.endToolSpan(toolSpan, {
+            status: execution.status,
+            result: execution.result,
+            errorData: execution.status === 'error' ? execution.getErrorData() : null,
+            durationMs: execution.getDuration(),
+          });
+        } catch {
+          // Telemetry must never affect tool execution
+        }
       }
     }
-
-    if (contextParts.length > 0) {
-      execution.hookAdditionalContext = contextParts.join('\n');
-    }
-    if (userMessages.length > 0) {
-      execution.hookUserMessages = userMessages;
-    }
-
-    return execution;
   }
 
   /**

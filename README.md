@@ -13,6 +13,7 @@ Register tools against your existing business logic, optionally add OAuth SSO (G
 - **Built-in knowledge base** — Full-text document search via FlexSearch (`kb_search`, `kb_list`, `kb_get`)
 - **Tool name prefixing** — Avoid collisions when multiple MCP services share a client
 - **Optional agent** — Gemini-backed `agent_ask` that can call your registered tools
+- **Optional telemetry** — OpenInference / GenAI OTLP spans for tool calls and agent turns (`http/json`, `http/protobuf`, or `grpc`; see [docs/TELEMETRY.md](docs/TELEMETRY.md))
 - **Pluggable hooks** — In-process `BaseHook` middleware for SessionStart, PreToolUse, PermissionRequest, PostToolUse, UserPromptSubmit, and Stop
 
 ## Requirements
@@ -283,7 +284,8 @@ const expressMcp = new ExpressMcp({
   },
   logger: customLoggerInstance, // Optional; overrides loggerOptions
   auth: { /* see docs/AUTH.md */ },
-  agent: { /* optional; see above */ }
+  agent: { /* optional; see above */ },
+  telemetry: { /* see docs/TELEMETRY.md */ }
 });
 ```
 
@@ -307,6 +309,7 @@ Management APIs (`hasRegisteredTool`, `unregisterTool`, etc.) accept the **origi
 - `getRegisteredToolCount()` / `clearRegisteredTools()`
 - `registerHook(hook)` / `unregisterHook(name)` — Lifecycle hooks
 - `hasRegisteredHook(name)` / `getRegisteredHooks()` / `getRegisteredHookCount()` / `clearRegisteredHooks()`
+- `close()` — Drain telemetry batch queue and destroy keep-alive sockets (call on process shutdown when telemetry is enabled)
 - `router()` — MCP-only Express router
 - `httpRouter()` — OAuth + MCP when auth is enabled
 
@@ -333,6 +336,7 @@ Responses follow JSON-RPC 2.0 with proper error handling.
 | Topic | Document |
 |-------|----------|
 | OAuth SSO, sessions, DCR, agent auth | [docs/AUTH.md](docs/AUTH.md) |
+| OTLP telemetry, Proudfield, sanitization | [docs/TELEMETRY.md](docs/TELEMETRY.md) |
 | Host security (TLS, CORS, rate limits) | [SECURITY.md](SECURITY.md) |
 | Local development, tests, releasing | [CONTRIBUTING.md](CONTRIBUTING.md) |
 

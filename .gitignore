@@ -9,6 +9,7 @@ tests/live/config.js
 !.cursor/rules/**
 .DS_Store
 *.tgz
+GEMINI.md
 
 env
 coverage/
