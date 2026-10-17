@@ -93,7 +93,8 @@ const expressMcp = new ExpressMcp({
     endpoint: 'https://app.phoenix.arize.com/s/<space-id>',
     headers: {
       Authorization: 'Bearer <YOUR_PHOENIX_API_KEY>',
-      'phx-project-name': 'default',
+      // Routes all spans in the request to this Phoenix project (HTTP OTLP only).
+      'x-project-name': 'default',
     },
     serviceName: 'my-service',
   },
@@ -123,12 +124,16 @@ See [Quick start (Phoenix Cloud)](#quick-start-phoenix-cloud). Summary:
 
 | Item | Value |
 | --- | --- |
-| Collector origin | Space URL, e.g. `https://app.phoenix.arize.com/s/<space-id>` |
+| Collector origin | Space URL, e.g. `https://app.phoenix.arize.com/s/<space-id>` (library appends `/v1/traces`) |
 | Auth | `Authorization: Bearer <api key>` |
 | Protocol | `http/protobuf` |
-| Project | `phx-project-name` header (Phoenix UI project; often `default`) |
+| Project | `x-project-name` HTTP header (or resource attr `openinference.project.name`; else `default`) |
 
-Create a key at your Phoenix workspace settings (e.g. `https://app.phoenix.arize.com/…/settings/api-keys`).
+Host `/v1/traces` on `app.phoenix.arize.com` (no `/s/<handle>`) returns **HTTP 410** — Phoenix apps are addressed at `/s/<handle>`.
+
+ExpressMcp sends `User-Agent: OTel-OTLP-Exporter-Node/<version>` on HTTP exports (host `headers['user-agent']` still wins). Cloudflare / GCLB in front of Phoenix Cloud treats generic clients such as `got`'s default User-Agent as UI scrapers and **302**s them to `/login` before uvicorn. HTTP exports set `followRedirect: false` and throw on 3xx so a mis-routed redirect fails open immediately instead of looping.
+
+Create a key at your Phoenix workspace settings (e.g. `https://app.phoenix.arize.com/…/settings/api-keys`). Space Settings → API Keys & Collector typically shows `PHOENIX_COLLECTOR_ENDPOINT=https://app.phoenix.arize.com/s/<space>` — pass that origin as `telemetry.endpoint`.
 
 `npm test` stays offline (hermetic mock collector).
 
@@ -187,7 +192,7 @@ Tool spans become children of that parent (`traceId` preserved, `parentSpanId` =
 
 `getAgent().processMessage(...)` emits a CHAIN span `agent.process_message` with `mcp.session_id` set to the history key. Each `adapter.generate` round emits a child LLM span `gen_ai.generateContent`. Nested tool calls and `request_tools` escalations are TOOL siblings of those LLM spans under the same CHAIN. Paths with no inbound `traceparent` (e.g. Telegram bots) start a new root CHAIN.
 
-Manual Phoenix verification uses constructor config only — for example `telemetry: { enabled: true, protocol: 'http/protobuf', endpoint: 'https://app.phoenix.arize.com/s/<space>', headers: { Authorization: 'Bearer …', 'phx-project-name': '…' } }`. ExpressMcp does not read `OTEL_EXPORTER_OTLP_*`.
+Manual Phoenix verification uses constructor config only — for example `telemetry: { enabled: true, protocol: 'http/protobuf', endpoint: 'https://app.phoenix.arize.com/s/<space>', headers: { Authorization: 'Bearer …', 'x-project-name': '…' } }`. ExpressMcp does not read `OTEL_EXPORTER_OTLP_*`. Do not use `phx-project-name` — Phoenix ignores it and spans land in `default`.
 
 ### Shutdown
 
