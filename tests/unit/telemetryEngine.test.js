@@ -221,6 +221,70 @@ describe('TelemetryEngine', () => {
     assert.isUndefined(llmOut.attributes.find((a) => a.key === 'gen_ai.usage.total_tokens'));
   });
 
+  it('startLlmSpan records contents and systemInstruction when captureParameters is on', async () => {
+    const { engine, exported } = createEngine();
+    const agent = engine.startAgentSpan({ prompt: 'raw' });
+    const contents = [
+      { role: 'user', parts: [{ text: 'PREFIX\nhello' }] },
+    ];
+    const llm = engine.startLlmSpan({
+      traceparent: agent.traceparent,
+      round: 0,
+      contents,
+      systemInstruction: 'You are helpful.',
+    });
+    assert.deepStrictEqual(JSON.parse(llm.attributes['input.value']), contents);
+    assert.strictEqual(llm.attributes['gen_ai.system_instruction'], 'You are helpful.');
+
+    engine.endLlmSpan(llm, { output: 'ok' });
+    engine.endAgentSpan(agent, { output: 'ok', rounds: 0 });
+    await engine.shutdown();
+
+    const llmOut = exported.find((s) => s.name === 'gen_ai.generateContent');
+    assert.deepStrictEqual(JSON.parse(attr(llmOut, 'input.value').stringValue), contents);
+    assert.strictEqual(attr(llmOut, 'gen_ai.system_instruction').stringValue, 'You are helpful.');
+  });
+
+  it('startLlmSpan omits input.value and system_instruction when captureParameters is false', async () => {
+    const { engine, exported } = createEngine({ captureParameters: false });
+    const agent = engine.startAgentSpan({ prompt: 'raw' });
+    const llm = engine.startLlmSpan({
+      traceparent: agent.traceparent,
+      round: 0,
+      contents: [{ role: 'user', parts: [{ text: 'secret' }] }],
+      systemInstruction: 'hidden',
+    });
+    assert.isUndefined(llm.attributes['input.value']);
+    assert.isUndefined(llm.attributes['gen_ai.system_instruction']);
+
+    engine.endLlmSpan(llm, { output: 'ok' });
+    engine.endAgentSpan(agent, { output: 'ok', rounds: 0 });
+    await engine.shutdown();
+
+    const llmOut = exported.find((s) => s.name === 'gen_ai.generateContent');
+    assert.isUndefined(llmOut.attributes.find((a) => a.key === 'input.value'));
+    assert.isUndefined(llmOut.attributes.find((a) => a.key === 'gen_ai.system_instruction'));
+  });
+
+  it('setSpanInput overwrites CHAIN input.value when captureParameters is on', () => {
+    const { engine } = createEngine();
+    const agent = engine.startAgentSpan({ prompt: 'raw' });
+    assert.strictEqual(agent.attributes['input.value'], 'raw');
+    const assembled = [
+      { role: 'user', parts: [{ text: 'PREFIX\nraw' }] },
+    ];
+    engine.setSpanInput(agent, assembled);
+    assert.deepStrictEqual(JSON.parse(agent.attributes['input.value']), assembled);
+  });
+
+  it('setSpanInput is a no-op when captureParameters is false', () => {
+    const { engine } = createEngine({ captureParameters: false });
+    const agent = engine.startAgentSpan({ prompt: 'raw' });
+    assert.isUndefined(agent.attributes['input.value']);
+    engine.setSpanInput(agent, [{ role: 'user', parts: [{ text: 'x' }] }]);
+    assert.isUndefined(agent.attributes['input.value']);
+  });
+
   it('recordEscalation emits TOOL child and annotates CHAIN parent', async () => {
     const { engine, exported } = createEngine();
     const agent = engine.startAgentSpan({

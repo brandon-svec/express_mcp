@@ -446,6 +446,8 @@ export class Agent {
           model: typeof this.adapter.model === 'string' ? this.adapter.model : undefined,
           round,
           sessionId,
+          contents,
+          systemInstruction,
         });
       } catch {
         llmSpan = null;
@@ -745,6 +747,9 @@ export class Agent {
 
     let toolDeclarations = this._declarationsForTurn(activeToolNames, escalation !== null);
     let generateContents = ensureUserLeadingContents([...priorHistory, ...turnContents]);
+    if (agentSpan && this.telemetryEngine) {
+      this.telemetryEngine.setSpanInput(agentSpan, generateContents);
+    }
     let lastSizes = this._logGenerateRequest(
       0,
       historyTurns,

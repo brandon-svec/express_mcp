@@ -97,8 +97,13 @@ export function parseGeminiGenerateContentResponse (response) {
     if (typeof meta.promptTokenCount === 'number') {
       usage.promptTokens = meta.promptTokenCount;
     }
-    if (typeof meta.candidatesTokenCount === 'number') {
-      usage.completionTokens = meta.candidatesTokenCount;
+    // Thinking models report reasoning in thoughtsTokenCount; include it in
+    // completion so output token totals are not undercounted.
+    const hasCandidates = typeof meta.candidatesTokenCount === 'number';
+    const hasThoughts = typeof meta.thoughtsTokenCount === 'number';
+    if (hasCandidates || hasThoughts) {
+      usage.completionTokens = (hasCandidates ? meta.candidatesTokenCount : 0)
+        + (hasThoughts ? meta.thoughtsTokenCount : 0);
     }
     if (typeof meta.totalTokenCount === 'number') {
       usage.totalTokens = meta.totalTokenCount;

@@ -235,12 +235,12 @@ curl -X POST http://localhost:3000/mcp \
 | `gen_ai.system` | `"gemini"` for `GeminiAdapter`, else `"custom"` |
 | `gen_ai.operation.name` | `"process_message"` |
 | `mcp.session_id` | Agent history key / session id |
-| `input.value` / `output.value` | Prompt and final reply (when capture flags are on) |
+| `input.value` / `output.value` | Assembled model request (prior history + ephemeral/hook prefixes + this turn) and final reply (when capture flags are on). Not the raw inbound string alone. |
 | `agent.rounds` | Tool-loop round count |
 | `agent.escalated` | `true` when `request_tools` ran this turn |
 | `agent.escalation_reason` | Sanitized reason from `request_tools` |
 | `agent.self_corrections` | Count of Stop-hook reject-and-retry iterations (omitted when 0) |
-| `gen_ai.usage.input_tokens` / `output_tokens` / `total_tokens` | Sum across LLM rounds when the adapter reports usage |
+| `gen_ai.usage.input_tokens` / `output_tokens` / `total_tokens` | Sum across LLM rounds when the adapter reports usage. Phoenix Cloud maps these to `llm.token_count.*`. |
 | `user.id` | JWT `sub` when present |
 
 ### LLM (`gen_ai.generateContent`)
@@ -253,7 +253,9 @@ curl -X POST http://localhost:3000/mcp \
 | `gen_ai.request.model` | Adapter model id when present |
 | `agent.round` | Zero-based generate round index |
 | `mcp.session_id` | Same session id as the CHAIN |
-| `gen_ai.usage.input_tokens` / `output_tokens` / `total_tokens` | Per-round usage when reported (omitted when absent) |
+| `input.value` | That round’s `contents` (JSON), including prior history and tool-loop turns (when `captureParameters` is on) |
+| `gen_ai.system_instruction` | Active system instruction for the round (when `captureParameters` is on) |
+| `gen_ai.usage.input_tokens` / `output_tokens` / `total_tokens` | Per-round usage when reported (omitted when absent). Completion includes Gemini `thoughtsTokenCount` for thinking models. Phoenix maps these to `llm.token_count.*`. |
 | `gen_ai.thought` | Thinking-model reasoning text (`part.thought === true`), when `captureResults` is on |
 | `output.value` | Function-call summary or final text (when `captureResults` is on) |
 
@@ -261,7 +263,7 @@ curl -X POST http://localhost:3000/mcp \
 
 Synthetic TOOL child when the model calls `request_tools`. Also sets `agent.escalated` / `agent.escalation_reason` on the parent CHAIN for aggregate filters.
 
-Sensitive keys matching `sanitizeKeys` are replaced with `[REDACTED]`. Strings longer than `maxAttributeLength` are truncated.
+Sensitive keys matching `sanitizeKeys` are replaced with `[REDACTED]`. Strings longer than `maxAttributeLength` are truncated (default **4096**). Hosts that inject large ephemeral prefixes (e.g. working-memory fences) should raise `telemetry.maxAttributeLength` or Phoenix will show truncated `input.value`.
 
 ## Fail-open / fail-fast / batching
 
