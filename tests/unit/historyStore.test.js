@@ -1,5 +1,8 @@
 import { assert } from 'chai';
-import { InMemoryHistoryStore } from '../../src/agents/historyStore.js';
+import {
+  InMemoryHistoryStore,
+  formatTurnsTranscript,
+} from '../../src/agents/historyStore.js';
 
 describe('InMemoryHistoryStore', () => {
   it('throws for invalid windowMinutes', () => {
@@ -101,23 +104,55 @@ describe('InMemoryHistoryStore', () => {
     store.append('k', [{ role: 'user', parts: [{ text: 'two' }] }], { recordedAt: t2 });
     store.append('k', [{ role: 'user', parts: [{ text: 'three' }] }], { recordedAt: t3 });
 
-    const turns = store.getTurns('k');
-    assert.strictEqual(turns.length, 2);
-    assert.strictEqual(turns[0].recordedAt.getTime(), t2.getTime());
-    assert.deepStrictEqual(turns[0].contents, [{ role: 'user', parts: [{ text: 'two' }] }]);
-    assert.strictEqual(turns[1].recordedAt.getTime(), t3.getTime());
-    assert.deepStrictEqual(turns[1].contents, [{ role: 'user', parts: [{ text: 'three' }] }]);
+    assert.deepStrictEqual(store.getTurns('k'), [
+      {
+        recordedAt: new Date(t2.getTime()),
+        contents: [{ role: 'user', parts: [{ text: 'two' }] }],
+      },
+      {
+        recordedAt: new Date(t3.getTime()),
+        contents: [{ role: 'user', parts: [{ text: 'three' }] }],
+      },
+    ]);
   });
 
   it('getTurns prunes turns older than the window', () => {
     const store = new InMemoryHistoryStore({ windowMinutes: 1 });
     const oldDate = new Date(Date.now() - 2 * 60 * 1000);
     store.append('k', [{ role: 'user', parts: [{ text: 'stale' }] }], { recordedAt: oldDate });
+    const beforeFresh = Date.now();
     store.append('k', [{ role: 'user', parts: [{ text: 'fresh' }] }]);
+    const afterFresh = Date.now();
 
     const turns = store.getTurns('k');
-    assert.strictEqual(turns.length, 1);
-    assert.strictEqual(turns[0].contents[0].parts[0].text, 'fresh');
+    assert.deepStrictEqual(turns.map((turn) => turn.contents), [
+      [{ role: 'user', parts: [{ text: 'fresh' }] }],
+    ]);
+    assert.isAtLeast(turns[0].recordedAt.getTime(), beforeFresh);
+    assert.isAtMost(turns[0].recordedAt.getTime(), afterFresh);
+  });
+
+  it('getTurns returns detached copies so reverse does not mutate store', () => {
+    const store = new InMemoryHistoryStore({ windowMinutes: 60 });
+    const t1 = new Date(Date.now() - 2 * 60 * 1000);
+    const t2 = new Date(Date.now() - 60 * 1000);
+    store.append('k', [{ role: 'user', parts: [{ text: 'one' }] }], { recordedAt: t1 });
+    store.append('k', [{ role: 'user', parts: [{ text: 'two' }] }], { recordedAt: t2 });
+
+    const copy = store.getTurns('k');
+    copy.reverse();
+    copy[0].contents.push({ role: 'model', parts: [{ text: 'mutated' }] });
+
+    assert.deepStrictEqual(store.getTurns('k'), [
+      {
+        recordedAt: new Date(t1.getTime()),
+        contents: [{ role: 'user', parts: [{ text: 'one' }] }],
+      },
+      {
+        recordedAt: new Date(t2.getTime()),
+        contents: [{ role: 'user', parts: [{ text: 'two' }] }],
+      },
+    ]);
   });
 
   it('getTurns throws for empty key', () => {
@@ -132,9 +167,16 @@ describe('InMemoryHistoryStore', () => {
     store.append('k', [{ role: 'user', parts: [{ text: 'date' }] }], { recordedAt: asDate });
     store.append('k', [{ role: 'user', parts: [{ text: 'millis' }] }], { recordedAt: asMillis });
 
-    const turns = store.getTurns('k');
-    assert.strictEqual(turns[0].recordedAt.getTime(), asDate.getTime());
-    assert.strictEqual(turns[1].recordedAt.getTime(), asMillis);
+    assert.deepStrictEqual(store.getTurns('k'), [
+      {
+        recordedAt: new Date(asDate.getTime()),
+        contents: [{ role: 'user', parts: [{ text: 'date' }] }],
+      },
+      {
+        recordedAt: new Date(asMillis),
+        contents: [{ role: 'user', parts: [{ text: 'millis' }] }],
+      },
+    ]);
   });
 
   it('append defaults recordedAt to now', () => {
@@ -143,7 +185,9 @@ describe('InMemoryHistoryStore', () => {
     store.append('k', [{ role: 'user', parts: [{ text: 'now' }] }]);
     const after = Date.now();
     const turns = store.getTurns('k');
-    assert.strictEqual(turns.length, 1);
+    assert.deepStrictEqual(turns.map((turn) => turn.contents), [
+      [{ role: 'user', parts: [{ text: 'now' }] }],
+    ]);
     assert.isAtLeast(turns[0].recordedAt.getTime(), before);
     assert.isAtMost(turns[0].recordedAt.getTime(), after);
   });
@@ -173,5 +217,62 @@ describe('InMemoryHistoryStore', () => {
     assert.deepStrictEqual(store.get('k'), [
       { role: 'user', parts: [{ text: 'hello' }] },
     ]);
+  });
+});
+
+describe('formatTurnsTranscript', () => {
+  it('renders newest-first with reversed contents and skips HOST_TOOLS', () => {
+    const now = new Date('2026-10-19T12:00:10.000Z');
+    const prior = new Date('2026-10-19T12:00:05.000Z');
+    const turns = [
+      {
+        recordedAt: prior,
+        contents: [
+          { role: 'user', parts: [{ text: 'I am in St Pete' }] },
+          {
+            role: 'model',
+            parts: [
+              { text: 'HOST_TOOLS: [{"tool":"echo"}]' },
+              { text: 'Set location to St Pete.' },
+            ],
+          },
+        ],
+      },
+      {
+        recordedAt: now,
+        contents: [
+          { role: 'user', parts: [{ text: 'I got pizza' }] },
+        ],
+      },
+    ];
+
+    assert.deepStrictEqual(
+      formatTurnsTranscript(turns, {
+        now,
+        userLabel: 'User',
+        modelLabel: 'Gillium',
+      }),
+      [
+        '0, User, I got pizza',
+        '-5, Gillium, Set location to St Pete.',
+        '-5, User, I am in St Pete',
+      ].join('\n'),
+    );
+  });
+
+  it('skips non-text parts', () => {
+    const now = new Date('2026-10-19T12:00:00.000Z');
+    assert.deepStrictEqual(
+      formatTurnsTranscript([
+        {
+          recordedAt: now,
+          contents: [
+            { role: 'user', parts: [{ functionCall: { name: 'echo', args: {} } }] },
+            { role: 'model', parts: [{ text: 'done' }] },
+          ],
+        },
+      ], { now }),
+      '0, Model, done',
+    );
   });
 });

@@ -1,11 +1,31 @@
 import { assert } from 'chai';
-import { Agent, REQUEST_TOOLS_NAME, canonicalizeValue, scrubRequestToolsFromContents } from '../../src/agents/agent.js';
+import {
+  Agent,
+  REQUEST_TOOLS_NAME,
+  canonicalizeValue,
+  scrubRequestToolsFromContents,
+  buildCapabilitiesCatalog,
+} from '../../src/agents/agent.js';
 import { ModelAdapter } from '../../src/agents/modelAdapter.js';
 import { InMemoryHistoryStore } from '../../src/agents/historyStore.js';
 import { ToolRegistry } from '../../src/classes/toolRegistry.js';
 import { BaseTool } from '../../src/classes/baseTool.js';
 import { BaseHook, HookBlockedError } from '../../src/classes/baseHook.js';
 import { HookRegistry } from '../../src/classes/hookRegistry.js';
+import {
+  buildCapabilitiesCatalog as exportedBuildCapabilitiesCatalog,
+  formatTurnsTranscript as exportedFormatTurnsTranscript,
+} from '../../src/index.js';
+
+/**
+ * @param {string} base
+ * @param {Array<{ name: string, description: string }>} activeTools
+ * @param {Array<{ name: string, description: string }>} availableTools
+ * @returns {string}
+ */
+function instructionWithCatalog (base, activeTools, availableTools) {
+  return `${base}\n\n${buildCapabilitiesCatalog({ activeTools, availableTools })}`;
+}
 
 class FakeAdapter extends ModelAdapter {
   constructor (script) {
@@ -1393,13 +1413,38 @@ describe('Agent', () => {
 
     assert.strictEqual(reply, 'done');
     assert.strictEqual(adapter.callIndex, 4);
-    assert.strictEqual(adapter.generateParams[0].systemInstruction, 'narrow');
-    assert.isTrue(
-      adapter.generateParams[0].toolDeclarations.some((d) => d.name === REQUEST_TOOLS_NAME),
+    assert.deepStrictEqual(
+      adapter.generateParams[0].systemInstruction,
+      instructionWithCatalog(
+        'narrow',
+        [{ name: 'echo', description: 'Echo tool' }],
+        [{ name: 'other', description: 'Other' }],
+      ),
     );
-    assert.strictEqual(adapter.generateParams[1].systemInstruction, 'full prompt');
+    const requestToolsDecl = adapter.generateParams[0].toolDeclarations.find(
+      (d) => d.name === REQUEST_TOOLS_NAME,
+    );
+    assert.deepStrictEqual(requestToolsDecl.parameters.properties.tools.items, {
+      type: 'string',
+      enum: ['other'],
+    });
+    assert.deepStrictEqual(
+      adapter.generateParams[1].systemInstruction,
+      instructionWithCatalog(
+        'full prompt',
+        [
+          { name: 'echo', description: 'Echo tool' },
+          { name: 'other', description: 'Other' },
+        ],
+        [],
+      ),
+    );
     assert.isFalse(
       adapter.generateParams[1].toolDeclarations.some((d) => d.name === REQUEST_TOOLS_NAME),
+    );
+    assert.isFalse(/AVAILABLE/.test(adapter.generateParams[1].systemInstruction));
+    assert.isFalse(
+      /call request_tools naming those tool/.test(adapter.generateParams[1].systemInstruction),
     );
 
     const stored = history.get('chat:1');
@@ -1588,14 +1633,17 @@ describe('Agent', () => {
     });
 
     assert.strictEqual(reply, 'done');
-    const round1Names = adapter.generateParams[1].toolDeclarations.map((d) => d.name);
-    assert.deepStrictEqual(round1Names, ['echo', 'other']);
+    assert.deepStrictEqual(
+      adapter.generateParams[1].toolDeclarations.map((d) => d.name),
+      ['echo', 'other'],
+    );
     assert.isFalse(
       adapter.generateParams[1].toolDeclarations.some((d) => d.name === REQUEST_TOOLS_NAME),
     );
     assert.isFalse(
       adapter.generateParams[1].toolDeclarations.some((d) => d.name === 'extra'),
     );
+    assert.isFalse(/AVAILABLE/.test(adapter.generateParams[1].systemInstruction));
 
     const escalateUser = adapter.generateParams[1].contents.find(
       (c) => c.role === 'user' && c.parts.some((p) => p.functionResponse),
@@ -1603,17 +1651,19 @@ describe('Agent', () => {
     const escalateResponse = escalateUser.parts.find(
       (p) => p.functionResponse && p.functionResponse.name === REQUEST_TOOLS_NAME,
     ).functionResponse.response;
-    assert.isTrue(escalateResponse.ok);
-    assert.deepStrictEqual(
-      escalateResponse.tools.map((t) => t.name),
-      ['echo', 'other'],
-    );
-    const otherDecl = escalateResponse.tools.find((t) => t.name === 'other');
-    assert.deepStrictEqual(otherDecl.parameters, {
-      type: 'object',
-      properties: { id: { type: 'string' } },
-      required: ['id'],
-      additionalProperties: false,
+    const otherDecl = canonicalizeValue({
+      name: 'other',
+      description: 'Other',
+      parameters: {
+        type: 'object',
+        properties: { id: { type: 'string' } },
+        required: ['id'],
+        additionalProperties: false,
+      },
+    });
+    assert.deepStrictEqual(escalateResponse, {
+      ok: true,
+      tools: [ECHO_TOOL_DECLARATION, otherDecl],
     });
   });
 
@@ -1684,14 +1734,24 @@ describe('Agent', () => {
 
     assert.strictEqual(reply, 'done');
     assert.deepStrictEqual(resolveCalls, [['other']]);
-    assert.strictEqual(adapter.generateParams[1].systemInstruction, 'resolved prompt');
+    assert.deepStrictEqual(
+      adapter.generateParams[1].systemInstruction,
+      instructionWithCatalog(
+        'resolved prompt',
+        [
+          { name: 'echo', description: 'Echo tool' },
+          { name: 'other', description: 'Other' },
+        ],
+        [],
+      ),
+    );
     assert.deepStrictEqual(
       adapter.generateParams[1].toolDeclarations.map((d) => d.name),
       ['echo', 'other'],
     );
   });
 
-  it('throws when request_tools tools is empty', async () => {
+  it('returns ok:false when request_tools tools is empty', async () => {
     class OtherTool extends BaseTool {
       constructor () {
         super('other', 'Other', {
@@ -1715,6 +1775,7 @@ describe('Agent', () => {
           args: { reason: 'need other', tools: [] },
         }],
       },
+      { text: 'retry later', functionCalls: null },
     ]);
     const agent = new Agent({
       adapter,
@@ -1723,19 +1784,32 @@ describe('Agent', () => {
       maxToolRounds: 2,
     });
 
-    await assertRejectsWithMessage(
-      () => agent.processMessage('chat:1', 'go', {
-        toolNames: ['echo'],
-        escalation: {
-          toolNames: ['echo', 'other'],
-          systemInstruction: 'full',
-        },
-      }),
-      'request_tools tools must be a non-empty array when provided',
+    const reply = await agent.processMessage('chat:1', 'go', {
+      toolNames: ['echo'],
+      escalation: {
+        toolNames: ['echo', 'other'],
+        systemInstruction: 'full',
+      },
+    });
+
+    assert.strictEqual(reply, 'retry later');
+    const escalateUser = adapter.generateParams[1].contents.find(
+      (c) => c.role === 'user' && c.parts.some((p) => p.functionResponse),
+    );
+    const escalateResponse = escalateUser.parts.find(
+      (p) => p.functionResponse && p.functionResponse.name === REQUEST_TOOLS_NAME,
+    ).functionResponse.response;
+    assert.deepStrictEqual(escalateResponse, {
+      ok: false,
+      error: 'request_tools tools must be a non-empty array when provided',
+      availableTools: ['echo', 'other'],
+    });
+    assert.isTrue(
+      adapter.generateParams[1].toolDeclarations.some((d) => d.name === REQUEST_TOOLS_NAME),
     );
   });
 
-  it('throws when request_tools tools names are outside the catalog', async () => {
+  it('returns ok:false when request_tools tools names are outside the catalog', async () => {
     class OtherTool extends BaseTool {
       constructor () {
         super('other', 'Other', {
@@ -1759,6 +1833,7 @@ describe('Agent', () => {
           args: { reason: 'need unknown', tools: ['missing'] },
         }],
       },
+      { text: 'retry later', functionCalls: null },
     ]);
     const agent = new Agent({
       adapter,
@@ -1767,16 +1842,26 @@ describe('Agent', () => {
       maxToolRounds: 2,
     });
 
-    await assertRejectsWithMessage(
-      () => agent.processMessage('chat:1', 'go', {
-        toolNames: ['echo'],
-        escalation: {
-          toolNames: ['echo', 'other'],
-          systemInstruction: 'full',
-        },
-      }),
-      'request_tools tools entry is not in the escalation catalog: missing',
+    const reply = await agent.processMessage('chat:1', 'go', {
+      toolNames: ['echo'],
+      escalation: {
+        toolNames: ['echo', 'other'],
+        systemInstruction: 'full',
+      },
+    });
+
+    assert.strictEqual(reply, 'retry later');
+    const escalateUser = adapter.generateParams[1].contents.find(
+      (c) => c.role === 'user' && c.parts.some((p) => p.functionResponse),
     );
+    const escalateResponse = escalateUser.parts.find(
+      (p) => p.functionResponse && p.functionResponse.name === REQUEST_TOOLS_NAME,
+    ).functionResponse.response;
+    assert.deepStrictEqual(escalateResponse, {
+      ok: false,
+      error: 'request_tools tools entry is not in the escalation catalog: missing',
+      availableTools: ['echo', 'other'],
+    });
   });
 
   it('throws when escalation.resolve is not a function', async () => {
@@ -1912,6 +1997,70 @@ describe('Agent', () => {
       }),
       'escalation.resolve toolNames must be a subset of the escalation catalog; unexpected extra',
     );
+  });
+
+  it('processMessage passes recordedAt to history.append', async () => {
+    const history = new InMemoryHistoryStore({ windowMinutes: 60 });
+    const adapter = new FakeAdapter([{ text: 'ok', functionCalls: null }]);
+    const agent = new Agent({
+      adapter,
+      toolRegistry: registry,
+      systemInstruction: 'test',
+      history,
+      maxToolRounds: 8,
+    });
+    const recordedAt = new Date(Date.now() - 45 * 1000);
+
+    await agent.processMessage('chat:1', 'hello', { recordedAt });
+
+    assert.deepStrictEqual(history.getTurns('chat:1'), [
+      {
+        recordedAt: new Date(recordedAt.getTime()),
+        contents: [
+          { role: 'user', parts: [{ text: 'hello' }] },
+          { role: 'model', parts: [{ text: 'ok' }] },
+        ],
+      },
+    ]);
+  });
+
+  it('recordAssistantMessage passes recordedAt to history.append', async () => {
+    const history = new InMemoryHistoryStore({ windowMinutes: 60 });
+    const agent = new Agent({
+      adapter: new FakeAdapter([]),
+      toolRegistry: registry,
+      systemInstruction: 'test',
+      history,
+      maxToolRounds: 8,
+    });
+    const recordedAt = new Date(Date.now() - 20 * 1000);
+
+    await agent.recordAssistantMessage('chat:1', 'reminder', { recordedAt });
+
+    assert.deepStrictEqual(history.getTurns('chat:1'), [
+      {
+        recordedAt: new Date(recordedAt.getTime()),
+        contents: [{ role: 'model', parts: [{ text: 'reminder' }] }],
+      },
+    ]);
+  });
+
+  it('does not append capabilities catalog without escalation', async () => {
+    const adapter = new FakeAdapter([{ text: 'ok', functionCalls: null }]);
+    const agent = new Agent({
+      adapter,
+      toolRegistry: registry,
+      systemInstruction: 'default',
+      maxToolRounds: 8,
+    });
+
+    await agent.processMessage('k', 'hi', { systemInstruction: 'override' });
+    assert.deepStrictEqual(adapter.generateParams[0].systemInstruction, 'override');
+  });
+
+  it('exports catalog and transcript helpers from package root', () => {
+    assert.strictEqual(exportedBuildCapabilitiesCatalog, buildCapabilitiesCatalog);
+    assert.strictEqual(typeof exportedFormatTurnsTranscript, 'function');
   });
 
   describe('lifecycle hooks', () => {
