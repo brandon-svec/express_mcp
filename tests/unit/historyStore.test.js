@@ -90,4 +90,88 @@ describe('InMemoryHistoryStore', () => {
     store.clear();
     assert.isEmpty(store.get('b'));
   });
+
+  it('getTurns returns pruned turns with timestamps', () => {
+    const store = new InMemoryHistoryStore({ windowMinutes: 60, maxTurns: 2 });
+    const now = Date.now();
+    const t1 = new Date(now - 3 * 60 * 1000);
+    const t2 = new Date(now - 2 * 60 * 1000);
+    const t3 = new Date(now - 1 * 60 * 1000);
+    store.append('k', [{ role: 'user', parts: [{ text: 'one' }] }], { recordedAt: t1 });
+    store.append('k', [{ role: 'user', parts: [{ text: 'two' }] }], { recordedAt: t2 });
+    store.append('k', [{ role: 'user', parts: [{ text: 'three' }] }], { recordedAt: t3 });
+
+    const turns = store.getTurns('k');
+    assert.strictEqual(turns.length, 2);
+    assert.strictEqual(turns[0].recordedAt.getTime(), t2.getTime());
+    assert.deepStrictEqual(turns[0].contents, [{ role: 'user', parts: [{ text: 'two' }] }]);
+    assert.strictEqual(turns[1].recordedAt.getTime(), t3.getTime());
+    assert.deepStrictEqual(turns[1].contents, [{ role: 'user', parts: [{ text: 'three' }] }]);
+  });
+
+  it('getTurns prunes turns older than the window', () => {
+    const store = new InMemoryHistoryStore({ windowMinutes: 1 });
+    const oldDate = new Date(Date.now() - 2 * 60 * 1000);
+    store.append('k', [{ role: 'user', parts: [{ text: 'stale' }] }], { recordedAt: oldDate });
+    store.append('k', [{ role: 'user', parts: [{ text: 'fresh' }] }]);
+
+    const turns = store.getTurns('k');
+    assert.strictEqual(turns.length, 1);
+    assert.strictEqual(turns[0].contents[0].parts[0].text, 'fresh');
+  });
+
+  it('getTurns throws for empty key', () => {
+    const store = new InMemoryHistoryStore({ windowMinutes: 60 });
+    assert.throws(() => store.getTurns(''), /history key is required/);
+  });
+
+  it('append accepts recordedAt as Date or epoch millis', () => {
+    const store = new InMemoryHistoryStore({ windowMinutes: 60 });
+    const asDate = new Date(Date.now() - 2 * 60 * 1000);
+    const asMillis = Date.now() - 60 * 1000;
+    store.append('k', [{ role: 'user', parts: [{ text: 'date' }] }], { recordedAt: asDate });
+    store.append('k', [{ role: 'user', parts: [{ text: 'millis' }] }], { recordedAt: asMillis });
+
+    const turns = store.getTurns('k');
+    assert.strictEqual(turns[0].recordedAt.getTime(), asDate.getTime());
+    assert.strictEqual(turns[1].recordedAt.getTime(), asMillis);
+  });
+
+  it('append defaults recordedAt to now', () => {
+    const store = new InMemoryHistoryStore({ windowMinutes: 60 });
+    const before = Date.now();
+    store.append('k', [{ role: 'user', parts: [{ text: 'now' }] }]);
+    const after = Date.now();
+    const turns = store.getTurns('k');
+    assert.strictEqual(turns.length, 1);
+    assert.isAtLeast(turns[0].recordedAt.getTime(), before);
+    assert.isAtMost(turns[0].recordedAt.getTime(), after);
+  });
+
+  it('append throws for invalid recordedAt', () => {
+    const store = new InMemoryHistoryStore({ windowMinutes: 60 });
+    const contents = [{ role: 'user', parts: [{ text: 'x' }] }];
+    assert.throws(
+      () => store.append('k', contents, { recordedAt: 'nope' }),
+      /recordedAt must be a valid Date or timestamp/,
+    );
+    assert.throws(
+      () => store.append('k', contents, { recordedAt: new Date(NaN) }),
+      /recordedAt must be a valid Date or timestamp/,
+    );
+    assert.throws(
+      () => store.append('k', contents, { recordedAt: Number.NaN }),
+      /recordedAt must be a valid Date or timestamp/,
+    );
+  });
+
+  it('get still returns flattened contents without recordedAt', () => {
+    const store = new InMemoryHistoryStore({ windowMinutes: 60 });
+    const recordedAt = new Date(Date.now() - 30 * 1000);
+    store.append('k', [{ role: 'user', parts: [{ text: 'hello' }] }], { recordedAt });
+
+    assert.deepStrictEqual(store.get('k'), [
+      { role: 'user', parts: [{ text: 'hello' }] },
+    ]);
+  });
 });

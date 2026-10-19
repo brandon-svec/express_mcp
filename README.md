@@ -251,7 +251,8 @@ Use `getAgent().processMessage(historyKey, text, options)` for inbound turns. Op
 
 - `toolNames: string[]` — only these registered tools are declared and callable for this turn (must pass `excludeTools` / `toolAllowlist`). An empty list omits the `tools` key from the Gemini request entirely (Gemini rejects `functionDeclarations: []` with `INVALID_ARGUMENT`).
 - `systemInstruction: string` — replace the agent constructor system instruction for this turn only.
-- `escalation: { toolNames, systemInstruction }` — requires `toolNames`. Adds a synthetic `request_tools` declaration; when the model calls it, the agent swaps to the escalation tool set and instruction for the remaining rounds, logs `Agent tool set escalated`, and grants **+1** `maxToolRounds` budget. `request_tools` call/response pairs are stripped from stored history (atomic pair scrub) so Gemini function-pairing stays valid on replay.
+- `includePriorHistoryInContents: boolean` — default `true`. When `false`, Gemini `contents` for this turn are only the current user turn (plus in-turn tool rounds); prior history is still read for SessionStart / logging and still appended at the end. Hosts that embed a compact transcript in `ephemeralPrefix` use this to avoid duplicating multi-turn `Content[]` JSON.
+- `escalation: { toolNames, systemInstruction, resolve? }` — requires `toolNames` (allowed catalog; must be a superset of the turn’s `toolNames`) and `systemInstruction` (full-set fallback). Adds a synthetic `request_tools` declaration. The model may call `request_tools({ reason, tools? })`: omit `tools` to grant the full catalog + static `systemInstruction`; pass `tools: string[]` to load those names (merged with the active set). Optional `resolve(requestedTools)` returns `{ toolNames, systemInstruction }` for host-controlled selective escalation (must remain a superset of the active set and a subset of the catalog). On success the functionResponse is `{ ok: true, tools: [{ name, description, parameters }, ...] }` (granted declarations). Escalation grants **+1** `maxToolRounds` budget. `request_tools` call/response pairs are stripped from stored history (atomic pair scrub) so Gemini function-pairing stays valid on replay.
 
 Optional agent constructor options:
 
@@ -263,6 +264,12 @@ Optional agent constructor options:
 `processMessage` also accepts optional `historyUserText`: when set, that string is stored for the user turn instead of `text` (the model still sees `text`, optionally with `ephemeralPrefix`).
 
 `httpRouter({ mcpPath, rootAliases, sessionOptions })`: set `rootAliases: false` for a secondary mount (e.g. `/mcp/admin`) so it does not register site-root OAuth AS aliases that would collide with the primary. Path-based discovery (`/.well-known/oauth-authorization-server{mcpPath}`) is always registered. Auth middleware is attached only to exact `/` MCP routes so a longer sibling path is not intercepted.
+
+The default in-memory history store (`InMemoryHistoryStore`) exposes:
+
+- `get(key)` — flattened Gemini `Content[]` for replay (timestamps stripped).
+- `getTurns(key)` — pruned `Array<{ recordedAt: Date, contents }>` so hosts can build relative-time transcripts.
+- `append(key, contents, { recordedAt? })` — optional `recordedAt` as a `Date` or epoch millis (defaults to `new Date()`).
 
 For **host-initiated agent speech** (proactive reminders, notifications) that must appear in the next turn’s conversation history without calling the LLM, use `getAgent().recordAssistantMessage(historyKey, text)`. That method requires a history store and throws if none is configured. When recorded model turns leave history starting with a `model` role, `processMessage` prepends a synthetic user `[continued]` turn before calling Gemini so contents remain valid. Schema and tool execution errors are returned to the model as `{ ok: false, error }` functionResponses so further `maxToolRounds` can fix args and retry (same recovery Cursor gets over MCP JSON-RPC).
 

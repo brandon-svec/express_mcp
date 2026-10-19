@@ -43,34 +43,82 @@ export class InMemoryHistoryStore {
 
   /**
    * @param {string} key
-   * @returns {Array<Object>}
+   * @returns {Array<{ recordedAt: Date, contents: Array<Object> }>}
+   * @private
    */
-  get (key) {
+  _keptTurns (key) {
     if (typeof key !== 'string' || !key) {
       throw new Error('history key is required');
     }
     const turns = this.turnsByKey.get(key) || [];
     const kept = this._pruneTurns(turns);
     this.turnsByKey.set(key, kept);
-    return kept.flatMap((turn) => turn.contents);
+    return kept;
+  }
+
+  /**
+   * @param {string} key
+   * @returns {Array<Object>}
+   */
+  get (key) {
+    return this._keptTurns(key).flatMap((turn) => turn.contents);
+  }
+
+  /**
+   * Pruned turns with timestamps (for hosts that build relative-time transcripts).
+   * @param {string} key
+   * @returns {Array<{ recordedAt: Date, contents: Array<Object> }>}
+   */
+  getTurns (key) {
+    return this._keptTurns(key);
+  }
+
+  /**
+   * @param {unknown} recordedAt
+   * @returns {Date}
+   * @private
+   */
+  _normalizeRecordedAt (recordedAt) {
+    if (recordedAt instanceof Date) {
+      if (Number.isNaN(recordedAt.getTime())) {
+        throw new Error('recordedAt must be a valid Date or timestamp');
+      }
+      return recordedAt;
+    }
+    if (typeof recordedAt === 'number' && Number.isFinite(recordedAt)) {
+      const date = new Date(recordedAt);
+      if (Number.isNaN(date.getTime())) {
+        throw new Error('recordedAt must be a valid Date or timestamp');
+      }
+      return date;
+    }
+    throw new Error('recordedAt must be a valid Date or timestamp');
   }
 
   /**
    * @param {string} key
    * @param {Array<Object>} contents
+   * @param {{ recordedAt?: Date|number }} [options]
    */
-  append (key, contents) {
+  append (key, contents, options = {}) {
     if (typeof key !== 'string' || !key) {
       throw new Error('history key is required');
     }
     if (!Array.isArray(contents)) {
       throw new Error('contents must be an array');
     }
+    if (options !== undefined && (typeof options !== 'object' || options === null || Array.isArray(options))) {
+      throw new Error('options must be a plain object when provided');
+    }
+    let recordedAt = new Date();
+    if (options.recordedAt !== undefined) {
+      recordedAt = this._normalizeRecordedAt(options.recordedAt);
+    }
     if (!this.turnsByKey.has(key)) {
       this.turnsByKey.set(key, []);
     }
     this.turnsByKey.get(key).push({
-      recordedAt: new Date(),
+      recordedAt,
       contents,
     });
     this.turnsByKey.set(key, this._pruneTurns(this.turnsByKey.get(key)));
