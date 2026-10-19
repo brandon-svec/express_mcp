@@ -37,7 +37,7 @@ export class ExpressMcp {
    * Create a new ExpressMcp instance
    * @param {Object} [options={}] - Configuration options
    * @param {string} [options.name] - Name for this ExpressMcp instance (used in logging)
-   * @param {string} [options.description] - Description to append to knowledge base tool descriptions
+   * @param {string} [options.description] - Description appended to knowledge base and agent_ask tool descriptions
    * @param {boolean} [options.enableKnowledgeBase=true] - Whether to register knowledge base tools (kb_search, kb_list, kb_get)
    * @param {Object} [options.logger] - Custom logger instance (must have info, warn, error, debug methods)
    * @param {Object} [options.loggerOptions] - Pino logger options (used only if logger is not provided)
@@ -60,6 +60,7 @@ export class ExpressMcp {
    * @param {Object} [options.agent] - Optional generic LLM agent over the tool registry
    * @param {boolean} [options.agent.enabled=false] - Enable the in-process agent
    * @param {boolean} [options.agent.exposeTool=true] - Register agent_ask MCP tool when enabled
+   * @param {string} [options.agent.description] - Custom base description for the agent_ask MCP tool
    * @param {boolean} [options.agent.allowUnauthenticated=false] - Allow agent when auth is disabled (default: require auth)
    * @param {string[]} [options.agent.toolAllowlist] - If set, agent may only call these tool names
    * @param {string[]} [options.agent.excludeTools] - Additional tool names the agent must not call (merged with session/agent_ask exclusions)
@@ -170,6 +171,7 @@ export class ExpressMcp {
     }
 
     this.agent = null;
+    this.agentTool = null;
     this._initializeAgent();
 
     this.logger.info('ExpressMcp instance initialized successfully');
@@ -305,8 +307,13 @@ export class ExpressMcp {
     });
 
     if (exposeTool) {
-      this.toolRegistry.register(new AgentTool(this.agent), this.name);
-      this.logger.info({ toolName: 'agent_ask' }, 'Agent MCP tool registered');
+      this.agentTool = new AgentTool(this.agent, {
+        description: agentOpts.description,
+        serviceDescription: this.description,
+        knowledgeBase: this.options.enableKnowledgeBase ? this.knowledgeBase : null,
+      });
+      this.toolRegistry.register(this.agentTool, this.name);
+      this.logger.info({ toolName: this.agentTool.name }, 'Agent MCP tool registered');
     }
 
     this.logger.info('Agent enabled');
@@ -551,6 +558,17 @@ export class ExpressMcp {
     if (this.options.enableKnowledgeBase) {
       this.knowledgeBase.refreshToolDescriptions();
     }
+    this._refreshAgentToolDescription();
+  }
+
+  /**
+   * Refresh agent_ask tool description from domain tools and KB tags
+   * @private
+   */
+  _refreshAgentToolDescription() {
+    if (this.agentTool && typeof this.agentTool.refreshDescription === 'function') {
+      this.agentTool.refreshDescription();
+    }
   }
 
   /**
@@ -587,6 +605,7 @@ export class ExpressMcp {
    */
   registerTool(toolInstance) {
     const result = this.toolRegistry.register(toolInstance);
+    this._refreshAgentToolDescription();
     this.logger.info({ toolName: toolInstance.name }, 'Tool registered successfully');
     return result;
   }
@@ -597,6 +616,7 @@ export class ExpressMcp {
    */
   unregisterTool(toolName) {
     const result = this.toolRegistry.unregister(toolName);
+    this._refreshAgentToolDescription();
     this.logger.info({ toolName }, 'Tool unregistered successfully');
     return result;
   }
@@ -631,6 +651,7 @@ export class ExpressMcp {
    */
   clearRegisteredTools() {
     const result = this.toolRegistry.clear();
+    this._refreshAgentToolDescription();
     this.logger.info('All registered tools cleared');
     return result;
   }

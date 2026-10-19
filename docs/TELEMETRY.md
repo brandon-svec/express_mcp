@@ -55,14 +55,17 @@ Both live in the same OTLP envelope (`resourceSpans` → `scopeSpans` → `spans
 W3C `traceparent` stitches host APM spans and ExpressMcp GenAI spans into a single journey:
 
 ```
-[SERVER]  POST /mcp                         ← host / Express auto-instrumentation (not this library)
- └── [CHAIN] agent.process_message         ← express_mcp (OpenInference CHAIN)
-      ├── [LLM] gen_ai.generateContent     ← express_mcp (one per model round)
-      ├── [TOOL] mcp.tool.kb_search        ← express_mcp (OpenInference TOOL)
-      ├── [TOOL] mcp.tool.request_tools    ← express_mcp (escalation)
-      └── [LLM] gen_ai.generateContent     ← …
-           └── [DB] flexsearch.search      ← host instrumentation under the tool (not this library)
+[SERVER]  POST /mcp                              ← host / Express auto-instrumentation (not this library)
+ └── [TOOL] mcp.tool.{name}_agent_ask            ← express_mcp (MCP tools/call)
+      └── [CHAIN] agent.process_message          ← express_mcp (OpenInference CHAIN)
+           ├── [LLM] gen_ai.generateContent      ← express_mcp (one per model round)
+           ├── [TOOL] mcp.tool.kb_search         ← express_mcp (inner agent tool call)
+           ├── [TOOL] mcp.tool.request_tools     ← express_mcp (escalation)
+           └── [LLM] gen_ai.generateContent      ← …
+                └── [DB] flexsearch.search       ← host instrumentation under the tool (not this library)
 ```
+
+Direct `tools/call` on a domain tool (no agent) still emits a single TOOL span under the inbound `traceparent`. Direct `getAgent().processMessage(...)` (no MCP `agent_ask`) starts at the CHAIN.
 
 **This library emits CHAIN, LLM, and TOOL spans** (including synthetic `mcp.tool.request_tools` for escalation). Host HTTP/DB spans nest in the **same** `traceId` when they propagate `traceparent`. LLM and TOOL children are siblings under the CHAIN (tools are not nested under LLM spans).
 
@@ -190,7 +193,9 @@ Tool spans become children of that parent (`traceId` preserved, `parentSpanId` =
 
 ### In-process agent
 
-`getAgent().processMessage(...)` emits a CHAIN span `agent.process_message` with `mcp.session_id` set to the history key. Each `adapter.generate` round emits a child LLM span `gen_ai.generateContent`. Nested tool calls and `request_tools` escalations are TOOL siblings of those LLM spans under the same CHAIN. Paths with no inbound `traceparent` (e.g. Telegram bots) start a new root CHAIN.
+`getAgent().processMessage(...)` emits a CHAIN span `agent.process_message` with `mcp.session_id` set to the history key. Pass `options.meta.traceparent` to parent that CHAIN under an upstream span. Each `adapter.generate` round emits a child LLM span `gen_ai.generateContent`. Nested tool calls and `request_tools` escalations are TOOL siblings of those LLM spans under the same CHAIN. Paths with no inbound `traceparent` (e.g. Telegram bots) start a new root CHAIN.
+
+When callers use MCP `tools/call` on `{name}_agent_ask`, `ToolRegistry.executeTool` writes the TOOL span’s `traceparent` into the execution context before `AgentTool` forwards it into `processMessage`, so the tree is inbound → TOOL `mcp.tool.{name}_agent_ask` → CHAIN → LLM / inner TOOL.
 
 Manual Phoenix verification uses constructor config only — for example `telemetry: { enabled: true, protocol: 'http/protobuf', endpoint: 'https://app.phoenix.arize.com/s/<space>', headers: { Authorization: 'Bearer …', 'x-project-name': '…' } }`. ExpressMcp does not read `OTEL_EXPORTER_OTLP_*`. Do not use `phx-project-name` — Phoenix ignores it and spans land in `default`.
 

@@ -283,6 +283,8 @@ Agent requires an authenticated user but none was provided.
 
 The optional `agent_ask` MCP tool forwards `context.user` from the HTTP request into the agent. Host integrations that drive the agent outside HTTP MCP (e.g. a chat bot) must resolve `session_id`, call `getVerifiedSession`, verify returned context, and pass the user payload as `user`.
 
+Multi-turn `agent_ask` history keys are scoped by `user.sub` when present (`mcp:{sub}:{conversation_id}`), or by `anon` when the request is unauthenticated (`mcp:anon:{conversation_id}`). Different authenticated users sharing the same `conversation_id` do not share history.
+
 Hosts may exclude tools from the agent via `agent.excludeTools` or by mutating `expressMcp.getAgent().excludeTools` after construction (e.g. exclude `{name}_session` so the model cannot revoke tokens from chat).
 
 ## Standalone session stores

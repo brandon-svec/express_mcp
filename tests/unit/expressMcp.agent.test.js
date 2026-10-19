@@ -1,11 +1,26 @@
 import { assert } from 'chai';
 import { ExpressMcp } from '../../src/classes/expressMcp.js';
 import { ModelAdapter } from '../../src/agents/modelAdapter.js';
+import { BaseTool } from '../../src/classes/baseTool.js';
 import { getTestExpressMcpOptions } from '../config.js';
 
 class StaticAdapter extends ModelAdapter {
   async generate () {
     return { text: 'ok', functionCalls: null };
+  }
+}
+
+class PingTool extends BaseTool {
+  constructor () {
+    super('ping', 'Ping tool', {
+      type: 'object',
+      properties: {},
+      additionalProperties: false,
+    });
+  }
+
+  async execute () {
+    return { ok: true };
   }
 }
 
@@ -29,12 +44,63 @@ describe('ExpressMcp agent option', () => {
     }));
 
     assert.isTrue(mcp.hasRegisteredTool('agent_ask'));
+    assert.strictEqual(mcp.agentTool.name, 'agent_ask');
     const agent = mcp.getAgent();
     assert.exists(agent);
     assert.notInclude(
       agent.buildToolDeclarations().map((d) => d.name),
       'agent_ask',
     );
+  });
+
+  it('registers prefixed agent_ask when name is set', () => {
+    const mcp = new ExpressMcp(getTestExpressMcpOptions({
+      name: 'widget',
+      enableKnowledgeBase: false,
+      agent: {
+        enabled: true,
+        allowUnauthenticated: true,
+        exposeTool: true,
+        systemInstruction: 'You are a test assistant.',
+        adapter: new StaticAdapter(),
+      },
+    }));
+
+    assert.isTrue(mcp.hasRegisteredTool('widget_agent_ask'));
+    assert.strictEqual(mcp.agentTool.name, 'widget_agent_ask');
+    const listed = mcp.getRegisteredTools().map((t) => t.name);
+    assert.deepStrictEqual(listed.includes('widget_agent_ask'), true);
+    assert.deepStrictEqual(listed.includes('agent_ask'), false);
+  });
+
+  it('refreshes agent_ask description when tools or KB documents change', async () => {
+    const mcp = new ExpressMcp(getTestExpressMcpOptions({
+      name: 'widget',
+      description: 'Widget domain service',
+      enableKnowledgeBase: true,
+      agent: {
+        enabled: true,
+        allowUnauthenticated: true,
+        exposeTool: true,
+        systemInstruction: 'You are a test assistant.',
+        adapter: new StaticAdapter(),
+      },
+    }));
+
+    assert.include(mcp.agentTool.description, 'Widget domain service');
+    assert.include(mcp.agentTool.description, 'Available capabilities:');
+    assert.include(mcp.agentTool.description, 'widget_kb_search');
+    assert.notInclude(mcp.agentTool.description, 'widget_agent_ask');
+
+    mcp.registerTool(new PingTool());
+    assert.include(mcp.agentTool.description, 'ping');
+
+    await mcp.addDocument('sop-1', {
+      title: 'SOP',
+      content: 'Do the thing',
+      tags: ['fulfillment'],
+    });
+    assert.include(mcp.agentTool.description, 'Knowledge base tags: fulfillment');
   });
 
   it('enables agent without agent_ask when exposeTool is false', () => {

@@ -247,7 +247,19 @@ const expressMcp = new ExpressMcp({
 
 Requires auth by default (`agent.allowUnauthenticated: true` to opt out). `@google/genai` is an optional peer dependency.
 
-Use `getAgent().processMessage(historyKey, text, options)` for inbound turns. Optional `options.ephemeralPrefix` is prepended to `text` for the model on **this turn only** (including tool rounds) and is **never** stored or replayed — hosts use it for working-memory fences and similar ephemeral context. Optional per-turn options:
+When `exposeTool` is true (default), the MCP tool `{name}_agent_ask` (or `agent_ask` when `name` is unset) is registered for inbound agent-to-agent delegation:
+
+| Argument | Required | Description |
+| --- | --- | --- |
+| `prompt` | yes | Natural-language question, goal, or instruction |
+| `conversation_id` | no | Opaque id (≤128 chars, no control characters) for multi-turn continuity. When omitted, a UUID is generated and returned |
+| `context` | no | Non-empty plain object of structured caller JSON. Injected for **this turn only** as `CALLER_CONTEXT:\n<canonical JSON>\n\n` via `ephemeralPrefix` — never stored in history |
+
+Return value: `{ reply, conversation_id }`. History keys are scoped per authenticated user as `mcp:{user.sub|anon}:{conversation_id}` so callers cannot collide across users.
+
+The tool description is refreshed when tools are registered/unregistered or knowledge-base documents change. It appends the server `description` (domain copy), callable tool names (`Available capabilities: …`), and knowledge-base tags when present. Optional `agent.description` overrides the base description string.
+
+Use `getAgent().processMessage(historyKey, text, options)` for inbound turns. Optional `options.ephemeralPrefix` is prepended to `text` for the model on **this turn only** (including tool rounds) and is **never** stored or replayed — hosts use it for working-memory fences and similar ephemeral context. Optional `options.meta.traceparent` parents the agent CHAIN span under an upstream TOOL/HTTP span. Optional per-turn options:
 
 - `toolNames: string[]` — only these registered tools are declared and callable for this turn (must pass `excludeTools` / `toolAllowlist`). An empty list omits the `tools` key from the Gemini request entirely (Gemini rejects `functionDeclarations: []` with `INVALID_ARGUMENT`).
 - `systemInstruction: string` — replace the agent constructor system instruction for this turn only.
@@ -261,6 +273,7 @@ Optional agent constructor options:
 - `historyToolDigest` — required when `historyToolTurns` is `'digest'`; must return a plain object.
 - `historyMaxTurns` — when using the default in-memory history, keep at most this many turns after TTL pruning (oldest first). Cannot be set together with a custom `agent.history`.
 - `excludeTools: string[]` — additional tool names the agent must not call (merged with built-in session / `agent_ask` exclusions).
+- `description: string` — custom base description for the `agent_ask` MCP tool (before domain / capabilities / tag enrichment).
 
 `processMessage` also accepts optional `historyUserText`: when set, that string is stored for the user turn instead of `text` (the model still sees `text`, optionally with `ephemeralPrefix`).
 
