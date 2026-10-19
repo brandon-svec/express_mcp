@@ -9,7 +9,7 @@ Full detail: [CONTRIBUTING.md](../../CONTRIBUTING.md) → **Publishing new versi
 
 ## When planning
 
-If a plan needs a new published package (hosts like Gillium will bump the dependency), include these steps explicitly. Do not treat missing local `npm whoami` as a blocker — publish is GitHub Actions on a published Release, not a local `npm publish`.
+If a plan needs a new published package (downstream consumers will bump the dependency), include these steps explicitly. Do not treat missing local `npm whoami` as a blocker — publish is GitHub Actions on a published Release, not a local `npm publish`.
 
 ## Release sequence
 
