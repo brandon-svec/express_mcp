@@ -36,7 +36,9 @@ export {
   Agent,
   ModelAdapter,
   GeminiAdapter,
-  InMemoryHistoryStore
+  InMemoryHistoryStore,
+  formatTurnsTranscript,
+  buildCapabilitiesCatalog,
 } from './agents/index.js';
 
 export { InMemoryStandaloneSessionStore } from './stores/inMemoryStandaloneSessionStore.js';

@@ -180,8 +180,10 @@ describe('Agent telemetry', () => {
     const expectedRound0 = [{ role: 'user', parts: [{ text: 'go' }] }];
     assert.deepStrictEqual(JSON.parse(attr(chain, 'input.value').stringValue), expectedRound0);
     assert.deepStrictEqual(JSON.parse(attr(llm0, 'input.value').stringValue), expectedRound0);
-    assert.strictEqual(attr(llm0, 'gen_ai.system_instruction').stringValue, 'narrow');
-    assert.strictEqual(attr(llm2, 'gen_ai.system_instruction').stringValue, 'full');
+    assert.match(attr(llm0, 'gen_ai.system_instruction').stringValue, /^narrow\n\nMCP CAPABILITIES/);
+    assert.match(attr(llm0, 'gen_ai.system_instruction').stringValue, /AVAILABLE/);
+    assert.match(attr(llm2, 'gen_ai.system_instruction').stringValue, /^full\n\nMCP CAPABILITIES/);
+    assert.isFalse(/AVAILABLE/.test(attr(llm2, 'gen_ai.system_instruction').stringValue));
   });
 
   it('records ephemeralPrefix and prior history on CHAIN and LLM input.value', async () => {

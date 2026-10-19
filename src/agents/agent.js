@@ -1,6 +1,7 @@
 import { ToolExecution } from '../classes/toolExecution.js';
 import { HookBlockedError, HOOK_EXIT_CODES } from '../classes/baseHook.js';
 import { GeminiAdapter } from './geminiAdapter.js';
+import { normalizeRecordedAt } from './historyStore.js';
 
 const HISTORY_TOOL_TURNS = new Set(['full', 'omit', 'digest']);
 
@@ -25,7 +26,7 @@ export const REQUEST_TOOLS_NAME = 'request_tools';
 const REQUEST_TOOLS_DECLARATION = {
   name: REQUEST_TOOLS_NAME,
   description:
-    'Request a broader tool set when the current tools cannot complete the user request. Call once with a short reason.',
+    'Request a broader tool set when the current tools cannot complete the user request. Call once with a short reason. Optionally name specific tools to load their exact parameter schemas.',
   parameters: {
     type: 'object',
     properties: {
@@ -33,11 +34,74 @@ const REQUEST_TOOLS_DECLARATION = {
         type: 'string',
         description: 'Why additional tools are needed',
       },
+      tools: {
+        type: 'array',
+        items: { type: 'string' },
+        description:
+          'Tool names to load (exact parameter schemas). Omit to load the full escalation set.',
+      },
     },
     required: ['reason'],
     additionalProperties: false,
   },
 };
+
+/**
+ * Build Active vs Available MCP capability catalog text for systemInstruction.
+ *
+ * @param {{
+ *   activeTools: Array<{ name: string, description: string }>,
+ *   availableTools: Array<{ name: string, description: string }>,
+ * }} input
+ * @returns {string}
+ */
+export function buildCapabilitiesCatalog (input) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    throw new Error('buildCapabilitiesCatalog requires an options object');
+  }
+  if (!Array.isArray(input.activeTools)) {
+    throw new Error('activeTools must be an array');
+  }
+  if (!Array.isArray(input.availableTools)) {
+    throw new Error('availableTools must be an array');
+  }
+  const lines = [
+    'MCP CAPABILITIES',
+    'ACTIVE (full parameter schemas loaded):',
+  ];
+  for (const tool of input.activeTools) {
+    if (!tool || typeof tool.name !== 'string' || tool.name.length === 0) {
+      throw new Error('activeTools entries must include a non-empty name');
+    }
+    if (typeof tool.description !== 'string') {
+      throw new Error(`activeTools entry ${tool.name} must include a string description`);
+    }
+    lines.push(`- ${tool.name}: ${tool.description}`);
+  }
+  if (input.availableTools.length > 0) {
+    lines.push(
+      'AVAILABLE (call request_tools with tools: ["name"] to load exact parameter schemas):',
+    );
+    for (const tool of input.availableTools) {
+      if (!tool || typeof tool.name !== 'string' || tool.name.length === 0) {
+        throw new Error('availableTools entries must include a non-empty name');
+      }
+      if (typeof tool.description !== 'string') {
+        throw new Error(`availableTools entry ${tool.name} must include a string description`);
+      }
+      lines.push(`- ${tool.name}: ${tool.description}`);
+    }
+    lines.push(
+      'If a user request needs an AVAILABLE capability, call request_tools naming those tool(s), then chain the required calls.',
+    );
+  } else {
+    lines.push('Chain the required tool calls across rounds to fulfill the user request.');
+  }
+  lines.push(
+    'Never guess tool names, parameters, or IDs. If the request is ambiguous, ask one brief clarifying question. If no listed capability can fulfill it, say you cannot perform that action.',
+  );
+  return lines.join('\n');
+}
 
 /**
  * Recursively sort object keys alphabetically for stable JSON serialization.
@@ -515,12 +579,26 @@ export class Agent {
    * @param {{
    *   toolNames?: string[],
    *   systemInstruction?: string,
-   *   escalation?: { toolNames: string[], systemInstruction: string },
+   *   escalation?: {
+   *     toolNames: string[],
+   *     systemInstruction: string,
+   *     resolve?: (requestedTools: string[]) => {
+   *       toolNames: string[],
+   *       systemInstruction: string,
+   *     },
+   *   },
    * }} options
    * @returns {{
    *   activeToolNames: string[]|undefined,
    *   activeSystemInstruction: string,
-   *   escalation: { toolNames: string[], systemInstruction: string }|null,
+   *   escalation: {
+   *     toolNames: string[],
+   *     systemInstruction: string,
+   *     resolve: ((requestedTools: string[]) => {
+   *       toolNames: string[],
+   *       systemInstruction: string,
+   *     })|null,
+   *   }|null,
    * }}
    * @private
    */
@@ -567,9 +645,17 @@ export class Agent {
           );
         }
       }
+      let resolve = null;
+      if (options.escalation.resolve !== undefined) {
+        if (typeof options.escalation.resolve !== 'function') {
+          throw new Error('escalation.resolve must be a function when provided');
+        }
+        resolve = options.escalation.resolve;
+      }
       escalation = {
         toolNames: options.escalation.toolNames,
         systemInstruction: options.escalation.systemInstruction,
+        resolve,
       };
     }
 
@@ -577,17 +663,203 @@ export class Agent {
   }
 
   /**
+   * @param {string[]} catalogToolNames
+   * @param {unknown} requestedTools
+   * @returns {string[]}
+   * @private
+   */
+  _validateRequestedTools (catalogToolNames, requestedTools) {
+    if (!Array.isArray(requestedTools)) {
+      throw new Error('request_tools tools must be an array of tool names when provided');
+    }
+    if (requestedTools.length === 0) {
+      throw new Error('request_tools tools must be a non-empty array when provided');
+    }
+    const catalogSet = new Set(catalogToolNames);
+    const seen = new Set();
+    /** @type {string[]} */
+    const unique = [];
+    for (const name of requestedTools) {
+      if (typeof name !== 'string' || name.length === 0) {
+        throw new Error('request_tools tools entries must be non-empty strings');
+      }
+      if (!catalogSet.has(name)) {
+        throw new Error(`request_tools tools entry is not in the escalation catalog: ${name}`);
+      }
+      if (!this._isToolAvailable(name)) {
+        throw new Error(`Tool is not available to the agent: ${name}`);
+      }
+      const registered = this.toolRegistry.getTools().some((tool) => tool.name === name);
+      if (!registered) {
+        throw new Error(`Tool is not registered: ${name}`);
+      }
+      if (seen.has(name)) {
+        continue;
+      }
+      seen.add(name);
+      unique.push(name);
+    }
+    return unique;
+  }
+
+  /**
+   * @param {string[]|undefined} activeToolNames
+   * @param {{
+   *   toolNames: string[],
+   *   systemInstruction: string,
+   *   resolve: ((requestedTools: string[]) => {
+   *     toolNames: string[],
+   *     systemInstruction: string,
+   *   })|null,
+   * }} escalation
+   * @param {object} args
+   * @returns {{ toolNames: string[], systemInstruction: string }}
+   * @private
+   */
+  _grantEscalationTools (activeToolNames, escalation, args) {
+    const requestedRaw = args && Object.prototype.hasOwnProperty.call(args, 'tools')
+      ? args.tools
+      : undefined;
+
+    if (requestedRaw === undefined) {
+      return {
+        toolNames: [...escalation.toolNames],
+        systemInstruction: escalation.systemInstruction,
+      };
+    }
+
+    const requested = this._validateRequestedTools(
+      escalation.toolNames,
+      requestedRaw,
+    );
+
+    if (escalation.resolve) {
+      const granted = escalation.resolve(requested);
+      if (!granted || typeof granted !== 'object' || Array.isArray(granted)) {
+        throw new Error('escalation.resolve must return a plain object');
+      }
+      if (!Array.isArray(granted.toolNames)) {
+        throw new Error('escalation.resolve must return toolNames as an array');
+      }
+      if (typeof granted.systemInstruction !== 'string' || !granted.systemInstruction.trim()) {
+        throw new Error('escalation.resolve must return a non-empty systemInstruction');
+      }
+      this.buildToolDeclarations(granted.toolNames);
+      const catalogSet = new Set(escalation.toolNames);
+      for (const name of granted.toolNames) {
+        if (!catalogSet.has(name)) {
+          throw new Error(
+            `escalation.resolve toolNames must be a subset of the escalation catalog; unexpected ${name}`,
+          );
+        }
+      }
+      const grantedSet = new Set(granted.toolNames);
+      const active = activeToolNames || [];
+      for (const name of active) {
+        if (!grantedSet.has(name)) {
+          throw new Error(
+            `escalation.resolve toolNames must be a superset of the active tool set; missing ${name}`,
+          );
+        }
+      }
+      return {
+        toolNames: [...granted.toolNames],
+        systemInstruction: granted.systemInstruction,
+      };
+    }
+
+    const merged = [];
+    const seen = new Set();
+    for (const name of [...(activeToolNames || []), ...requested]) {
+      if (seen.has(name)) {
+        continue;
+      }
+      seen.add(name);
+      merged.push(name);
+    }
+    return {
+      toolNames: merged,
+      systemInstruction: escalation.systemInstruction,
+    };
+  }
+
+  /**
+   * @param {string[]} toolNames
+   * @returns {Array<{ name: string, description: string }>}
+   * @private
+   */
+  _toolsByNames (toolNames) {
+    if (!Array.isArray(toolNames)) {
+      throw new Error('toolNames must be an array');
+    }
+    return toolNames.map((name) => {
+      if (typeof name !== 'string' || name.length === 0) {
+        throw new Error('toolNames entries must be non-empty strings');
+      }
+      if (!this._isToolAvailable(name)) {
+        throw new Error(`Tool is not available to the agent: ${name}`);
+      }
+      const tool = this.toolRegistry.getTools().find((entry) => entry.name === name);
+      if (!tool) {
+        throw new Error(`Tool is not registered: ${name}`);
+      }
+      return { name: tool.name, description: tool.description };
+    });
+  }
+
+  /**
+   * @param {string} baseInstruction
+   * @param {string[]|undefined} activeToolNames
+   * @param {string[]} availableToolNames
+   * @returns {string}
+   * @private
+   */
+  _systemInstructionWithCatalog (baseInstruction, activeToolNames, availableToolNames) {
+    const catalog = buildCapabilitiesCatalog({
+      activeTools: this._toolsByNames(activeToolNames || []),
+      availableTools: this._toolsByNames(availableToolNames),
+    });
+    return `${baseInstruction}\n\n${catalog}`;
+  }
+
+  /**
    * @param {string[]|undefined} toolNames
    * @param {boolean} includeRequestTools
+   * @param {{ toolNames: string[] }|null} [escalation]
    * @returns {Array<object>}
    * @private
    */
-  _declarationsForTurn (toolNames, includeRequestTools) {
+  _declarationsForTurn (toolNames, includeRequestTools, escalation = null) {
     const declarations = this.buildToolDeclarations(toolNames);
     if (includeRequestTools) {
-      declarations.push(canonicalizeValue(REQUEST_TOOLS_DECLARATION));
+      const declaration = JSON.parse(JSON.stringify(REQUEST_TOOLS_DECLARATION));
+      if (escalation) {
+        const activeSet = new Set(toolNames || []);
+        const unloaded = escalation.toolNames.filter((name) => !activeSet.has(name));
+        if (unloaded.length > 0) {
+          declaration.parameters.properties.tools.items = {
+            type: 'string',
+            enum: unloaded,
+          };
+        }
+      }
+      declarations.push(canonicalizeValue(declaration));
     }
     return declarations;
+  }
+
+  /**
+   * @param {Array<object>} priorHistory
+   * @param {Array<object>} turnContents
+   * @param {boolean} includePriorHistoryInContents
+   * @returns {Array<object>}
+   * @private
+   */
+  _generateContents (priorHistory, turnContents, includePriorHistoryInContents) {
+    const contents = includePriorHistoryInContents
+      ? [...priorHistory, ...turnContents]
+      : [...turnContents];
+    return ensureUserLeadingContents(contents);
   }
 
   /**
@@ -599,9 +871,18 @@ export class Agent {
    *   ephemeralPrefix?: string,
    *   toolNames?: string[],
    *   systemInstruction?: string,
-   *   escalation?: { toolNames: string[], systemInstruction: string },
+   *   escalation?: {
+   *     toolNames: string[],
+   *     systemInstruction: string,
+   *     resolve?: (requestedTools: string[]) => {
+   *       toolNames: string[],
+   *       systemInstruction: string,
+   *     },
+   *   },
    *   appendHistory?: boolean,
+   *   includePriorHistoryInContents?: boolean,
    *   historyUserText?: string,
+   *   recordedAt?: Date|number,
    * }} [options]
    * @returns {Promise<string>}
    */
@@ -624,7 +905,19 @@ export class Agent {
     if (options.appendHistory !== undefined && typeof options.appendHistory !== 'boolean') {
       throw new Error('appendHistory must be a boolean when provided');
     }
+    if (
+      options.includePriorHistoryInContents !== undefined
+      && typeof options.includePriorHistoryInContents !== 'boolean'
+    ) {
+      throw new Error('includePriorHistoryInContents must be a boolean when provided');
+    }
+    /** @type {{ recordedAt?: Date }} */
+    const historyAppendOptions = {};
+    if (options.recordedAt !== undefined) {
+      historyAppendOptions.recordedAt = normalizeRecordedAt(options.recordedAt);
+    }
     const appendHistory = options.appendHistory !== false;
+    const includePriorHistoryInContents = options.includePriorHistoryInContents !== false;
     const historyUserTextExplicit = options.historyUserText !== undefined;
     const hookContext = {
       user,
@@ -736,17 +1029,41 @@ export class Agent {
     } = this._resolveTurnOptions(options);
 
     let activeToolNames = initialToolNames;
-    let activeSystemInstruction = initialSystemInstruction;
+    let hostSystemInstruction = initialSystemInstruction;
     let escalated = false;
     let escalationBudget = 0;
+
+    const resolveSystemInstruction = () => {
+      if (!escalation) {
+        return hostSystemInstruction;
+      }
+      const activeSet = new Set(activeToolNames || []);
+      const availableToolNames = escalated
+        ? []
+        : escalation.toolNames.filter((name) => !activeSet.has(name));
+      return this._systemInstructionWithCatalog(
+        hostSystemInstruction,
+        activeToolNames,
+        availableToolNames,
+      );
+    };
 
     const historyTurns = priorHistory.length;
     const turnContents = [
       { role: 'user', parts: [{ text: modelUserText }] },
     ];
 
-    let toolDeclarations = this._declarationsForTurn(activeToolNames, escalation !== null);
-    let generateContents = ensureUserLeadingContents([...priorHistory, ...turnContents]);
+    let activeSystemInstruction = resolveSystemInstruction();
+    let toolDeclarations = this._declarationsForTurn(
+      activeToolNames,
+      escalation !== null,
+      escalation,
+    );
+    let generateContents = this._generateContents(
+      priorHistory,
+      turnContents,
+      includePriorHistoryInContents,
+    );
     if (agentSpan && this.telemetryEngine) {
       this.telemetryEngine.setSpanInput(agentSpan, generateContents);
     }
@@ -808,10 +1125,40 @@ export class Agent {
             }
             const reason = fc.args && typeof fc.args.reason === 'string' ? fc.args.reason : '';
             if (!reason.trim()) {
-              throw new Error('request_tools requires a non-empty reason');
+              responseParts.push({
+                functionResponse: {
+                  name: REQUEST_TOOLS_NAME,
+                  response: {
+                    ok: false,
+                    error: 'request_tools requires a non-empty reason',
+                    availableTools: [...escalation.toolNames],
+                  },
+                },
+              });
+              continue;
+            }
+            let granted;
+            try {
+              granted = this._grantEscalationTools(activeToolNames, escalation, fc.args || {});
+            } catch (err) {
+              const message = err instanceof Error ? err.message : String(err);
+              if (message.startsWith('escalation.resolve')) {
+                throw err;
+              }
+              responseParts.push({
+                functionResponse: {
+                  name: REQUEST_TOOLS_NAME,
+                  response: {
+                    ok: false,
+                    error: message,
+                    availableTools: [...escalation.toolNames],
+                  },
+                },
+              });
+              continue;
             }
             const fromTools = activeToolNames ? [...activeToolNames] : [];
-            const toTools = [...escalation.toolNames];
+            const toTools = [...granted.toolNames];
             this.logger?.info?.(
               {
                 round,
@@ -821,12 +1168,14 @@ export class Agent {
               },
               'Agent tool set escalated',
             );
-            activeToolNames = escalation.toolNames;
-            activeSystemInstruction = escalation.systemInstruction;
+            activeToolNames = granted.toolNames;
+            hostSystemInstruction = granted.systemInstruction;
             escalated = true;
             escalatedThisRound = true;
             escalationBudget = 1;
+            activeSystemInstruction = resolveSystemInstruction();
             toolDeclarations = this._declarationsForTurn(activeToolNames, false);
+            const grantedDeclarations = this.buildToolDeclarations(activeToolNames);
             if (this.telemetryEngine && agentSpan) {
               try {
                 this.telemetryEngine.recordEscalation(agentSpan, {
@@ -842,7 +1191,7 @@ export class Agent {
             responseParts.push({
               functionResponse: {
                 name: REQUEST_TOOLS_NAME,
-                response: { ok: true, tools: toTools },
+                response: { ok: true, tools: grantedDeclarations },
               },
             });
             continue;
@@ -945,7 +1294,11 @@ export class Agent {
           // no-op; budget already increased
         }
 
-        generateContents = ensureUserLeadingContents([...priorHistory, ...turnContents]);
+        generateContents = this._generateContents(
+          priorHistory,
+          turnContents,
+          includePriorHistoryInContents,
+        );
         lastSizes = this._logGenerateRequest(
           rounds,
           historyTurns,
@@ -1006,7 +1359,11 @@ export class Agent {
               agentSpan.attributes['agent.self_corrections'] = selfCorrections;
             }
             rounds += 1;
-            generateContents = ensureUserLeadingContents([...priorHistory, ...turnContents]);
+            generateContents = this._generateContents(
+              priorHistory,
+              turnContents,
+              includePriorHistoryInContents,
+            );
             lastSizes = this._logGenerateRequest(
               rounds,
               historyTurns,
@@ -1043,6 +1400,7 @@ export class Agent {
           contentsForHistory(turnContents, historyUserText, this.historyToolTurns, {
             toolDigests,
           }),
+          historyAppendOptions,
         );
       }
 
@@ -1079,6 +1437,7 @@ export class Agent {
         contentsForHistory(turnContents, historyUserText, this.historyToolTurns, {
           toolDigests,
         }),
+        historyAppendOptions,
       );
     }
     this.logger?.info?.(
@@ -1136,9 +1495,10 @@ export class Agent {
    *
    * @param {string} historyKey
    * @param {string} text
+   * @param {{ recordedAt?: Date|number }} [options]
    * @returns {Promise<void>}
    */
-  async recordAssistantMessage (historyKey, text) {
+  async recordAssistantMessage (historyKey, text, options = {}) {
     if (typeof historyKey !== 'string' || !historyKey) {
       throw new Error('historyKey is required');
     }
@@ -1148,9 +1508,17 @@ export class Agent {
     if (!this.history) {
       throw new Error('history store is required to record assistant messages');
     }
+    if (options !== undefined && (typeof options !== 'object' || options === null || Array.isArray(options))) {
+      throw new Error('options must be a plain object when provided');
+    }
+    /** @type {{ recordedAt?: Date }} */
+    const appendOptions = {};
+    if (options.recordedAt !== undefined) {
+      appendOptions.recordedAt = normalizeRecordedAt(options.recordedAt);
+    }
     this.history.append(historyKey, [
       { role: 'model', parts: [{ text }] },
-    ]);
+    ], appendOptions);
   }
 
   /**
