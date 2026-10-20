@@ -7,6 +7,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { ToolRegistry } from './toolRegistry.js';
 import { HookRegistry } from './hookRegistry.js';
 import { KnowledgeBase } from './knowledgeBase.js';
+import { ResourceRegistry } from './resourceRegistry.js';
 import { AuthManager } from './authManager.js';
 import { userLogFields } from '../authz.js';
 import { buildAuthOptions } from '../buildAuthOptions.js';
@@ -145,6 +146,12 @@ export class ExpressMcp {
     this.knowledgeBase = new KnowledgeBase({
       logger: this.logger,
       description: this.description
+    });
+
+    this.resourceRegistry = new ResourceRegistry({
+      logger: this.logger,
+      knowledgeBase: this.options.enableKnowledgeBase ? this.knowledgeBase : null,
+      namespace: this.name || 'documents',
     });
     
     if (this.options.enableKnowledgeBase) {
@@ -657,6 +664,51 @@ export class ExpressMcp {
   }
 
   /**
+   * Register a custom MCP resource (playbook, SOP, schema)
+   * @param {import('./baseResource.js').BaseResource} resource
+   */
+  registerResource(resource) {
+    const result = this.resourceRegistry.register(resource);
+    this.logger.info({ uri: resource.uri }, 'Resource registered successfully');
+    return result;
+  }
+
+  /**
+   * Unregister a custom MCP resource by URI
+   * @param {string} uri
+   * @returns {boolean}
+   */
+  unregisterResource(uri) {
+    const result = this.resourceRegistry.unregister(uri);
+    this.logger.info({ uri }, 'Resource unregistered successfully');
+    return result;
+  }
+
+  /**
+   * @param {string} uri
+   * @returns {boolean}
+   */
+  hasRegisteredResource(uri) {
+    return this.resourceRegistry.has(uri);
+  }
+
+  /**
+   * @returns {import('./baseResource.js').BaseResource[]}
+   */
+  getRegisteredResources() {
+    return this.resourceRegistry.getRegistered();
+  }
+
+  /**
+   * Clear all custom (non-KnowledgeBase) registered resources
+   */
+  clearRegisteredResources() {
+    const result = this.resourceRegistry.clear();
+    this.logger.info('All registered resources cleared');
+    return result;
+  }
+
+  /**
    * Register a lifecycle hook with this MCP instance
    * @param {import('./baseHook.js').BaseHook} hookInstance
    */
@@ -786,7 +838,8 @@ export class ExpressMcp {
     const serverName = this.name || '@express-mcp/express-mcp';
     const serverOptions = {
       capabilities: {
-        tools: {}
+        tools: {},
+        resources: {}
       }
     };
     const instructionParts = [];
@@ -812,6 +865,11 @@ export class ExpressMcp {
       user: context.user ?? null,
       sessionId: context.sessionId ?? null,
       permissionMode: context.permissionMode ?? this.permissionMode,
+      meta: context.meta ?? {}
+    });
+    this.resourceRegistry.registerOnMcpServer(mcpServer, {
+      user: context.user ?? null,
+      sessionId: context.sessionId ?? null,
       meta: context.meta ?? {}
     });
     return mcpServer;

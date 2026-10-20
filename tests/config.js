@@ -174,7 +174,8 @@ export const EXPECTED_RESPONSES = {
     result: {
       protocolVersion: '2024-11-05',
       capabilities: {
-        tools: {}
+        tools: {},
+        resources: {}
       },
       serverInfo: {
         name: '@express-mcp/express-mcp',

@@ -10,7 +10,8 @@ Register tools against your existing business logic, optionally add OAuth SSO (G
 - **Your tools, your data** — Register custom tools that wrap existing APIs and services
 - **Optional OAuth SSO** — GitHub/Google login, Bearer JWTs, PKCE, and Dynamic Client Registration for MCP clients
 - **Gemini Spark Connected Apps** — First-class Google Account Linking for Spark: default DCR allowlist for `oauth-redirect*.googleusercontent.com`, wire-encoded `state` echo, and `refresh_token` issuance
-- **Built-in knowledge base** — Full-text document search via FlexSearch (`kb_search`, `kb_list`, `kb_get`)
+- **Built-in knowledge base** — Full-text document search via FlexSearch (`kb_search`, `kb_list`, `kb_get`) plus MCP resources at `kb://{name|documents}/{id}`
+- **MCP resources** — Expose playbooks/SOPs via `resources/list` and `resources/read` (`BaseResource` / `registerResource`)
 - **Tool name prefixing** — Avoid collisions when multiple MCP services share a client
 - **Optional agent** — Gemini-backed `agent_ask` that can call your registered tools
 - **Optional telemetry** — OpenInference / GenAI OTLP spans for tool calls and agent turns (`http/json`, `http/protobuf`, or `grpc`; see [docs/TELEMETRY.md](docs/TELEMETRY.md))
@@ -33,7 +34,7 @@ Express is a peer dependency. Ensure you have Express ^4.18.0 or ^5.0.0 installe
 
 ```javascript
 import express from 'express';
-import { ExpressMcp, BaseTool } from '@brandon-svec/express_mcp';
+import { ExpressMcp, BaseTool, BaseResource } from '@brandon-svec/express_mcp';
 
 const app = express();
 app.use(express.json());
@@ -72,6 +73,8 @@ When auth is enabled, `execute` can take a second `context` argument and read `c
 
 Express MCP includes a FlexSearch-backed knowledge base with three MCP tools: `kb_search`, `kb_list`, and `kb_get`. When you pass a `name` to `ExpressMcp`, those tools are prefixed (e.g. `my-service_kb_search`) so multiple MCP services can coexist in one client.
 
+Knowledge base documents are also exposed as native MCP resources at `kb://{name}/{id}` when `name` is set, or `kb://documents/{id}` when unnamed. Calling agents can browse them with `resources/list` / `resources/read` while still using `{name}_kb_search` for full-text discovery.
+
 ```javascript
 import { ExpressMcp } from '@brandon-svec/express_mcp';
 
@@ -86,6 +89,7 @@ await expressMcp.addDocument('getting-started', {
   tags: ['guide', 'tutorial', 'beginner'],
   metadata: { category: 'documentation' }
 });
+// Also readable at kb://my-api-server/getting-started via resources/read
 ```
 
 ### Document management
@@ -119,7 +123,27 @@ const stats = await expressMcp.getKnowledgeBaseStats();
 
 Tool descriptions update as you add documents: available tags and your custom `description` are included so AI clients know what is searchable.
 
-Disable the knowledge base with `enableKnowledgeBase: false`.
+Disable the knowledge base with `enableKnowledgeBase: false` (KB tools and `kb://` resources are omitted; custom `registerResource` playbooks still work).
+
+## Resources
+
+Register static or read-on-demand playbooks and schemas as MCP resources. Subclass `BaseResource` or pass static `text` / `blob`:
+
+```javascript
+import { ExpressMcp, BaseResource } from '@brandon-svec/express_mcp';
+
+const expressMcp = new ExpressMcp({ enableKnowledgeBase: false });
+
+expressMcp.registerResource(new BaseResource({
+  uri: 'playbook://incident-response',
+  name: 'incident-response',
+  title: 'Incident Response',
+  description: 'Pager playbook for production incidents',
+  text: '# Incident Response\n1. Page on-call\n2. Open a bridge',
+}));
+```
+
+Clients discover resources with `resources/list` and load contents with `resources/read` (`params.uri`). Explicit registrations win over a Knowledge Base document that would map to the same URI.
 
 ## Lifecycle Hooks
 
@@ -343,6 +367,12 @@ Optional constructor `permissionMode` (`'default'` | `'ask_for_approval'`) contr
 - `addDocument(id, document)` / `updateDocument(id, updates)` / `removeDocument(id)`
 - `getKnowledgeBaseStats()`
 
+#### Resources
+
+- `registerResource(resource)` — Register a `BaseResource` (URIs are not name-prefixed)
+- `unregisterResource(uri)` / `hasRegisteredResource(uri)`
+- `getRegisteredResources()` / `clearRegisteredResources()`
+
 ## MCP Protocol Support
 
 This module implements:
@@ -351,6 +381,8 @@ This module implements:
 - **notifications/initialized** — Confirm initialization
 - **tools/list** — List available tools
 - **tools/call** — Execute a tool with parameters
+- **resources/list** — List Knowledge Base documents and custom resources
+- **resources/read** — Read a resource by URI (`kb://…` or custom)
 
 Responses follow JSON-RPC 2.0 with proper error handling.
 
