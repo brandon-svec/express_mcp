@@ -412,11 +412,28 @@ export class KnowledgeBase {
   }
 
   /**
-   * Get a document by ID
-   * @param {string} id - Document ID
+   * Get a document by plain ID or by MCP resource URI `kb://{namespace}/{id}`.
+   * Exact Map key wins first (including a document stored under a full URI).
+   * Otherwise any `kb://…` namespace is stripped and the remainder is looked up.
+   * @param {string} id - Document ID or `kb://{namespace}/{id}`
+   * @returns {Object|undefined}
    */
   getDocument (id) {
-    return this.documents.get(id);
+    if (typeof id !== 'string' || !id.trim()) {
+      return undefined;
+    }
+    const cleanId = id.trim();
+    if (this.documents.has(cleanId)) {
+      return this.documents.get(cleanId);
+    }
+    const uriMatch = /^kb:\/\/[^/]+\/(.+)$/.exec(cleanId);
+    if (uriMatch) {
+      const documentId = uriMatch[1];
+      if (documentId && this.documents.has(documentId)) {
+        return this.documents.get(documentId);
+      }
+    }
+    return undefined;
   }
 
   /**

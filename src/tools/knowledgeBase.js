@@ -158,7 +158,7 @@ export class KnowledgeBaseGetTool extends BaseKnowledgeBaseTool {
       properties: {
         id: {
           type: 'string',
-          description: 'Document ID to retrieve'
+          description: 'Document ID, or kb://{namespace}/{id} resource URI from the Turn-0 playbook directory'
         }
       },
       required: ['id']
