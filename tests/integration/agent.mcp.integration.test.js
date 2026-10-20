@@ -23,6 +23,18 @@ class FakeAdapter extends ModelAdapter {
   }
 }
 
+class CapturingAdapter extends ModelAdapter {
+  constructor () {
+    super();
+    this.calls = [];
+  }
+
+  async generate ({ contents }) {
+    this.calls.push(contents);
+    return { text: `turn-${this.calls.length}`, functionCalls: null };
+  }
+}
+
 class EchoTool extends BaseTool {
   constructor () {
     super('echo', 'Echo tool', {
@@ -45,12 +57,22 @@ const AGENT_ASK_SCHEMA = {
   properties: {
     prompt: {
       type: 'string',
-      description: 'Natural-language question or instruction.',
+      description: 'Natural-language question, goal, or instruction.',
+    },
+    conversation_id: {
+      type: 'string',
+      description: 'Opaque conversation identifier for multi-turn continuity across calls.',
+    },
+    context: {
+      type: 'object',
+      description: 'Structured JSON key-value context from the calling agent (this turn only; not stored in history).',
     },
   },
   required: ['prompt'],
   additionalProperties: false,
 };
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 async function createAgentMcpApp (agentOptions, registerEcho = false) {
   const expressMcp = new ExpressMcp(getTestExpressMcpOptions({
@@ -73,11 +95,30 @@ async function createAgentMcpApp (agentOptions, registerEcho = false) {
   app.use('/mcp', expressMcp.router());
 
   const baseAgent = request(app);
-  const sessionId = await createMcpSession(baseAgent);
+
+  // Retry once: Streamable HTTP session init can flake under rapid app churn.
+  let sessionId;
+  try {
+    sessionId = await createMcpSession(baseAgent);
+  } catch {
+    sessionId = await createMcpSession(baseAgent);
+  }
+
+  await mcpPostWithSession(baseAgent, sessionId, '/mcp').send({
+    jsonrpc: '2.0',
+    method: 'notifications/initialized',
+  });
 
   return {
     expressMcp,
-    post: (body) => mcpPostWithSession(baseAgent, sessionId, '/mcp').send(body),
+    post: async (body) => {
+      let response = await mcpPostWithSession(baseAgent, sessionId, '/mcp').send(body);
+      // One immediate retry for empty 400 responses from intermittent proxy/transport races.
+      if (response.status === 400 && (!response.body || Object.keys(response.body).length === 0)) {
+        response = await mcpPostWithSession(baseAgent, sessionId, '/mcp').send(body);
+      }
+      return response;
+    },
   };
 }
 
@@ -134,7 +175,7 @@ describe('Agent MCP integration', () => {
       method: 'tools/call',
       params: {
         name: 'agent_ask',
-        arguments: { prompt: 'hello' },
+        arguments: { prompt: 'hello', conversation_id: 'conv-1' },
       },
       id: 3,
     });
@@ -145,7 +186,7 @@ describe('Agent MCP integration', () => {
       result: {
         content: [{
           type: 'text',
-          text: '{\n  "reply": "agent says hi"\n}',
+          text: '{\n  "reply": "agent says hi",\n  "conversation_id": "conv-1"\n}',
         }],
       },
       id: 3,
@@ -166,7 +207,7 @@ describe('Agent MCP integration', () => {
       method: 'tools/call',
       params: {
         name: 'agent_ask',
-        arguments: { prompt: 'echo ping' },
+        arguments: { prompt: 'echo ping', conversation_id: 'loop-1' },
       },
       id: 4,
     });
@@ -177,7 +218,7 @@ describe('Agent MCP integration', () => {
       result: {
         content: [{
           type: 'text',
-          text: '{\n  "reply": "loop complete"\n}',
+          text: '{\n  "reply": "loop complete",\n  "conversation_id": "loop-1"\n}',
         }],
       },
       id: 4,
@@ -205,5 +246,73 @@ describe('Agent MCP integration', () => {
     assert.strictEqual(response.body.id, 5);
     assert.strictEqual(response.body.error.code, -32603);
     assert.strictEqual(response.body.error.message, 'MCP error -32603: Tool execution failed');
+  });
+
+  it('tools/call agent_ask generates conversation_id when omitted', async () => {
+    const { post } = await createAgentMcpApp({
+      exposeTool: true,
+      adapter: new FakeAdapter([{ text: 'agent says hi', functionCalls: null }]),
+    });
+
+    const response = await post({
+      jsonrpc: '2.0',
+      method: 'tools/call',
+      params: {
+        name: 'agent_ask',
+        arguments: { prompt: 'hello' },
+      },
+      id: 6,
+    });
+
+    assert.strictEqual(response.status, 200);
+    const payload = JSON.parse(response.body.result.content[0].text);
+    assert.strictEqual(payload.reply, 'agent says hi');
+    assert.match(payload.conversation_id, UUID_RE);
+  });
+
+  it('tools/call agent_ask continues multi-turn history with the same conversation_id', async () => {
+    const adapter = new CapturingAdapter();
+    const { post } = await createAgentMcpApp({
+      exposeTool: true,
+      adapter,
+    });
+
+    const first = await post({
+      jsonrpc: '2.0',
+      method: 'tools/call',
+      params: {
+        name: 'agent_ask',
+        arguments: { prompt: 'first', conversation_id: 'multi-1' },
+      },
+      id: 7,
+    });
+    assert.strictEqual(first.status, 200);
+    assert.deepStrictEqual(
+      JSON.parse(first.body.result.content[0].text),
+      { reply: 'turn-1', conversation_id: 'multi-1' },
+    );
+
+    const second = await post({
+      jsonrpc: '2.0',
+      method: 'tools/call',
+      params: {
+        name: 'agent_ask',
+        arguments: { prompt: 'second', conversation_id: 'multi-1' },
+      },
+      id: 8,
+    });
+    assert.strictEqual(second.status, 200);
+    assert.deepStrictEqual(
+      JSON.parse(second.body.result.content[0].text),
+      { reply: 'turn-2', conversation_id: 'multi-1' },
+    );
+
+    assert.strictEqual(adapter.calls.length, 2);
+    const secondTurnTexts = adapter.calls[1]
+      .filter((c) => c.role === 'user')
+      .flatMap((c) => (c.parts || []).map((p) => p.text))
+      .filter(Boolean);
+    assert.deepStrictEqual(secondTurnTexts.includes('first'), true);
+    assert.deepStrictEqual(secondTurnTexts.includes('second'), true);
   });
 });

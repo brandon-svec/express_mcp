@@ -883,6 +883,8 @@ export class Agent {
    *   includePriorHistoryInContents?: boolean,
    *   historyUserText?: string,
    *   recordedAt?: Date|number,
+   *   meta?: { traceparent?: string|null, [key: string]: unknown },
+   *   permissionMode?: string,
    * }} [options]
    * @returns {Promise<string>}
    */

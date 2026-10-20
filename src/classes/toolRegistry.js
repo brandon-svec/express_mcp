@@ -404,9 +404,15 @@ export class ToolRegistry {
         }
       }
 
-      // Execute the tool - handle execution errors separately  
+      // Execute the tool - handle execution errors separately
+      // Propagate the TOOL span's traceparent so nested work (e.g. agent_ask →
+      // processMessage) parents under this toolSpan rather than becoming a sibling.
       try {
-        const result = await tool.execute(effectiveArgs, context);
+        const activeTraceparent = toolSpan?.traceparent ?? meta.traceparent ?? null;
+        const executionContext = activeTraceparent
+          ? { ...context, meta: { ...meta, traceparent: activeTraceparent } }
+          : context;
+        const result = await tool.execute(effectiveArgs, executionContext);
         
         // Always set the result unless it's an error status
         // setResult() will automatically set status to 'success' if not already set
