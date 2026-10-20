@@ -1428,6 +1428,22 @@ describe('Agent', () => {
       type: 'string',
       enum: ['other'],
     });
+    assert.include(
+      requestToolsDecl.description,
+      'Request UNLOADED tools from AVAILABLE catalog: [other].',
+    );
+    assert.include(
+      requestToolsDecl.description,
+      'ACTIVE tools already have full schemas loaded and must be invoked directly: [echo].',
+    );
+    assert.include(
+      requestToolsDecl.parameters.properties.tools.description,
+      'Only unloaded tools from: [other].',
+    );
+    assert.include(
+      requestToolsDecl.parameters.properties.tools.description,
+      'Do NOT request tools already active: [echo].',
+    );
     assert.deepStrictEqual(
       adapter.generateParams[1].systemInstruction,
       instructionWithCatalog(
@@ -2152,6 +2168,93 @@ describe('Agent', () => {
     assert.include(
       text,
       'AVAILABLE (call request_tools with tools: ["name"] only if you need a tool from this list):',
+    );
+  });
+
+  it('omits request_tools when all escalation tools are already active', async () => {
+    const history = new InMemoryHistoryStore({ windowMinutes: 60 });
+    const adapter = new FakeAdapter([
+      { text: null, functionCalls: [{ name: 'echo', args: { message: 'hi' } }] },
+      { text: 'done', functionCalls: null },
+    ]);
+    const agent = new Agent({
+      adapter,
+      toolRegistry: registry,
+      systemInstruction: 'narrow',
+      history,
+      maxToolRounds: 2,
+    });
+
+    const reply = await agent.processMessage('chat:full-active', 'go', {
+      toolNames: ['echo'],
+      systemInstruction: 'narrow',
+      escalation: {
+        toolNames: ['echo'],
+        systemInstruction: 'full prompt',
+      },
+    });
+
+    assert.strictEqual(reply, 'done');
+    assert.isFalse(
+      adapter.generateParams[0].toolDeclarations.some((d) => d.name === REQUEST_TOOLS_NAME),
+    );
+    assert.isFalse(/AVAILABLE/.test(adapter.generateParams[0].systemInstruction));
+  });
+
+  it('enriches request_tools description with active and unloaded tool names', async () => {
+    class OtherTool extends BaseTool {
+      constructor () {
+        super('other', 'Other', {
+          type: 'object',
+          properties: {},
+          additionalProperties: false,
+        });
+      }
+
+      async execute () {
+        return { ok: true };
+      }
+    }
+    registry.register(new OtherTool());
+
+    const history = new InMemoryHistoryStore({ windowMinutes: 60 });
+    const adapter = new FakeAdapter([
+      { text: 'done', functionCalls: null },
+    ]);
+    const agent = new Agent({
+      adapter,
+      toolRegistry: registry,
+      systemInstruction: 'narrow',
+      history,
+      maxToolRounds: 1,
+    });
+
+    await agent.processMessage('chat:dyn-desc', 'go', {
+      toolNames: ['echo'],
+      systemInstruction: 'narrow',
+      escalation: {
+        toolNames: ['echo', 'other'],
+        systemInstruction: 'full prompt',
+      },
+    });
+
+    const requestToolsDecl = adapter.generateParams[0].toolDeclarations.find(
+      (d) => d.name === REQUEST_TOOLS_NAME,
+    );
+    assert.ok(requestToolsDecl);
+    assert.deepStrictEqual(requestToolsDecl.parameters.properties.tools.items, {
+      type: 'string',
+      enum: ['other'],
+    });
+    assert.strictEqual(
+      requestToolsDecl.description,
+      'Request UNLOADED tools from AVAILABLE catalog: [other]. ' +
+      'ACTIVE tools already have full schemas loaded and must be invoked directly: [echo]. ' +
+      'NEVER call request_tools for active tools.',
+    );
+    assert.strictEqual(
+      requestToolsDecl.parameters.properties.tools.description,
+      'Only unloaded tools from: [other]. Do NOT request tools already active: [echo].',
     );
   });
 
