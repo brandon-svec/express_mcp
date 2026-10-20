@@ -271,6 +271,8 @@ const expressMcp = new ExpressMcp({
 
 Requires auth by default (`agent.allowUnauthenticated: true` to opt out). `@google/genai` is an optional peer dependency.
 
+**Turn-0 domain expert manifest:** When the agent is enabled, ExpressMcp appends a live domain manifest to every `processMessage` system instruction (identity + operational playbooks directory). It is rebuilt each turn from `name`, `description`, registered `BaseResource` playbooks, and knowledge-base documents — so `addDocument()` / `registerResource()` appear on the next turn without rebuilding the Agent. Set `agent.includeDomainManifest: false` for raw unaugmented prompts. When there is no name, no description, and no playbooks, the manifest is empty and `systemInstruction` is unchanged.
+
 When `exposeTool` is true (default), the MCP tool `{name}_agent_ask` (or `agent_ask` when `name` is unset) is registered for inbound agent-to-agent delegation:
 
 | Argument | Required | Description |
@@ -281,7 +283,7 @@ When `exposeTool` is true (default), the MCP tool `{name}_agent_ask` (or `agent_
 
 Return value: `{ reply, conversation_id }`. History keys are scoped per authenticated user as `mcp:{user.sub|anon}:{conversation_id}` so callers cannot collide across users.
 
-The tool description is refreshed when tools are registered/unregistered or knowledge-base documents change. It appends the server `description` (domain copy), callable tool names (`Available capabilities: …`), and knowledge-base tags when present. Optional `agent.description` overrides the base description string.
+The tool description is refreshed when tools are registered/unregistered or knowledge-base documents / resources change. It appends the server `description` (domain copy), callable tool names (`Available capabilities: …`), knowledge-base tags when present, and an operational playbook count when playbooks exist. Optional `agent.description` overrides the base description string.
 
 Use `getAgent().processMessage(historyKey, text, options)` for inbound turns. Optional `options.ephemeralPrefix` is prepended to `text` for the model on **this turn only** (including tool rounds) and is **never** stored or replayed — hosts use it for working-memory fences and similar ephemeral context. Optional `options.meta.traceparent` parents the agent CHAIN span under an upstream TOOL/HTTP span. Optional per-turn options:
 
@@ -298,6 +300,7 @@ Optional agent constructor options:
 - `historyMaxTurns` — when using the default in-memory history, keep at most this many turns after TTL pruning (oldest first). Cannot be set together with a custom `agent.history`.
 - `excludeTools: string[]` — additional tool names the agent must not call (merged with built-in session / `agent_ask` exclusions).
 - `description: string` — custom base description for the `agent_ask` MCP tool (before domain / capabilities / tag enrichment).
+- `includeDomainManifest: boolean` — default `true`. When `true`, appends the Turn-0 domain expert manifest (service identity + playbooks directory with governing tools) to the system instruction on every turn. Set `false` to leave `systemInstruction` unaugmented.
 
 `processMessage` also accepts optional `historyUserText`: when set, that string is stored for the user turn instead of `text` (the model still sees `text`, optionally with `ephemeralPrefix`).
 
@@ -309,7 +312,7 @@ The default in-memory history store (`InMemoryHistoryStore`) exposes:
 - `getTurns(key)` — pruned `Array<{ recordedAt: Date, contents }>` as **detached copies** (safe to `.reverse()` without mutating store order).
 - `append(key, contents, { recordedAt? })` — optional `recordedAt` as a `Date` or epoch millis (defaults to `new Date()`).
 
-Package exports also include `formatTurnsTranscript(turns, { now, userLabel, modelLabel })` (newest-first relative transcript; reverses turns and contents; skips non-text and `HOST_TOOLS:` digest parts) and `buildCapabilitiesCatalog({ activeTools, availableTools })` for hosts that need the helpers outside `processMessage`.
+Package exports also include `formatTurnsTranscript(turns, { now, userLabel, modelLabel })` (newest-first relative transcript; reverses turns and contents; skips non-text and `HOST_TOOLS:` digest parts), `buildCapabilitiesCatalog({ activeTools, availableTools })`, and `buildDomainExpertManifest({ serverName, serviceDescription, agentDescription, playbooks })` for hosts that need the helpers outside `processMessage`.
 
 For **host-initiated agent speech** (proactive reminders, notifications) that must appear in the next turn’s conversation history without calling the LLM, use `getAgent().recordAssistantMessage(historyKey, text, { recordedAt? })`. That method requires a history store and throws if none is configured. When recorded model turns leave history starting with a `model` role, `processMessage` prepends a synthetic user `[continued]` turn before calling Gemini so contents remain valid. Schema and tool execution errors are returned to the model as `{ ok: false, error }` functionResponses so further `maxToolRounds` can fix args and retry (same recovery Cursor gets over MCP JSON-RPC).
 
@@ -367,11 +370,17 @@ Optional constructor `permissionMode` (`'default'` | `'ask_for_approval'`) contr
 - `addDocument(id, document)` / `updateDocument(id, updates)` / `removeDocument(id)`
 - `getKnowledgeBaseStats()`
 
+Documents accept optional playbook fields: `summary` (string), `tools` (string[] of governed tool names), and `relatedDocs` (string[]). When `summary` is omitted, the first clean non-heading paragraph is extracted (≤180 chars). When `tools` is omitted, content is scanned for known registered tool names (identifier-safe, longest-first).
+
+`kb_search` scores matches across **tools (+3)**, **title (+3)**, **summary (+2)**, **tags (+2)**, and **content (+1)** so documentation is discoverable by tool name or semantic intent.
+
 #### Resources
 
 - `registerResource(resource)` — Register a `BaseResource` (URIs are not name-prefixed)
 - `unregisterResource(uri)` / `hasRegisteredResource(uri)`
 - `getRegisteredResources()` / `clearRegisteredResources()`
+
+`BaseResource` accepts optional `summary` and `tools` for the operational playbooks directory (merged with KB documents via `resourceRegistry.getPlaybooksManifest()`).
 
 ## MCP Protocol Support
 

@@ -32,6 +32,7 @@ export class AgentTool extends BaseTool {
    *   description?: string,
    *   serviceDescription?: string,
    *   knowledgeBase?: import('../classes/knowledgeBase.js').KnowledgeBase|null,
+   *   getPlaybooksManifest?: () => Array<{ uri?: string, title?: string }>,
    * }} [options]
    */
   constructor (agent, options = {}) {
@@ -71,11 +72,14 @@ export class AgentTool extends BaseTool {
       ? options.serviceDescription
       : null;
     this.knowledgeBase = options.knowledgeBase ?? null;
+    this.getPlaybooksManifest = typeof options.getPlaybooksManifest === 'function'
+      ? options.getPlaybooksManifest
+      : null;
     this.refreshDescription();
   }
 
   /**
-   * Update the tool description from domain copy, callable tools, and KB tags.
+   * Update the tool description from domain copy, callable tools, KB tags, and playbook counts.
    */
   refreshDescription () {
     let fullDescription = this.baseDescription;
@@ -98,6 +102,14 @@ export class AgentTool extends BaseTool {
         const tagsList = stats.tags.slice(0, 10).join(', ');
         const moreTags = stats.tags.length > 10 ? ` and ${stats.tags.length - 10} more` : '';
         fullDescription += `. Knowledge base tags: ${tagsList}${moreTags}`;
+      }
+    }
+
+    if (this.getPlaybooksManifest) {
+      const playbooks = this.getPlaybooksManifest();
+      if (Array.isArray(playbooks) && playbooks.length > 0) {
+        const n = playbooks.length;
+        fullDescription += `. ${n} operational playbook${n === 1 ? '' : 's'}`;
       }
     }
 

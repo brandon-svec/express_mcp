@@ -20,6 +20,7 @@ import {
 import { SessionTool } from '../tools/session.js';
 import { GoogleGrantTool } from '../tools/googleGrant.js';
 import { Agent } from '../agents/agent.js';
+import { buildDomainExpertManifest } from '../agents/manifest.js';
 import { GeminiAdapter } from '../agents/geminiAdapter.js';
 import { InMemoryHistoryStore } from '../agents/historyStore.js';
 import { AgentTool } from '../tools/agent.js';
@@ -66,6 +67,7 @@ export class ExpressMcp {
    * @param {string[]} [options.agent.toolAllowlist] - If set, agent may only call these tool names
    * @param {string[]} [options.agent.excludeTools] - Additional tool names the agent must not call (merged with session/agent_ask exclusions)
    * @param {string} [options.agent.systemInstruction] - System prompt for the agent
+   * @param {boolean} [options.agent.includeDomainManifest=true] - Append Turn-0 domain expert manifest (identity + playbooks) to systemInstruction; set false for raw unaugmented prompts
    * @param {import('../agents/modelAdapter.js').ModelAdapter} [options.agent.adapter] - Custom model adapter
    * @param {{ apiKey: string, model: string }} [options.agent.gemini] - Gemini config when adapter omitted
    * @param {import('../agents/historyStore.js').InMemoryHistoryStore} [options.agent.history] - Custom history store
@@ -180,6 +182,7 @@ export class ExpressMcp {
     this.agent = null;
     this.agentTool = null;
     this._initializeAgent();
+    this._syncKnownToolNames();
 
     this.logger.info('ExpressMcp instance initialized successfully');
   }
@@ -296,6 +299,16 @@ export class ExpressMcp {
       toolAllowlist = agentOpts.toolAllowlist;
     }
 
+    const includeDomainManifest = agentOpts.includeDomainManifest !== false;
+    const manifestResolver = includeDomainManifest
+      ? (_activeNames, _availableNames) => buildDomainExpertManifest({
+        serverName: this.name,
+        serviceDescription: this.description,
+        agentDescription: agentOpts.description,
+        playbooks: this.resourceRegistry.getPlaybooksManifest(),
+      })
+      : null;
+
     this.agent = new Agent({
       adapter,
       toolRegistry: this.toolRegistry,
@@ -311,6 +324,7 @@ export class ExpressMcp {
       hookRegistry: this.hookRegistry,
       permissionMode: this.permissionMode,
       telemetryEngine: this.telemetryEngine,
+      manifestResolver,
     });
 
     if (exposeTool) {
@@ -318,12 +332,29 @@ export class ExpressMcp {
         description: agentOpts.description,
         serviceDescription: this.description,
         knowledgeBase: this.options.enableKnowledgeBase ? this.knowledgeBase : null,
+        getPlaybooksManifest: () => this.resourceRegistry.getPlaybooksManifest(),
       });
       this.toolRegistry.register(this.agentTool, this.name);
       this.logger.info({ toolName: this.agentTool.name }, 'Agent MCP tool registered');
     }
 
     this.logger.info('Agent enabled');
+  }
+
+  /**
+   * Sync registered tool names (prefixed + original) into the knowledge base
+   * for auto-associating playbook documents with tools.
+   * @private
+   */
+  _syncKnownToolNames () {
+    if (!this.knowledgeBase) {
+      return;
+    }
+    const names = new Set([
+      ...this.toolRegistry.getTools().map((t) => t.name),
+      ...this.toolRegistry.nameMapping.keys(),
+    ]);
+    this.knowledgeBase.setKnownToolNames(names);
   }
 
   /**
@@ -612,6 +643,7 @@ export class ExpressMcp {
    */
   registerTool(toolInstance) {
     const result = this.toolRegistry.register(toolInstance);
+    this._syncKnownToolNames();
     this._refreshAgentToolDescription();
     this.logger.info({ toolName: toolInstance.name }, 'Tool registered successfully');
     return result;
@@ -623,6 +655,7 @@ export class ExpressMcp {
    */
   unregisterTool(toolName) {
     const result = this.toolRegistry.unregister(toolName);
+    this._syncKnownToolNames();
     this._refreshAgentToolDescription();
     this.logger.info({ toolName }, 'Tool unregistered successfully');
     return result;
@@ -658,6 +691,7 @@ export class ExpressMcp {
    */
   clearRegisteredTools() {
     const result = this.toolRegistry.clear();
+    this._syncKnownToolNames();
     this._refreshAgentToolDescription();
     this.logger.info('All registered tools cleared');
     return result;
@@ -669,6 +703,7 @@ export class ExpressMcp {
    */
   registerResource(resource) {
     const result = this.resourceRegistry.register(resource);
+    this._refreshAgentToolDescription();
     this.logger.info({ uri: resource.uri }, 'Resource registered successfully');
     return result;
   }
@@ -680,6 +715,7 @@ export class ExpressMcp {
    */
   unregisterResource(uri) {
     const result = this.resourceRegistry.unregister(uri);
+    this._refreshAgentToolDescription();
     this.logger.info({ uri }, 'Resource unregistered successfully');
     return result;
   }

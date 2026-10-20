@@ -389,6 +389,23 @@ describe('AgentTool', () => {
     assert.include(tool.description, 'and 1 more');
   });
 
+  it('refreshDescription appends operational playbook count', () => {
+    const { agent } = createAgent();
+    const tool = new AgentTool(agent, {
+      getPlaybooksManifest: () => ([
+        { uri: 'kb://widget/a', title: 'A' },
+        { uri: 'playbook://b', title: 'B' },
+      ]),
+    });
+    assert.include(tool.description, '2 operational playbooks');
+
+    const singular = new AgentTool(agent, {
+      getPlaybooksManifest: () => ([{ uri: 'kb://widget/a', title: 'A' }]),
+    });
+    assert.include(singular.description, '1 operational playbook');
+    assert.notInclude(singular.description, '1 operational playbooks');
+  });
+
   it('omits empty capability and tag clauses from description', () => {
     const { agent } = createAgent();
     const tool = new AgentTool(agent);

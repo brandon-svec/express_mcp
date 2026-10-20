@@ -161,7 +161,7 @@ describe('ResourceRegistry', () => {
       name: 'getting-started',
       title: 'Getting Started',
       mimeType: 'text/plain',
-      description: 'Tags: guide',
+      description: 'Welcome',
       annotations: {
         audience: ['assistant'],
         lastModified: kb.getDocument('getting-started').updatedAt,
@@ -174,7 +174,92 @@ describe('ResourceRegistry', () => {
     kb.addDocument('sop-1', { title: 'SOP', content: 'Do it' });
     const registry = new ResourceRegistry({ namespace: 'widget', knowledgeBase: kb });
     assert.deepStrictEqual(registry.listResources()[0].uri, 'kb://widget/sop-1');
-    assert.isUndefined(registry.listResources()[0].description);
+    assert.strictEqual(registry.listResources()[0].description, 'Do it');
+  });
+
+  it('includes summary and tools on BaseResource getDefinition', () => {
+    const resource = new BaseResource({
+      uri: 'playbook://returns',
+      name: 'returns',
+      title: 'Returns SOP',
+      summary: 'How to process returns',
+      tools: ['returns_create', 'returns_cancel'],
+      text: '# Returns',
+    });
+    assert.deepStrictEqual(resource.getDefinition(), {
+      uri: 'playbook://returns',
+      name: 'returns',
+      title: 'Returns SOP',
+      mimeType: 'text/markdown',
+      summary: 'How to process returns',
+      tools: ['returns_create', 'returns_cancel'],
+    });
+  });
+
+  it('getPlaybooksManifest merges explicit playbooks with KB docs and skips blob-only', () => {
+    const kb = new KnowledgeBase();
+    kb.addDocument('kb-sop', {
+      title: 'KB SOP',
+      content: 'Body',
+      summary: 'From KB',
+      tools: ['kb_search'],
+      tags: ['ops'],
+    });
+    const registry = new ResourceRegistry({ namespace: 'widget', knowledgeBase: kb });
+    registry.register(new BaseResource({
+      uri: 'playbook://returns',
+      name: 'returns',
+      title: 'Returns',
+      summary: 'Process returns',
+      tools: ['returns_create'],
+      text: '# Returns',
+    }));
+    registry.register(new BaseResource({
+      uri: 'binary://logo',
+      name: 'logo',
+      mimeType: 'image/png',
+      blob: 'abc',
+    }));
+
+    const manifest = registry.getPlaybooksManifest();
+    assert.deepStrictEqual(manifest.map((p) => p.uri), [
+      'playbook://returns',
+      'kb://widget/kb-sop',
+    ]);
+    assert.deepStrictEqual(manifest[0], {
+      id: 'returns',
+      title: 'Returns',
+      uri: 'playbook://returns',
+      summary: 'Process returns',
+      tools: ['returns_create'],
+      tags: [],
+    });
+    assert.deepStrictEqual(manifest[1], {
+      id: 'kb-sop',
+      title: 'KB SOP',
+      uri: 'kb://widget/kb-sop',
+      summary: 'From KB',
+      tools: ['kb_search'],
+      tags: ['ops'],
+    });
+  });
+
+  it('getPlaybooksManifest shadows KB docs when explicit URI collides', () => {
+    const kb = new KnowledgeBase();
+    kb.addDocument('shadowed', { title: 'KB', content: 'kb', summary: 'KB summary' });
+    const registry = new ResourceRegistry({ namespace: 'documents', knowledgeBase: kb });
+    registry.register(new BaseResource({
+      uri: 'kb://documents/shadowed',
+      name: 'custom',
+      title: 'Custom',
+      summary: 'Custom summary',
+      tools: ['ping'],
+      text: 'custom',
+    }));
+    const manifest = registry.getPlaybooksManifest();
+    assert.strictEqual(manifest.length, 1);
+    assert.strictEqual(manifest[0].id, 'custom');
+    assert.strictEqual(manifest[0].summary, 'Custom summary');
   });
 
   it('lists explicit resources before KB docs and shadows colliding KB URIs', async () => {

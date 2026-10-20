@@ -338,6 +338,8 @@ export class Agent {
    * @param {import('../classes/hookRegistry.js').HookRegistry|null} [options.hookRegistry]
    * @param {string} [options.permissionMode='default']
    * @param {import('../telemetry/telemetryEngine.js').TelemetryEngine|null} [options.telemetryEngine]
+   * @param {(activeToolNames: string[], availableToolNames: string[]) => string} [options.manifestResolver]
+   *   Live callback that returns Turn-0 domain expert manifest text (empty string when nothing to inject)
    */
   constructor (options) {
     if (!options || !options.adapter) {
@@ -372,6 +374,13 @@ export class Agent {
       throw new Error('historyToolDigest is only valid when historyToolTurns is digest');
     }
 
+    if (
+      options.manifestResolver != null
+      && typeof options.manifestResolver !== 'function'
+    ) {
+      throw new Error('manifestResolver must be a function when provided');
+    }
+
     this.adapter = options.adapter;
     this.toolRegistry = options.toolRegistry;
     this.systemInstruction = options.systemInstruction;
@@ -392,6 +401,10 @@ export class Agent {
     this.permissionMode = options.permissionMode ?? 'default';
     /** @type {import('../telemetry/telemetryEngine.js').TelemetryEngine|null} */
     this.telemetryEngine = options.telemetryEngine ?? null;
+    /** @type {((activeToolNames: string[], availableToolNames: string[]) => string)|null} */
+    this.manifestResolver = typeof options.manifestResolver === 'function'
+      ? options.manifestResolver
+      : null;
     /** @type {Set<string>} historyKeys that have already fired SessionStart */
     this._sessionStartKeys = new Set();
   }
@@ -808,6 +821,28 @@ export class Agent {
   }
 
   /**
+   * Append the live domain expert manifest when a resolver is configured.
+   * @param {string} baseInstruction
+   * @param {string[]|undefined} activeToolNames
+   * @param {string[]} availableToolNames
+   * @returns {string}
+   * @private
+   */
+  _systemInstructionWithManifest (baseInstruction, activeToolNames, availableToolNames) {
+    if (!this.manifestResolver) {
+      return baseInstruction;
+    }
+    const manifest = this.manifestResolver(activeToolNames || [], availableToolNames);
+    if (typeof manifest !== 'string') {
+      throw new Error('manifestResolver must return a string');
+    }
+    if (!manifest) {
+      return baseInstruction;
+    }
+    return `${baseInstruction}\n\n${manifest}`;
+  }
+
+  /**
    * @param {string} baseInstruction
    * @param {string[]|undefined} activeToolNames
    * @param {string[]} availableToolNames
@@ -1036,15 +1071,20 @@ export class Agent {
     let escalationBudget = 0;
 
     const resolveSystemInstruction = () => {
-      if (!escalation) {
-        return hostSystemInstruction;
-      }
       const activeSet = new Set(activeToolNames || []);
-      const availableToolNames = escalated
-        ? []
-        : escalation.toolNames.filter((name) => !activeSet.has(name));
-      return this._systemInstructionWithCatalog(
+      const availableToolNames = escalation && !escalated
+        ? escalation.toolNames.filter((name) => !activeSet.has(name))
+        : [];
+      const withManifest = this._systemInstructionWithManifest(
         hostSystemInstruction,
+        activeToolNames,
+        availableToolNames,
+      );
+      if (!escalation) {
+        return withManifest;
+      }
+      return this._systemInstructionWithCatalog(
+        withManifest,
         activeToolNames,
         availableToolNames,
       );

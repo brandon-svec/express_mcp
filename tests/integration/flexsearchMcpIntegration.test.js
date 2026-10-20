@@ -26,28 +26,28 @@ describe('FlexSearch MCP Integration Tests', () => {
     };
 
     // Pre-populate with test documents for search testing
-    expressMcp.addDocument('flexsearch-doc1', {
+    await expressMcp.addDocument('flexsearch-doc1', {
       title: 'Advanced React Patterns',
       content: 'Learn about higher-order components, render props, and custom hooks in React development.',
       tags: ['react', 'javascript', 'frontend', 'patterns'],
       metadata: { difficulty: 'advanced', category: 'web-development' }
     });
 
-    expressMcp.addDocument('flexsearch-doc2', {
+    await expressMcp.addDocument('flexsearch-doc2', {
       title: 'Node.js Performance Optimization',
       content: 'Techniques for optimizing Node.js applications including clustering, caching, and profiling.',
       tags: ['nodejs', 'performance', 'backend', 'optimization'],
       metadata: { difficulty: 'intermediate', category: 'backend' }
     });
 
-    expressMcp.addDocument('flexsearch-doc3', {
+    await expressMcp.addDocument('flexsearch-doc3', {
       title: 'React Testing Strategies',
       content: 'Comprehensive guide to testing React applications with Jest, React Testing Library, and Cypress.',
       tags: ['react', 'testing', 'jest', 'frontend'],
       metadata: { difficulty: 'intermediate', category: 'testing' }
     });
 
-    expressMcp.addDocument('flexsearch-doc4', {
+    await expressMcp.addDocument('flexsearch-doc4', {
       title: 'JavaScript Performance Tips',
       content: 'Performance optimization techniques for JavaScript including memory management and execution speed.',
       tags: ['javascript', 'performance', 'optimization'],
@@ -162,10 +162,12 @@ describe('FlexSearch MCP Integration Tests', () => {
 
       // Should still find optimization-related documents
       assert.ok(result.resultsCount > 0);
-      const hasOptimization = result.results.some(r => 
-        r.title.toLowerCase().includes('optimization') ||
-        r.content.toLowerCase().includes('optimization') ||
-        r.tags.includes('optimization')
+      const hasOptimization = result.results.some((r) =>
+        (typeof r.title === 'string' && r.title.toLowerCase().includes('optimization'))
+        || (typeof r.summary === 'string' && r.summary.toLowerCase().includes('optimization'))
+        || (typeof r.excerpt === 'string' && r.excerpt.toLowerCase().includes('optimization'))
+        || (Array.isArray(r.tags) && r.tags.includes('optimization'))
+        || (typeof r.content === 'string' && r.content.toLowerCase().includes('optimization'))
       );
       assert.ok(hasOptimization);
     });

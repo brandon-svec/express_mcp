@@ -12,6 +12,8 @@ export class BaseResource {
    *   annotations?: Object,
    *   text?: string,
    *   blob?: string,
+   *   summary?: string,
+   *   tools?: string[],
    * }} options
    */
   constructor (options = {}) {
@@ -19,7 +21,7 @@ export class BaseResource {
       throw new Error('Resource options must be a plain object');
     }
 
-    const { uri, name, title, description, mimeType, annotations, text, blob } = options;
+    const { uri, name, title, description, mimeType, annotations, text, blob, summary, tools } = options;
 
     if (typeof uri !== 'string' || !uri.trim()) {
       throw new Error('Resource uri is required and must be a non-empty string');
@@ -43,6 +45,25 @@ export class BaseResource {
         throw new Error('Annotations must be a plain object if provided');
       }
       this.annotations = annotations;
+    }
+
+    if (summary !== undefined) {
+      if (typeof summary !== 'string') {
+        throw new Error('Resource summary must be a string when provided');
+      }
+      this.summary = summary;
+    }
+
+    if (tools !== undefined) {
+      if (!Array.isArray(tools)) {
+        throw new Error('Resource tools must be an array of non-empty strings when provided');
+      }
+      for (const toolName of tools) {
+        if (typeof toolName !== 'string' || !toolName.trim()) {
+          throw new Error('Resource tools must be an array of non-empty strings when provided');
+        }
+      }
+      this.tools = tools.map((toolName) => toolName.trim());
     }
 
     this.uri = uri.trim();
@@ -83,6 +104,12 @@ export class BaseResource {
     }
     if (this.annotations !== undefined) {
       definition.annotations = this.annotations;
+    }
+    if (this.summary !== undefined) {
+      definition.summary = this.summary;
+    }
+    if (this.tools !== undefined) {
+      definition.tools = this.tools;
     }
     return definition;
   }

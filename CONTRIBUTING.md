@@ -45,19 +45,28 @@ npm run lint:fix             # Fix auto-fixable issues
 ```
 src/
 ├── index.js                 # Main module exports
+├── agents/
+│   ├── agent.js            # In-process tool-calling agent
+│   ├── manifest.js         # Turn-0 domain expert manifest builder
+│   ├── geminiAdapter.js
+│   └── historyStore.js
 ├── classes/
 │   ├── index.js            # Class exports
 │   ├── expressMcp.js         # Main ExpressMcp class
 │   ├── toolRegistry.js     # Tool registry management
+│   ├── resourceRegistry.js # MCP resources / playbooks
 │   ├── baseTool.js         # Base tool interface
+│   ├── baseResource.js     # Base resource / playbook interface
 │   └── knowledgeBase.js    # Knowledge base implementation
 ├── tools/
-│   └── knowledgeBase.js    # Knowledge base MCP tools
+│   ├── knowledgeBase.js    # Knowledge base MCP tools
+│   └── agent.js            # agent_ask MCP tool
 tests/
 ├── unit/                   # In-process unit tests (npm run test:unit)
 │   ├── expressMcp.test.js
 │   ├── toolRegistry.test.js
 │   ├── agent.test.js
+│   ├── domainManifest.test.js
 │   └── knowledgeBase.test.js
 ├── integration/            # HTTP/MCP supertest tests (npm run test:integration)
 │   ├── mcpProtocol.test.js

@@ -129,16 +129,21 @@ export function mcpPost(agent, path = '/mcp') {
  * @returns {Promise<string>}
  */
 export async function createMcpSession(agent, path = '/mcp', options = {}) {
-  let req = mcpPost(agent, path).send(createInitializeRequest(1));
-  if (options.authorization) {
-    req = req.set('Authorization', options.authorization);
+  // Streamable HTTP session init can intermittently return 400 under rapid app churn.
+  let lastStatus = null;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    let req = mcpPost(agent, path).send(createInitializeRequest(1));
+    if (options.authorization) {
+      req = req.set('Authorization', options.authorization);
+    }
+    const res = await req;
+    lastStatus = res.status;
+    const sessionId = res.headers[MCP_SESSION_ID_HEADER];
+    if (sessionId) {
+      return sessionId;
+    }
   }
-  const res = await req;
-  const sessionId = res.headers[MCP_SESSION_ID_HEADER];
-  if (!sessionId) {
-    throw new Error(`No ${MCP_SESSION_ID_HEADER} in initialize response (status ${res.status})`);
-  }
-  return sessionId;
+  throw new Error(`No ${MCP_SESSION_ID_HEADER} in initialize response (status ${lastStatus})`);
 }
 
 /**

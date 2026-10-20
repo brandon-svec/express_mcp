@@ -297,6 +297,39 @@ describe('FlexSearch Integration Tests', () => {
       }
     });
 
+    it('should weight tools matches and summary matches in combined scoring', () => {
+      kb.addDocument('tools-hit', {
+        title: 'Unrelated Title',
+        content: 'Generic procedure body without the query token.',
+        summary: 'Generic summary',
+        tools: ['fulfill_order'],
+      });
+      kb.addDocument('summary-hit', {
+        title: 'Unrelated Title',
+        content: 'Generic procedure body without the query token.',
+        summary: 'How to fulfill_order for customers',
+        tools: [],
+      });
+      kb.addDocument('content-hit', {
+        title: 'Unrelated Title',
+        content: 'This body mentions fulfill_order only in content.',
+        summary: 'Other topic',
+        tools: [],
+      });
+
+      const toolResults = kb.searchDocuments('fulfill_order');
+      const toolsDoc = toolResults.find((r) => r.document.id === 'tools-hit');
+      const contentDoc = toolResults.find((r) => r.document.id === 'content-hit');
+      assert.ok(toolsDoc);
+      assert.ok(contentDoc);
+      assert.ok(toolsDoc.score > contentDoc.score);
+
+      const summaryResults = kb.searchDocuments('fulfill_order');
+      const summaryDoc = summaryResults.find((r) => r.document.id === 'summary-hit');
+      assert.ok(summaryDoc);
+      assert.ok(summaryDoc.score > contentDoc.score);
+    });
+
     it('should include excerpt generation for search results', () => {
       const results = kb.searchDocuments('machine learning algorithms');
       

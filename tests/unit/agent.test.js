@@ -2058,6 +2058,83 @@ describe('Agent', () => {
     assert.deepStrictEqual(adapter.generateParams[0].systemInstruction, 'override');
   });
 
+  it('appends domain manifest without escalation and still omits MCP CAPABILITIES', async () => {
+    const adapter = new FakeAdapter([{ text: 'ok', functionCalls: null }]);
+    const agent = new Agent({
+      adapter,
+      toolRegistry: registry,
+      systemInstruction: 'host',
+      maxToolRounds: 8,
+      manifestResolver: () => 'SERVICE DOMAIN & IDENTITY:\nService: widget',
+    });
+
+    await agent.processMessage('k', 'hi');
+    const si = adapter.generateParams[0].systemInstruction;
+    assert.strictEqual(si, 'host\n\nSERVICE DOMAIN & IDENTITY:\nService: widget');
+    assert.notInclude(si, 'MCP CAPABILITIES');
+  });
+
+  it('places MCP CAPABILITIES after the domain manifest when escalation is set', async () => {
+    const adapter = new FakeAdapter([
+      {
+        text: null,
+        functionCalls: [{ name: REQUEST_TOOLS_NAME, args: { reason: 'need more' } }],
+      },
+      { text: 'done', functionCalls: null },
+    ]);
+    const agent = new Agent({
+      adapter,
+      toolRegistry: registry,
+      systemInstruction: 'narrow',
+      maxToolRounds: 8,
+      manifestResolver: () => 'SERVICE DOMAIN & IDENTITY:\nService: widget',
+    });
+
+    await agent.processMessage('k', 'hi', {
+      toolNames: [],
+      escalation: {
+        toolNames: ['echo'],
+        systemInstruction: 'full',
+      },
+    });
+
+    const round0 = adapter.generateParams[0].systemInstruction;
+    assert.match(round0, /^narrow\n\nSERVICE DOMAIN & IDENTITY:\nService: widget\n\nMCP CAPABILITIES/);
+    const round1 = adapter.generateParams[1].systemInstruction;
+    assert.match(round1, /^full\n\nSERVICE DOMAIN & IDENTITY:\nService: widget\n\nMCP CAPABILITIES/);
+    assert.notInclude(round1, 'AVAILABLE');
+  });
+
+  it('throws when manifestResolver returns a non-string', async () => {
+    const adapter = new FakeAdapter([{ text: 'ok', functionCalls: null }]);
+    const agent = new Agent({
+      adapter,
+      toolRegistry: registry,
+      systemInstruction: 'host',
+      maxToolRounds: 8,
+      manifestResolver: () => 42,
+    });
+    try {
+      await agent.processMessage('k', 'hi');
+      assert.fail('expected processMessage to throw');
+    } catch (err) {
+      assert.match(err.message, /manifestResolver must return a string/);
+    }
+  });
+
+  it('throws when manifestResolver is not a function', () => {
+    assert.throws(
+      () => new Agent({
+        adapter: new FakeAdapter([{ text: 'ok', functionCalls: null }]),
+        toolRegistry: registry,
+        systemInstruction: 'host',
+        maxToolRounds: 8,
+        manifestResolver: 'nope',
+      }),
+      /manifestResolver must be a function/,
+    );
+  });
+
   it('exports catalog and transcript helpers from package root', () => {
     assert.strictEqual(exportedBuildCapabilitiesCatalog, buildCapabilitiesCatalog);
     assert.strictEqual(typeof exportedFormatTurnsTranscript, 'function');
