@@ -42,6 +42,7 @@ export {
   InMemoryHistoryStore,
   formatTurnsTranscript,
   buildCapabilitiesCatalog,
+  buildDomainExpertManifest,
 } from './agents/index.js';
 
 export { InMemoryStandaloneSessionStore } from './stores/inMemoryStandaloneSessionStore.js';

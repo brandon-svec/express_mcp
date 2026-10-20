@@ -145,6 +145,23 @@ async function startSimpleExample() {
     tags: ['troubleshooting', 'errors', 'debugging', 'help']
   });
 
+  // Playbook with explicit summary + tools so kb_search ranks by tool name
+  await expressMcp.addDocument('returns-sop', {
+    title: 'Returns Procedure',
+    content: [
+      '# Returns Procedure',
+      '',
+      'Follow these steps when a customer requests a return.',
+      '',
+      '1. Confirm the order details.',
+      '2. Use the calculator tool only for refund amount checks.',
+      '3. Document the outcome in the knowledge base.',
+    ].join('\n'),
+    summary: 'Official SOP for processing customer returns and refund calculations.',
+    tools: ['calculator'],
+    tags: ['returns', 'sop', 'playbook'],
+  });
+
   // Show how tool descriptions now include available tags dynamically
   const tools = expressMcp.getRegisteredTools();
   console.log('📚 Available tools with dynamic descriptions:');

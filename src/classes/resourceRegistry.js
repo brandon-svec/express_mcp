@@ -112,10 +112,72 @@ export class ResourceRegistry {
         lastModified: doc.updatedAt,
       },
     };
-    if (Array.isArray(doc.tags) && doc.tags.length > 0) {
+    if (typeof doc.summary === 'string' && doc.summary.trim()) {
+      definition.description = doc.summary;
+    } else if (Array.isArray(doc.tags) && doc.tags.length > 0) {
       definition.description = `Tags: ${doc.tags.join(', ')}`;
     }
     return definition;
+  }
+
+  /**
+   * Whether an explicit resource belongs in the operational playbooks directory.
+   * Textual resources are included; blob-only binaries are skipped unless they
+   * declare summary or tools metadata.
+   * @param {BaseResource} resource
+   * @returns {boolean}
+   * @private
+   */
+  _isPlaybookResource (resource) {
+    if (typeof resource.summary === 'string' || Array.isArray(resource.tools)) {
+      return true;
+    }
+    return typeof resource.mimeType === 'string' && resource.mimeType.startsWith('text/');
+  }
+
+  /**
+   * Unified directory of operational playbooks: explicit BaseResources plus
+   * KnowledgeBase documents (kb:// URIs). Explicit URIs win on collision.
+   * @returns {Array<{
+   *   id: string,
+   *   title: string,
+   *   uri: string,
+   *   summary: string,
+   *   tools: string[],
+   *   tags: string[],
+   * }>}
+   */
+  getPlaybooksManifest () {
+    const playbooks = [];
+    const explicitUris = new Set();
+
+    for (const resource of this.getRegistered()) {
+      if (!this._isPlaybookResource(resource)) {
+        continue;
+      }
+      explicitUris.add(resource.uri);
+      playbooks.push({
+        id: resource.name,
+        title: typeof resource.title === 'string' && resource.title
+          ? resource.title
+          : resource.name,
+        uri: resource.uri,
+        summary: typeof resource.summary === 'string' ? resource.summary : '',
+        tools: Array.isArray(resource.tools) ? [...resource.tools] : [],
+        tags: [],
+      });
+    }
+
+    if (this.knowledgeBase && typeof this.knowledgeBase.getPlaybooksManifest === 'function') {
+      for (const entry of this.knowledgeBase.getPlaybooksManifest(this.namespace)) {
+        if (explicitUris.has(entry.uri)) {
+          continue;
+        }
+        playbooks.push(entry);
+      }
+    }
+
+    return playbooks;
   }
 
   /**

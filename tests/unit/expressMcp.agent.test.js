@@ -101,6 +101,91 @@ describe('ExpressMcp agent option', () => {
       tags: ['fulfillment'],
     });
     assert.include(mcp.agentTool.description, 'Knowledge base tags: fulfillment');
+    assert.include(mcp.agentTool.description, '1 operational playbook');
+  });
+
+  it('appends domain manifest by default and updates after addDocument', async () => {
+    class CapturingAdapter extends ModelAdapter {
+      constructor () {
+        super();
+        this.generateParams = [];
+      }
+
+      async generate (params) {
+        this.generateParams.push(params);
+        return { text: 'ok', functionCalls: null };
+      }
+    }
+
+    const adapter = new CapturingAdapter();
+    const mcp = new ExpressMcp(getTestExpressMcpOptions({
+      name: 'widget',
+      description: 'Widget domain service',
+      enableKnowledgeBase: true,
+      agent: {
+        enabled: true,
+        allowUnauthenticated: true,
+        exposeTool: false,
+        systemInstruction: 'You are a test assistant.',
+        adapter,
+      },
+    }));
+
+    await mcp.getAgent().processMessage('k', 'hello');
+    assert.include(adapter.generateParams[0].systemInstruction, 'SERVICE DOMAIN & IDENTITY:');
+    assert.include(adapter.generateParams[0].systemInstruction, 'Service: widget');
+    assert.include(adapter.generateParams[0].systemInstruction, 'Role: Widget domain service');
+    assert.notInclude(adapter.generateParams[0].systemInstruction, 'MCP CAPABILITIES');
+
+    await mcp.addDocument('returns', {
+      title: 'Returns SOP',
+      content: 'Process returns carefully.',
+      summary: 'How to process returns',
+      tools: ['ping'],
+    });
+
+    await mcp.getAgent().processMessage('k2', 'what governs returns?');
+    const si = adapter.generateParams[1].systemInstruction;
+    assert.include(si, 'OPERATIONAL PLAYBOOKS & PROCEDURES:');
+    assert.include(si, 'kb://widget/returns');
+    assert.include(si, 'Governs tools: ping');
+  });
+
+  it('skips domain manifest when includeDomainManifest is false', async () => {
+    class CapturingAdapter extends ModelAdapter {
+      constructor () {
+        super();
+        this.generateParams = [];
+      }
+
+      async generate (params) {
+        this.generateParams.push(params);
+        return { text: 'ok', functionCalls: null };
+      }
+    }
+
+    const adapter = new CapturingAdapter();
+    const mcp = new ExpressMcp(getTestExpressMcpOptions({
+      name: 'widget',
+      description: 'Widget domain service',
+      enableKnowledgeBase: true,
+      agent: {
+        enabled: true,
+        allowUnauthenticated: true,
+        exposeTool: false,
+        includeDomainManifest: false,
+        systemInstruction: 'You are a test assistant.',
+        adapter,
+      },
+    }));
+
+    await mcp.addDocument('returns', {
+      title: 'Returns SOP',
+      content: 'Process returns.',
+      summary: 'How to process returns',
+    });
+    await mcp.getAgent().processMessage('k', 'hello');
+    assert.strictEqual(adapter.generateParams[0].systemInstruction, 'You are a test assistant.');
   });
 
   it('enables agent without agent_ask when exposeTool is false', () => {

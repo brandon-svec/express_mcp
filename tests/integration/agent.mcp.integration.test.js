@@ -35,6 +35,18 @@ class CapturingAdapter extends ModelAdapter {
   }
 }
 
+class InstructionCapturingAdapter extends ModelAdapter {
+  constructor () {
+    super();
+    this.systemInstructions = [];
+  }
+
+  async generate ({ systemInstruction }) {
+    this.systemInstructions.push(systemInstruction);
+    return { text: 'grounded', functionCalls: null };
+  }
+}
+
 class EchoTool extends BaseTool {
   constructor () {
     super('echo', 'Echo tool', {
@@ -314,5 +326,65 @@ describe('Agent MCP integration', () => {
       .filter(Boolean);
     assert.deepStrictEqual(secondTurnTexts.includes('first'), true);
     assert.deepStrictEqual(secondTurnTexts.includes('second'), true);
+  });
+
+  it('tools/call agent_ask receives Turn-0 domain manifest with playbook URI', async () => {
+    const adapter = new InstructionCapturingAdapter();
+    const expressMcp = new ExpressMcp(getTestExpressMcpOptions({
+      name: 'widget',
+      description: 'Widget domain service',
+      enableKnowledgeBase: true,
+      agent: {
+        enabled: true,
+        allowUnauthenticated: true,
+        exposeTool: true,
+        systemInstruction: 'test assistant',
+        maxToolRounds: 8,
+        adapter,
+      },
+    }));
+
+    await expressMcp.addDocument('returns', {
+      title: 'Returns SOP',
+      content: 'Process customer returns with care.',
+      summary: 'How to process returns',
+      tools: ['echo'],
+    });
+
+    const app = express();
+    app.use(express.json());
+    app.use('/mcp', expressMcp.router());
+    const baseAgent = request(app);
+    let sessionId;
+    try {
+      sessionId = await createMcpSession(baseAgent);
+    } catch {
+      sessionId = await createMcpSession(baseAgent);
+    }
+    await mcpPostWithSession(baseAgent, sessionId, '/mcp').send({
+      jsonrpc: '2.0',
+      method: 'notifications/initialized',
+    });
+
+    const response = await mcpPostWithSession(baseAgent, sessionId, '/mcp').send({
+      jsonrpc: '2.0',
+      method: 'tools/call',
+      params: {
+        name: 'widget_agent_ask',
+        arguments: { prompt: 'What procedures govern returns?', conversation_id: 'manifest-1' },
+      },
+      id: 9,
+    });
+
+    assert.strictEqual(response.status, 200);
+    const payload = JSON.parse(response.body.result.content[0].text);
+    assert.strictEqual(payload.reply, 'grounded');
+    assert.strictEqual(adapter.systemInstructions.length, 1);
+    const si = adapter.systemInstructions[0];
+    assert.match(si, /SERVICE DOMAIN & IDENTITY:/);
+    assert.ok(si.includes('Service: widget'));
+    assert.ok(si.includes('kb://widget/returns'));
+    assert.ok(si.includes('Governs tools: echo'));
+    assert.equal(si.includes('MCP CAPABILITIES'), false);
   });
 });

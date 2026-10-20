@@ -258,6 +258,196 @@ describe('Knowledge Base Tests', () => {
       });
     });
 
+    describe('Playbook metadata and tool graph', () => {
+      it('stores explicit summary, tools, and relatedDocs', () => {
+        kb.addDocument('returns', {
+          title: 'Returns',
+          content: '# Returns\n\nFull body about refunds and shipping.',
+          summary: 'How to process returns',
+          tools: ['returns_create', 'returns_cancel'],
+          relatedDocs: ['shipping'],
+          tags: ['ops'],
+        });
+        const doc = kb.getDocument('returns');
+        assert.strictEqual(doc.summary, 'How to process returns');
+        assert.deepStrictEqual(doc.tools, ['returns_create', 'returns_cancel']);
+        assert.deepStrictEqual(doc.relatedDocs, ['shipping']);
+        assert.equal(doc.toolsExplicit, true);
+      });
+
+      it('auto-extracts summary skipping headings, fences, tables, and thematic breaks', () => {
+        kb.addDocument('sop', {
+          title: 'SOP',
+          content: [
+            '# Title',
+            '',
+            '---',
+            '',
+            '```',
+            'code',
+            '```',
+            '',
+            '| a | b |',
+            '|---|---|',
+            '',
+            '- First real paragraph about returns.',
+            '',
+            'Second paragraph ignored.',
+          ].join('\n'),
+        });
+        assert.strictEqual(
+          kb.getDocument('sop').summary,
+          'First real paragraph about returns.',
+        );
+      });
+
+      it('strips list and blockquote markers from auto-summary', () => {
+        kb.addDocument('quoted', {
+          title: 'Quoted',
+          content: '> Important policy text for agents.',
+        });
+        assert.strictEqual(
+          kb.getDocument('quoted').summary,
+          'Important policy text for agents.',
+        );
+      });
+
+      it('auto-associates tools with longest-first identifier-safe scan', () => {
+        kb.setKnownToolNames([
+          'cancel_order',
+          'cancel_order_batch',
+          'widget-service_kb_search',
+        ]);
+        kb.addDocument('batch', {
+          title: 'Batch cancel',
+          content: 'Use cancel_order_batch for bulk; never call cancel_order alone here.',
+        });
+        assert.deepStrictEqual(kb.getDocument('batch').tools, ['cancel_order_batch', 'cancel_order']);
+
+        kb.addDocument('hyphen', {
+          title: 'Prefixed',
+          content: 'Search with widget-service_kb_search before acting.',
+        });
+        assert.deepStrictEqual(kb.getDocument('hyphen').tools, ['widget-service_kb_search']);
+        assert.equal(kb.getDocument('hyphen').toolsExplicit, false);
+      });
+
+      it('does not match hyphenated prefixes as substring fragments', () => {
+        kb.setKnownToolNames(['widget', 'service', 'widget-service_kb_search']);
+        kb.addDocument('doc', {
+          title: 'T',
+          content: 'Call widget-service_kb_search now.',
+        });
+        assert.deepStrictEqual(kb.getDocument('doc').tools, ['widget-service_kb_search']);
+      });
+
+      it('getPlaybooksForTool and getPlaybooksManifest return linked docs', () => {
+        kb.addDocument('a', {
+          title: 'A',
+          content: 'Body',
+          summary: 'Summary A',
+          tools: ['ping'],
+          tags: ['x'],
+        });
+        kb.addDocument('b', {
+          title: 'B',
+          content: 'Body',
+          tools: ['pong'],
+        });
+        assert.deepStrictEqual(kb.getPlaybooksForTool('ping'), [{
+          id: 'a',
+          title: 'A',
+          summary: 'Summary A',
+        }]);
+        assert.deepStrictEqual(kb.getPlaybooksManifest('widget'), [{
+          id: 'a',
+          title: 'A',
+          uri: 'kb://widget/a',
+          summary: 'Summary A',
+          tools: ['ping'],
+          tags: ['x'],
+        }, {
+          id: 'b',
+          title: 'B',
+          uri: 'kb://widget/b',
+          summary: 'Body',
+          tools: ['pong'],
+          tags: [],
+        }]);
+        assert.throws(() => kb.getPlaybooksManifest(''), /namespace is required/);
+      });
+
+      it('ranks tool-name and summary matches above body-only matches', () => {
+        kb.addDocument('body-only', {
+          title: 'Unrelated',
+          content: 'Mentions returns somewhere in the long body of text about logistics.',
+          summary: 'Logistics overview',
+          tools: [],
+        });
+        kb.addDocument('tool-doc', {
+          title: 'Other',
+          content: 'Procedure body without the query word.',
+          summary: 'Something else',
+          tools: ['returns_create'],
+        });
+        kb.addDocument('summary-doc', {
+          title: 'Other',
+          content: 'Procedure body without the query word in content.',
+          summary: 'How to process returns for customers',
+          tools: [],
+        });
+
+        const byTool = kb.searchDocuments('returns_create');
+        assert.strictEqual(byTool[0].document.id, 'tool-doc');
+        assert.ok(byTool[0].score >= 3);
+
+        const bySummary = kb.searchDocuments('returns');
+        const summaryHit = bySummary.find((r) => r.document.id === 'summary-doc');
+        const bodyHit = bySummary.find((r) => r.document.id === 'body-only');
+        assert.ok(summaryHit);
+        assert.ok(bodyHit);
+        assert.ok(summaryHit.score > bodyHit.score);
+      });
+
+      it('updateDocument removes stale FlexSearch terms before reindexing', () => {
+        kb.addDocument('doc', {
+          title: 'Old Title UniqueAlpha',
+          content: 'Old content UniqueBeta',
+          tags: ['oldtag'],
+        });
+        kb.updateDocument('doc', {
+          title: 'New Title',
+          content: 'New content UniqueGamma',
+          tags: ['newtag'],
+        });
+        assert.strictEqual(kb.searchDocuments('UniqueAlpha').length, 0);
+        assert.strictEqual(kb.searchDocuments('UniqueBeta').length, 0);
+        assert.ok(kb.searchDocuments('UniqueGamma').length > 0);
+        assert.ok(kb.searchDocuments('newtag').length > 0);
+      });
+
+      it('setKnownToolNames re-associates non-explicit docs', () => {
+        kb.addDocument('doc', {
+          title: 'T',
+          content: 'Please call later_tool when ready.',
+        });
+        assert.deepStrictEqual(kb.getDocument('doc').tools, []);
+        kb.setKnownToolNames(['later_tool']);
+        assert.deepStrictEqual(kb.getDocument('doc').tools, ['later_tool']);
+        assert.deepStrictEqual(kb.getPlaybooksForTool('later_tool').map((p) => p.id), ['doc']);
+      });
+
+      it('does not overwrite explicit tools when known tools change', () => {
+        kb.addDocument('doc', {
+          title: 'T',
+          content: 'Mentions later_tool in body.',
+          tools: ['fixed_tool'],
+        });
+        kb.setKnownToolNames(['later_tool']);
+        assert.deepStrictEqual(kb.getDocument('doc').tools, ['fixed_tool']);
+      });
+    });
+
     describe('Statistics', () => {
       it('should return correct stats for empty knowledge base', () => {
         const stats = kb.getStats();

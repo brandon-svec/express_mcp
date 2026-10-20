@@ -105,7 +105,7 @@ describe('MCP resources integration', () => {
           name: 'getting-started',
           title: 'Getting Started',
           mimeType: 'text/markdown',
-          description: 'Tags: guide, intro',
+          description: 'Start here.',
           annotations: {
             audience: ['assistant'],
             lastModified: doc.updatedAt,
