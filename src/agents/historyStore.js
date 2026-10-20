@@ -22,13 +22,13 @@ export class InMemoryHistoryStore {
       this.maxTurns = null;
     }
 
-    /** @type {Map<string, Array<{ recordedAt: Date, contents: Array<Object> }>>} */
+    /** @type {Map<string, Array<{ recordedAt: Date, contents: Array<Object>, toolNames: string[] }>>} */
     this.turnsByKey = new Map();
   }
 
   /**
-   * @param {Array<{ recordedAt: Date, contents: Array<Object> }>} turns
-   * @returns {Array<{ recordedAt: Date, contents: Array<Object> }>}
+   * @param {Array<{ recordedAt: Date, contents: Array<Object>, toolNames?: string[] }>} turns
+   * @returns {Array<{ recordedAt: Date, contents: Array<Object>, toolNames: string[] }>}
    * @private
    */
   _pruneTurns (turns) {
@@ -43,7 +43,7 @@ export class InMemoryHistoryStore {
 
   /**
    * @param {string} key
-   * @returns {Array<{ recordedAt: Date, contents: Array<Object> }>}
+   * @returns {Array<{ recordedAt: Date, contents: Array<Object>, toolNames: string[] }>}
    * @private
    */
   _keptTurns (key) {
@@ -68,19 +68,20 @@ export class InMemoryHistoryStore {
    * Pruned turns with timestamps (for hosts that build relative-time transcripts).
    * Returns detached copies so callers can reverse/mutate without affecting store order.
    * @param {string} key
-   * @returns {Array<{ recordedAt: Date, contents: Array<Object> }>}
+   * @returns {Array<{ recordedAt: Date, contents: Array<Object>, toolNames: string[] }>}
    */
   getTurns (key) {
     return this._keptTurns(key).map((turn) => ({
       recordedAt: new Date(turn.recordedAt.getTime()),
       contents: [...turn.contents],
+      toolNames: Array.isArray(turn.toolNames) ? [...turn.toolNames] : [],
     }));
   }
 
   /**
    * @param {string} key
    * @param {Array<Object>} contents
-   * @param {{ recordedAt?: Date|number }} [options]
+   * @param {{ recordedAt?: Date|number, toolNames?: string[] }} [options]
    */
   append (key, contents, options = {}) {
     if (typeof key !== 'string' || !key) {
@@ -96,12 +97,26 @@ export class InMemoryHistoryStore {
     if (options.recordedAt !== undefined) {
       recordedAt = normalizeRecordedAt(options.recordedAt);
     }
+    /** @type {string[]} */
+    let toolNames = [];
+    if (options.toolNames !== undefined) {
+      if (!Array.isArray(options.toolNames)) {
+        throw new Error('toolNames must be an array when provided');
+      }
+      for (const name of options.toolNames) {
+        if (typeof name !== 'string' || name.length === 0) {
+          throw new Error('toolNames entries must be non-empty strings');
+        }
+      }
+      toolNames = [...options.toolNames];
+    }
     if (!this.turnsByKey.has(key)) {
       this.turnsByKey.set(key, []);
     }
     this.turnsByKey.get(key).push({
       recordedAt,
       contents,
+      toolNames,
     });
     this.turnsByKey.set(key, this._pruneTurns(this.turnsByKey.get(key)));
   }

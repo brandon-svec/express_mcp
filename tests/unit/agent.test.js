@@ -474,6 +474,10 @@ describe('Agent', () => {
 
     assert.deepStrictEqual({
       stored: history.get('chat:1'),
+      turns: history.getTurns('chat:1').map((turn) => ({
+        toolNames: turn.toolNames,
+        contentRoles: turn.contents.map((c) => c.role),
+      })),
       secondGeneratePrior: adapter.generateParams[2].contents.slice(0, 2),
       secondGenerateHasFunctionResponse: adapter.generateParams[2].contents.some((entry) => (
         entry.parts && entry.parts[0] && entry.parts[0].functionResponse
@@ -484,6 +488,10 @@ describe('Agent', () => {
         { role: 'model', parts: [{ text: 'done' }] },
         { role: 'user', parts: [{ text: 'second' }] },
         { role: 'model', parts: [{ text: 'next' }] },
+      ],
+      turns: [
+        { toolNames: ['echo'], contentRoles: ['user', 'model'] },
+        { toolNames: [], contentRoles: ['user', 'model'] },
       ],
       secondGeneratePrior: [
         { role: 'user', parts: [{ text: 'first' }] },
@@ -1428,22 +1436,18 @@ describe('Agent', () => {
       type: 'string',
       enum: ['other'],
     });
-    assert.include(
+    assert.strictEqual(
       requestToolsDecl.description,
-      'Request UNLOADED tools from AVAILABLE catalog: [other].',
+      'Unlock unloaded tools from AVAILABLE: [other]. ' +
+      'Call ONLY when the user request requires one of those unloaded tools. ' +
+      'Never call this for tools you can already invoke directly.',
     );
-    assert.include(
-      requestToolsDecl.description,
-      'ACTIVE tools already have full schemas loaded and must be invoked directly: [echo].',
-    );
-    assert.include(
+    assert.strictEqual(
       requestToolsDecl.parameters.properties.tools.description,
-      'Only unloaded tools from: [other].',
+      'Unloaded tool names to unlock (must be chosen from [other]).',
     );
-    assert.include(
-      requestToolsDecl.parameters.properties.tools.description,
-      'Do NOT request tools already active: [echo].',
-    );
+    assert.notMatch(requestToolsDecl.description, /\[echo\]/);
+    assert.notMatch(requestToolsDecl.parameters.properties.tools.description, /echo/);
     assert.deepStrictEqual(
       adapter.generateParams[1].systemInstruction,
       instructionWithCatalog(
@@ -2036,6 +2040,7 @@ describe('Agent', () => {
           { role: 'user', parts: [{ text: 'hello' }] },
           { role: 'model', parts: [{ text: 'ok' }] },
         ],
+        toolNames: [],
       },
     ]);
   });
@@ -2057,6 +2062,7 @@ describe('Agent', () => {
       {
         recordedAt: new Date(recordedAt.getTime()),
         contents: [{ role: 'model', parts: [{ text: 'reminder' }] }],
+        toolNames: [],
       },
     ]);
   });
@@ -2169,6 +2175,19 @@ describe('Agent', () => {
       text,
       'AVAILABLE (call request_tools with tools: ["name"] only if you need a tool from this list):',
     );
+    assert.notMatch(
+      text,
+      /If a user request needs an AVAILABLE capability, call request_tools/,
+    );
+    assert.include(
+      text,
+      'DIRECTIVE: Invoke ACTIVE tools (echo) directly — NEVER pass an ACTIVE tool to request_tools. ' +
+      'Only call request_tools if you need an unloaded tool from AVAILABLE above.',
+    );
+    assert.ok(
+      text.indexOf('- other: Other') < text.indexOf('DIRECTIVE:'),
+      'DIRECTIVE must follow the AVAILABLE list',
+    );
   });
 
   it('omits request_tools when all escalation tools are already active', async () => {
@@ -2201,7 +2220,7 @@ describe('Agent', () => {
     assert.isFalse(/AVAILABLE/.test(adapter.generateParams[0].systemInstruction));
   });
 
-  it('enriches request_tools description with active and unloaded tool names', async () => {
+  it('enriches request_tools description with unloaded tool names only', async () => {
     class OtherTool extends BaseTool {
       constructor () {
         super('other', 'Other', {
@@ -2242,20 +2261,23 @@ describe('Agent', () => {
       (d) => d.name === REQUEST_TOOLS_NAME,
     );
     assert.ok(requestToolsDecl);
-    assert.deepStrictEqual(requestToolsDecl.parameters.properties.tools.items, {
-      type: 'string',
-      enum: ['other'],
+    assert.deepStrictEqual({
+      enum: requestToolsDecl.parameters.properties.tools.items,
+      description: requestToolsDecl.description,
+      toolsDescription: requestToolsDecl.parameters.properties.tools.description,
+    }, {
+      enum: {
+        type: 'string',
+        enum: ['other'],
+      },
+      description:
+        'Unlock unloaded tools from AVAILABLE: [other]. ' +
+        'Call ONLY when the user request requires one of those unloaded tools. ' +
+        'Never call this for tools you can already invoke directly.',
+      toolsDescription: 'Unloaded tool names to unlock (must be chosen from [other]).',
     });
-    assert.strictEqual(
-      requestToolsDecl.description,
-      'Request UNLOADED tools from AVAILABLE catalog: [other]. ' +
-      'ACTIVE tools already have full schemas loaded and must be invoked directly: [echo]. ' +
-      'NEVER call request_tools for active tools.',
-    );
-    assert.strictEqual(
-      requestToolsDecl.parameters.properties.tools.description,
-      'Only unloaded tools from: [other]. Do NOT request tools already active: [echo].',
-    );
+    assert.notMatch(requestToolsDecl.description, /\becho\b/);
+    assert.notMatch(requestToolsDecl.parameters.properties.tools.description, /\becho\b/);
   });
 
   it('request_tools for already-active tools returns note without escalating', async () => {

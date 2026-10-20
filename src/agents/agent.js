@@ -91,11 +91,20 @@ export function buildCapabilitiesCatalog (input) {
       }
       lines.push(`- ${tool.name}: ${tool.description}`);
     }
-    lines.push(
-      'If a user request needs an AVAILABLE capability, call request_tools naming those tool(s), then chain the required calls.',
-    );
   } else {
     lines.push('Chain the required tool calls across rounds to fulfill the user request.');
+  }
+  const activeNames = input.activeTools.map((tool) => tool.name);
+  const activeLabel = activeNames.length > 0 ? activeNames.join(', ') : 'none';
+  if (input.availableTools.length > 0) {
+    lines.push(
+      `DIRECTIVE: Invoke ACTIVE tools (${activeLabel}) directly — NEVER pass an ACTIVE tool to request_tools. ` +
+      'Only call request_tools if you need an unloaded tool from AVAILABLE above.',
+    );
+  } else {
+    lines.push(
+      `DIRECTIVE: Invoke ACTIVE tools (${activeLabel}) directly — NEVER call request_tools; every needed tool is already loaded.`,
+    );
   }
   lines.push(
     'Never guess tool names, parameters, or IDs. If the request is ambiguous, ask one brief clarifying question. If no listed capability can fulfill it, say you cannot perform that action.',
@@ -259,6 +268,42 @@ export function scrubRequestToolsFromContents (contents) {
     result.push({ ...content, parts });
   }
   return result;
+}
+
+/**
+ * Collect unique functionCall names from a turn (excluding request_tools).
+ * Call before contentsForHistory so omit/digest modes still preserve executed tools.
+ *
+ * @param {Array<object>} turnContents
+ * @returns {string[]}
+ */
+function toolNamesFromTurnContents (turnContents) {
+  if (!Array.isArray(turnContents)) {
+    throw new Error('turnContents must be an array');
+  }
+  /** @type {string[]} */
+  const names = [];
+  const seen = new Set();
+  for (const content of turnContents) {
+    if (!content || typeof content !== 'object' || !Array.isArray(content.parts)) {
+      continue;
+    }
+    for (const part of content.parts) {
+      if (!part || typeof part !== 'object' || !part.functionCall) {
+        continue;
+      }
+      const name = part.functionCall.name;
+      if (typeof name !== 'string' || name.length === 0) {
+        continue;
+      }
+      if (name === REQUEST_TOOLS_NAME || seen.has(name)) {
+        continue;
+      }
+      seen.add(name);
+      names.push(name);
+    }
+  }
+  return names;
 }
 
 /**
@@ -890,15 +935,14 @@ export class Agent {
         return declarations;
       }
       const declaration = JSON.parse(JSON.stringify(REQUEST_TOOLS_DECLARATION));
-      const activeLabel = active.length > 0 ? active.join(', ') : 'none';
       const unloadedLabel = unloaded.join(', ');
+      // Do not name ACTIVE tools here — small models pattern-match those names into request_tools.
       declaration.description =
-        `Request UNLOADED tools from AVAILABLE catalog: [${unloadedLabel}]. ` +
-        `ACTIVE tools already have full schemas loaded and must be invoked directly: [${activeLabel}]. ` +
-        'NEVER call request_tools for active tools.';
+        `Unlock unloaded tools from AVAILABLE: [${unloadedLabel}]. ` +
+        'Call ONLY when the user request requires one of those unloaded tools. ' +
+        'Never call this for tools you can already invoke directly.';
       declaration.parameters.properties.tools.description =
-        `Only unloaded tools from: [${unloadedLabel}]. ` +
-        `Do NOT request tools already active: [${activeLabel}].`;
+        `Unloaded tool names to unlock (must be chosen from [${unloadedLabel}]).`;
       declaration.parameters.properties.tools.items = {
         type: 'string',
         enum: unloaded,
@@ -979,7 +1023,7 @@ export class Agent {
     ) {
       throw new Error('includePriorHistoryInContents must be a boolean when provided');
     }
-    /** @type {{ recordedAt?: Date }} */
+    /** @type {{ recordedAt?: Date, toolNames?: string[] }} */
     const historyAppendOptions = {};
     if (options.recordedAt !== undefined) {
       historyAppendOptions.recordedAt = normalizeRecordedAt(options.recordedAt);
@@ -1490,7 +1534,10 @@ export class Agent {
           contentsForHistory(turnContents, historyUserText, this.historyToolTurns, {
             toolDigests,
           }),
-          historyAppendOptions,
+          {
+            ...historyAppendOptions,
+            toolNames: toolNamesFromTurnContents(turnContents),
+          },
         );
       }
 
@@ -1527,7 +1574,10 @@ export class Agent {
         contentsForHistory(turnContents, historyUserText, this.historyToolTurns, {
           toolDigests,
         }),
-        historyAppendOptions,
+        {
+          ...historyAppendOptions,
+          toolNames: toolNamesFromTurnContents(turnContents),
+        },
       );
     }
     this.logger?.info?.(
