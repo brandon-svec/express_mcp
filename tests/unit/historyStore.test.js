@@ -108,12 +108,46 @@ describe('InMemoryHistoryStore', () => {
       {
         recordedAt: new Date(t2.getTime()),
         contents: [{ role: 'user', parts: [{ text: 'two' }] }],
+        toolNames: [],
       },
       {
         recordedAt: new Date(t3.getTime()),
         contents: [{ role: 'user', parts: [{ text: 'three' }] }],
+        toolNames: [],
       },
     ]);
+  });
+
+  it('append stores toolNames and getTurns returns a detached copy', () => {
+    const store = new InMemoryHistoryStore({ windowMinutes: 60 });
+    const recordedAt = new Date(Date.now() - 5_000);
+    store.append(
+      'k',
+      [{ role: 'user', parts: [{ text: 'hi' }] }],
+      { recordedAt, toolNames: ['echo', 'other'] },
+    );
+    const turns = store.getTurns('k');
+    assert.deepStrictEqual(turns, [
+      {
+        recordedAt: new Date(recordedAt.getTime()),
+        contents: [{ role: 'user', parts: [{ text: 'hi' }] }],
+        toolNames: ['echo', 'other'],
+      },
+    ]);
+    turns[0].toolNames.push('mutated');
+    assert.deepStrictEqual(store.getTurns('k')[0].toolNames, ['echo', 'other']);
+  });
+
+  it('append rejects non-array or empty-string toolNames', () => {
+    const store = new InMemoryHistoryStore({ windowMinutes: 60 });
+    assert.throws(
+      () => store.append('k', [{ role: 'user', parts: [{ text: 'x' }] }], { toolNames: 'echo' }),
+      /toolNames must be an array when provided/,
+    );
+    assert.throws(
+      () => store.append('k', [{ role: 'user', parts: [{ text: 'x' }] }], { toolNames: [''] }),
+      /toolNames entries must be non-empty strings/,
+    );
   });
 
   it('getTurns prunes turns older than the window', () => {
@@ -147,10 +181,12 @@ describe('InMemoryHistoryStore', () => {
       {
         recordedAt: new Date(t1.getTime()),
         contents: [{ role: 'user', parts: [{ text: 'one' }] }],
+        toolNames: [],
       },
       {
         recordedAt: new Date(t2.getTime()),
         contents: [{ role: 'user', parts: [{ text: 'two' }] }],
+        toolNames: [],
       },
     ]);
   });
@@ -171,10 +207,12 @@ describe('InMemoryHistoryStore', () => {
       {
         recordedAt: new Date(asDate.getTime()),
         contents: [{ role: 'user', parts: [{ text: 'date' }] }],
+        toolNames: [],
       },
       {
         recordedAt: new Date(asMillis),
         contents: [{ role: 'user', parts: [{ text: 'millis' }] }],
+        toolNames: [],
       },
     ]);
   });
