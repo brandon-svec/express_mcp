@@ -71,6 +71,38 @@ describe('TelemetryEngine', () => {
     assert.strictEqual(otlp.status.code, 1);
     assert.strictEqual(attr(otlp, 'openinference.span.kind').stringValue, 'TOOL');
     assert.strictEqual(attr(otlp, 'user.id').stringValue, 'gh:1');
+    assert.strictEqual(attr(otlp, 'auth.sub').stringValue, 'gh:1');
+  });
+
+  it('prefers userId over user.id over user.sub for user.id and keeps auth.sub', async () => {
+    const { engine, exported } = createEngine();
+    const withUserId = engine.startToolSpan({
+      toolName: 'hello',
+      userId: 'host-owner',
+      user: { sub: 'google:1', id: 'ignored-when-userId' },
+    });
+    assert.strictEqual(withUserId.attributes['user.id'], 'host-owner');
+    assert.strictEqual(withUserId.attributes['auth.sub'], 'google:1');
+    engine.endToolSpan(withUserId, { status: 'success', result: {}, durationMs: 1 });
+
+    const withUserDotId = engine.startAgentSpan({
+      prompt: 'hi',
+      user: { sub: 'google:2', id: 'host-from-user' },
+    });
+    assert.strictEqual(withUserDotId.attributes['user.id'], 'host-from-user');
+    assert.strictEqual(withUserDotId.attributes['auth.sub'], 'google:2');
+    engine.endAgentSpan(withUserDotId, { output: 'ok', rounds: 0 });
+
+    const withSubOnly = engine.startToolSpan({
+      toolName: 'hello',
+      user: { sub: 'google:3' },
+    });
+    assert.strictEqual(withSubOnly.attributes['user.id'], 'google:3');
+    assert.strictEqual(withSubOnly.attributes['auth.sub'], 'google:3');
+    engine.endToolSpan(withSubOnly, { status: 'success', result: {}, durationMs: 1 });
+
+    await engine.shutdown();
+    assert.strictEqual(exported.length, 3);
   });
 
   it('omits input/output when capture flags are false', async () => {

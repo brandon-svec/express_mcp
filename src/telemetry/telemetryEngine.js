@@ -20,6 +20,44 @@ function nowUnixNano() {
 }
 
 /**
+ * Resolve OpenInference user.id: host-supplied identity first, then JWT sub.
+ * @param {{ userId?: unknown, user?: { id?: unknown, sub?: unknown }|null }} params
+ * @returns {string|null}
+ */
+export function resolveTelemetryUserId(params) {
+  if (!params || typeof params !== 'object') {
+    return null;
+  }
+  if (params.userId !== undefined && params.userId !== null && String(params.userId).length > 0) {
+    return String(params.userId);
+  }
+  const user = params.user;
+  if (user && user.id !== undefined && user.id !== null && String(user.id).length > 0) {
+    return String(user.id);
+  }
+  if (user && user.sub !== undefined && user.sub !== null && String(user.sub).length > 0) {
+    return String(user.sub);
+  }
+  return null;
+}
+
+/**
+ * Apply user.id and optional auth.sub onto span attributes.
+ * @param {Record<string, string|number|boolean>} attributes
+ * @param {{ userId?: unknown, user?: { id?: unknown, sub?: unknown }|null }} params
+ */
+function applyUserIdentityAttributes(attributes, params) {
+  const userId = resolveTelemetryUserId(params);
+  if (userId) {
+    attributes['user.id'] = userId;
+  }
+  const sub = params?.user?.sub;
+  if (sub !== undefined && sub !== null && String(sub).length > 0) {
+    attributes['auth.sub'] = String(sub);
+  }
+}
+
+/**
  * Active span handle returned by start* methods.
  * @typedef {Object} ActiveSpan
  * @property {string} traceId
@@ -97,7 +135,8 @@ export class TelemetryEngine {
    * @param {string} params.toolName
    * @param {string|null} [params.sessionId]
    * @param {string|null} [params.traceparent]
-   * @param {object|null} [params.user]
+   * @param {string|null} [params.userId] - Host-supplied identity for OpenInference user.id
+   * @param {object|null} [params.user] - Auth user; `.id` / `.sub` used when userId omitted; `.sub` → auth.sub
    * @param {unknown} [params.args]
    * @returns {ActiveSpan|null}
    */
@@ -115,9 +154,7 @@ export class TelemetryEngine {
       if (params.sessionId) {
         attributes['mcp.session_id'] = String(params.sessionId);
       }
-      if (params.user?.sub) {
-        attributes['user.id'] = String(params.user.sub);
-      }
+      applyUserIdentityAttributes(attributes, params);
       if (this.config.captureParameters && params.args !== undefined) {
         attributes['input.value'] = sanitizeToAttributeString(
           params.args,
@@ -191,7 +228,8 @@ export class TelemetryEngine {
    * @param {string} [params.genAiSystem='custom']
    * @param {string|null} [params.traceparent]
    * @param {string|null} [params.sessionId]
-   * @param {object|null} [params.user]
+   * @param {string|null} [params.userId] - Host-supplied identity for OpenInference user.id
+   * @param {object|null} [params.user] - Auth user; `.id` / `.sub` used when userId omitted; `.sub` → auth.sub
    * @returns {ActiveSpan|null}
    */
   startAgentSpan(params) {
@@ -207,9 +245,7 @@ export class TelemetryEngine {
       if (params.sessionId) {
         attributes['mcp.session_id'] = String(params.sessionId);
       }
-      if (params.user?.sub) {
-        attributes['user.id'] = String(params.user.sub);
-      }
+      applyUserIdentityAttributes(attributes, params);
       if (this.config.captureParameters) {
         attributes['input.value'] = sanitizeToAttributeString(
           params.prompt,

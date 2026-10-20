@@ -144,6 +144,7 @@ export class ToolRegistry {
       const toolContext = {
         execution: toolExecution,
         user: context.user ?? null,
+        userId: context.userId ?? context.user?.id ?? null,
         sessionId,
         permissionMode: context.permissionMode ?? 'default',
         meta,
@@ -293,6 +294,7 @@ export class ToolRegistry {
           sessionId,
           traceparent: meta.traceparent ?? null,
           user: context.user ?? null,
+          userId: context.userId ?? context.user?.id ?? null,
           args,
         });
       } catch {

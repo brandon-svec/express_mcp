@@ -26,7 +26,7 @@ export const REQUEST_TOOLS_NAME = 'request_tools';
 const REQUEST_TOOLS_DECLARATION = {
   name: REQUEST_TOOLS_NAME,
   description:
-    'Request a broader tool set when the current tools cannot complete the user request. Call once with a short reason. Optionally name specific tools to load their exact parameter schemas.',
+    'Request UNLOADED tools from the AVAILABLE catalog when current tools cannot complete the request. Do NOT request tools that are already ACTIVE. Call once with a short reason. Optionally name specific tools to load their exact parameter schemas.',
   parameters: {
     type: 'object',
     properties: {
@@ -38,7 +38,7 @@ const REQUEST_TOOLS_DECLARATION = {
         type: 'array',
         items: { type: 'string' },
         description:
-          'Tool names to load (exact parameter schemas). Omit to load the full escalation set.',
+          'Tool names to load (exact parameter schemas). Omit to load the full escalation set. Do not include tools already listed under ACTIVE.',
       },
     },
     required: ['reason'],
@@ -67,7 +67,7 @@ export function buildCapabilitiesCatalog (input) {
   }
   const lines = [
     'MCP CAPABILITIES',
-    'ACTIVE (full parameter schemas loaded):',
+    'ACTIVE (full parameter schemas loaded — invoke directly; do not call request_tools for these):',
   ];
   for (const tool of input.activeTools) {
     if (!tool || typeof tool.name !== 'string' || tool.name.length === 0) {
@@ -80,7 +80,7 @@ export function buildCapabilitiesCatalog (input) {
   }
   if (input.availableTools.length > 0) {
     lines.push(
-      'AVAILABLE (call request_tools with tools: ["name"] to load exact parameter schemas):',
+      'AVAILABLE (call request_tools with tools: ["name"] only if you need a tool from this list):',
     );
     for (const tool of input.availableTools) {
       if (!tool || typeof tool.name !== 'string' || tool.name.length === 0) {
@@ -726,13 +726,18 @@ export class Agent {
    *   })|null,
    * }} escalation
    * @param {object} args
-   * @returns {{ toolNames: string[], systemInstruction: string }}
+   * @returns {{
+   *   toolNames: string[],
+   *   systemInstruction: string,
+   *   alreadyActive?: boolean,
+   * }}
    * @private
    */
   _grantEscalationTools (activeToolNames, escalation, args) {
     const requestedRaw = args && Object.prototype.hasOwnProperty.call(args, 'tools')
       ? args.tools
       : undefined;
+    const active = activeToolNames || [];
 
     if (requestedRaw === undefined) {
       return {
@@ -745,6 +750,15 @@ export class Agent {
       escalation.toolNames,
       requestedRaw,
     );
+
+    const activeSet = new Set(active);
+    if (requested.length > 0 && requested.every((name) => activeSet.has(name))) {
+      return {
+        toolNames: [...active],
+        systemInstruction: escalation.systemInstruction,
+        alreadyActive: true,
+      };
+    }
 
     if (escalation.resolve) {
       const granted = escalation.resolve(requested);
@@ -767,7 +781,6 @@ export class Agent {
         }
       }
       const grantedSet = new Set(granted.toolNames);
-      const active = activeToolNames || [];
       for (const name of active) {
         if (!grantedSet.has(name)) {
           throw new Error(
@@ -783,7 +796,7 @@ export class Agent {
 
     const merged = [];
     const seen = new Set();
-    for (const name of [...(activeToolNames || []), ...requested]) {
+    for (const name of [...active, ...requested]) {
       if (seen.has(name)) {
         continue;
       }
@@ -902,6 +915,7 @@ export class Agent {
    * @param {string} text
    * @param {{
    *   user?: Object|null,
+   *   userId?: string|null,
    *   hostContext?: Record<string, string>|null,
    *   ephemeralPrefix?: string,
    *   toolNames?: string[],
@@ -932,6 +946,7 @@ export class Agent {
     }
 
     const user = options.user ?? null;
+    const userId = options.userId ?? user?.id ?? null;
     const hostContext = options.hostContext ?? null;
     if (this.requireUser && !user) {
       throw new Error('Agent requires an authenticated user but none was provided.');
@@ -973,6 +988,7 @@ export class Agent {
           traceparent: options.meta?.traceparent ?? null,
           sessionId: historyKey,
           user,
+          userId,
         });
       } catch {
         agentSpan = null;
@@ -1201,6 +1217,22 @@ export class Agent {
             }
             const fromTools = activeToolNames ? [...activeToolNames] : [];
             const toTools = [...granted.toolNames];
+            const grantedDeclarations = this.buildToolDeclarations(
+              granted.alreadyActive === true ? fromTools : toTools,
+            );
+            if (granted.alreadyActive === true) {
+              responseParts.push({
+                functionResponse: {
+                  name: REQUEST_TOOLS_NAME,
+                  response: {
+                    ok: true,
+                    tools: grantedDeclarations,
+                    note: 'Requested tools are already active and ready to call directly.',
+                  },
+                },
+              });
+              continue;
+            }
             this.logger?.info?.(
               {
                 round,
@@ -1217,7 +1249,6 @@ export class Agent {
             escalationBudget = 1;
             activeSystemInstruction = resolveSystemInstruction();
             toolDeclarations = this._declarationsForTurn(activeToolNames, false);
-            const grantedDeclarations = this.buildToolDeclarations(activeToolNames);
             if (this.telemetryEngine && agentSpan) {
               try {
                 this.telemetryEngine.recordEscalation(agentSpan, {
@@ -1254,6 +1285,7 @@ export class Agent {
             {
               execution: new ToolExecution(fc.name, null, args),
               user,
+              userId,
               hostContext,
               sessionId: historyKey,
               permissionMode,

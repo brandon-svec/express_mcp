@@ -21,7 +21,7 @@ export {
   createGrpcTraceExporter,
   headersToMetadata,
 } from './otlpGrpc.js';
-export { TelemetryEngine } from './telemetryEngine.js';
+export { TelemetryEngine, resolveTelemetryUserId } from './telemetryEngine.js';
 export {
   normalizeTelemetryConfig,
   normalizeEndpoint,

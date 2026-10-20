@@ -2140,6 +2140,96 @@ describe('Agent', () => {
     assert.strictEqual(typeof exportedFormatTurnsTranscript, 'function');
   });
 
+  it('buildCapabilitiesCatalog tells the model not to request ACTIVE tools', () => {
+    const text = buildCapabilitiesCatalog({
+      activeTools: [{ name: 'echo', description: 'Echo tool' }],
+      availableTools: [{ name: 'other', description: 'Other' }],
+    });
+    assert.include(
+      text,
+      'ACTIVE (full parameter schemas loaded — invoke directly; do not call request_tools for these):',
+    );
+    assert.include(
+      text,
+      'AVAILABLE (call request_tools with tools: ["name"] only if you need a tool from this list):',
+    );
+  });
+
+  it('request_tools for already-active tools returns note without escalating', async () => {
+    class OtherTool extends BaseTool {
+      constructor () {
+        super('other', 'Other', {
+          type: 'object',
+          properties: {},
+          additionalProperties: false,
+        });
+      }
+
+      async execute () {
+        return { ok: true };
+      }
+    }
+    registry.register(new OtherTool());
+
+    const history = new InMemoryHistoryStore({ windowMinutes: 60 });
+    const infoCalls = [];
+    const adapter = new FakeAdapter([
+      {
+        text: null,
+        functionCalls: [{
+          name: REQUEST_TOOLS_NAME,
+          args: { reason: 'already have echo', tools: ['echo'] },
+        }],
+      },
+      { text: null, functionCalls: [{ name: 'echo', args: { message: 'hi' } }] },
+      { text: 'done', functionCalls: null },
+    ]);
+    const agent = new Agent({
+      adapter,
+      toolRegistry: registry,
+      systemInstruction: 'narrow',
+      history,
+      maxToolRounds: 3,
+      logger: {
+        info (attrs, msg) {
+          infoCalls.push({ attrs, msg });
+        },
+      },
+    });
+
+    const reply = await agent.processMessage('chat:already', 'go', {
+      toolNames: ['echo'],
+      systemInstruction: 'narrow',
+      escalation: {
+        toolNames: ['echo', 'other'],
+        systemInstruction: 'full prompt',
+      },
+    });
+
+    assert.strictEqual(reply, 'done');
+    assert.isUndefined(
+      infoCalls.find((c) => c.msg === 'Agent tool set escalated'),
+    );
+    // Still has AVAILABLE / request_tools on the next generate (did not escalate)
+    assert.isTrue(/AVAILABLE/.test(adapter.generateParams[1].systemInstruction));
+    assert.isTrue(
+      adapter.generateParams[1].toolDeclarations.some((d) => d.name === REQUEST_TOOLS_NAME),
+    );
+
+    const noteUser = adapter.generateParams[1].contents.find(
+      (c) => c.role === 'user' && c.parts.some((p) => p.functionResponse),
+    );
+    const noteResponse = noteUser.parts.find(
+      (p) => p.functionResponse && p.functionResponse.name === REQUEST_TOOLS_NAME,
+    ).functionResponse.response;
+    assert.strictEqual(noteResponse.ok, true);
+    assert.strictEqual(
+      noteResponse.note,
+      'Requested tools are already active and ready to call directly.',
+    );
+    assert.deepStrictEqual(noteResponse.tools, [ECHO_TOOL_DECLARATION]);
+  });
+
   describe('lifecycle hooks', () => {
     class AgentHook extends BaseHook {
       constructor (name, events, handler, options = {}) {
