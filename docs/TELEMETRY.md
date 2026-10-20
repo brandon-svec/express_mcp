@@ -229,7 +229,8 @@ curl -X POST http://localhost:3000/mcp \
 | `mcp.tool.status` | `"success"` or `"error"` |
 | `mcp.tool.duration_ms` | Duration in milliseconds |
 | `input.value` / `output.value` | Sanitized JSON (when capture flags are on) |
-| `user.id` | Authenticated JWT `sub` when auth is enabled |
+| `user.id` | Host-supplied identity when `userId` / `user.id` is set; otherwise JWT `sub` |
+| `auth.sub` | Authenticated JWT `sub` when present (kept even when `user.id` is host-supplied) |
 | `error.message` / `error.code` | On failure |
 
 ### CHAIN (`agent.process_message`)
@@ -246,7 +247,8 @@ curl -X POST http://localhost:3000/mcp \
 | `agent.escalation_reason` | Sanitized reason from `request_tools` |
 | `agent.self_corrections` | Count of Stop-hook reject-and-retry iterations (omitted when 0) |
 | `gen_ai.usage.input_tokens` / `output_tokens` / `total_tokens` | Sum across LLM rounds when the adapter reports usage. Phoenix Cloud maps these to `llm.token_count.*`. |
-| `user.id` | JWT `sub` when present |
+| `user.id` | Host-supplied identity when `options.userId` / `user.id` is set; otherwise JWT `sub` |
+| `auth.sub` | Authenticated JWT `sub` when present |
 
 ### LLM (`gen_ai.generateContent`)
 
@@ -277,6 +279,31 @@ Sensitive keys matching `sanitizeKeys` are replaced with `[REDACTED]`. Strings l
 - **Retries:** 429 / 502 / 503 / 504 with exponential backoff; `Retry-After` is honored.
 - **Queue full:** drop oldest spans (`maxQueueSize`).
 - **Batching:** flush when `batchMaxSpans` is reached **or** `batchTimeoutMs` elapses (default ~1–2 POSTs/sec instead of one POST per span). Keep-alive `http`/`https` agents reuse TCP connections.
+
+## Host-supplied `user.id`
+
+OpenInference `user.id` prefers a host identity when provided:
+
+1. `userId` on `Agent.processMessage` options or tool context
+2. `user.id` on the auth user object
+3. else JWT `user.sub`
+
+When JWT `sub` is present it is always recorded as `auth.sub`, even if `user.id` is host-supplied.
+
+For HTTP MCP sessions, pass an optional constructor callback:
+
+```javascript
+const expressMcp = new ExpressMcp({
+  name: 'my-service',
+  resolveUserId: async (user) => {
+    // Map JWT user → stable host identity for OpenInference user.id
+    return lookupOwnerId(user);
+  },
+  telemetry: { /* … */ },
+});
+```
+
+In-process hosts that call `agent.processMessage` should pass `{ userId: '<host-id>', user }` so CHAIN and nested TOOL spans share the same `user.id`.
 
 ## Advanced
 

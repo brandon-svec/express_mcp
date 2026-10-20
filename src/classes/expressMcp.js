@@ -94,6 +94,10 @@ export class ExpressMcp {
    * @param {number} [options.telemetry.keepAliveTimeoutMs=30000] - Keep-alive duration
    * @param {number} [options.telemetry.maxRetries=3] - Retries on 429/502/503/504
    * @param {number} [options.telemetry.requestTimeoutMs=5000] - Per-dispatch timeout
+   * @param {(user: object|null) => (string|null|Promise<string|null>)} [options.resolveUserId]
+   *   Optional host callback that maps the authenticated JWT user to a stable OpenInference
+   *   `user.id` for MCP tool spans. When set, the returned id is stamped on session context
+   *   (`userId` and `user.id`) before tools run. JWT `sub` remains on the user object for auth.
    */
   constructor(options = {}) {
     this.options = Object.assign({
@@ -111,6 +115,16 @@ export class ExpressMcp {
     if (options.auth) {
       this.options.auth = buildAuthOptions(options.auth);
     }
+
+    if (
+      options.resolveUserId !== undefined
+      && typeof options.resolveUserId !== 'function'
+    ) {
+      throw new Error('resolveUserId must be a function when provided');
+    }
+    this.resolveUserId = typeof options.resolveUserId === 'function'
+      ? options.resolveUserId
+      : null;
 
     // Store the instance name and description
     this.name = this.options.name;
@@ -866,7 +880,14 @@ export class ExpressMcp {
 
   /**
    * Build an SDK McpServer with tools registered from ToolRegistry.
-   * @param {{ user?: Object|null, extraInstructions?: string|null, permissionMode?: string, sessionId?: string|null, meta?: Object }} [context]
+   * @param {{
+   *   user?: Object|null,
+   *   userId?: string|null,
+   *   extraInstructions?: string|null,
+   *   permissionMode?: string,
+   *   sessionId?: string|null,
+   *   meta?: Object,
+   * }} [context]
    * @returns {import('@modelcontextprotocol/sdk/server/mcp.js').McpServer}
    * @private
    */
@@ -897,18 +918,45 @@ export class ExpressMcp {
       serverOptions
     );
 
+    const userId = context.userId ?? context.user?.id ?? null;
+    let user = context.user ?? null;
+    if (userId && user && typeof user === 'object' && !Array.isArray(user)) {
+      user = { ...user, id: userId };
+    } else if (userId && !user) {
+      user = { id: userId };
+    }
+
     this.toolRegistry.registerOnMcpServer(mcpServer, {
-      user: context.user ?? null,
+      user,
+      userId,
       sessionId: context.sessionId ?? null,
       permissionMode: context.permissionMode ?? this.permissionMode,
       meta: context.meta ?? {}
     });
     this.resourceRegistry.registerOnMcpServer(mcpServer, {
-      user: context.user ?? null,
+      user,
       sessionId: context.sessionId ?? null,
       meta: context.meta ?? {}
     });
     return mcpServer;
+  }
+
+  /**
+   * Resolve host OpenInference user.id for an authenticated JWT user.
+   * @param {object|null} user
+   * @returns {Promise<string|null>}
+   * @private
+   */
+  async _resolveSessionUserId(user) {
+    if (!this.resolveUserId) {
+      return user?.id != null && String(user.id).length > 0 ? String(user.id) : null;
+    }
+    const resolved = await this.resolveUserId(user ?? null);
+    if (resolved === undefined || resolved === null) {
+      return null;
+    }
+    const asString = String(resolved);
+    return asString.length > 0 ? asString : null;
   }
 
   /**
@@ -1004,8 +1052,11 @@ export class ExpressMcp {
         transport.onerror = (error) => {
           requestLogger.error({ error: error.message, stack: error.stack }, 'MCP transport error');
         };
+        const sessionUser = req.mcpUser ?? null;
+        const sessionUserId = await this._resolveSessionUserId(sessionUser);
         mcpServer = this._buildMcpServer({
-          user: req.mcpUser ?? null,
+          user: sessionUser,
+          userId: sessionUserId,
           extraInstructions,
           permissionMode: this.permissionMode,
           sessionId: newSessionId,
