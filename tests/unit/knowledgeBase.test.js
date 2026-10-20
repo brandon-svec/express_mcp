@@ -275,6 +275,22 @@ describe('Knowledge Base Tests', () => {
         assert.equal(doc.toolsExplicit, true);
       });
 
+      it('getDocument resolves plain id and kb://{namespace}/{id} URIs', () => {
+        kb.addDocument('returns', {
+          title: 'Returns',
+          content: 'How to process returns and refunds.',
+        });
+        const byPlain = kb.getDocument('returns');
+        const byUri = kb.getDocument('kb://orders/returns');
+        assert.ok(byPlain);
+        assert.strictEqual(byUri, byPlain);
+        assert.strictEqual(byUri.id, 'returns');
+        assert.strictEqual(kb.getDocument('kb://orders/missing'), undefined);
+        assert.strictEqual(kb.getDocument('kb://orders/'), undefined);
+        assert.strictEqual(kb.getDocument(''), undefined);
+        assert.strictEqual(kb.getDocument(null), undefined);
+      });
+
       it('auto-extracts summary skipping headings, fences, tables, and thematic breaks', () => {
         kb.addDocument('sop', {
           title: 'SOP',
@@ -603,7 +619,18 @@ describe('Knowledge Base Tests', () => {
 
       it('should get document by ID', async () => {
         const result = await getTool.execute({ id: 'test-doc' }, createMockContext());
-        
+
+        assert.ok(result.document);
+        assert.strictEqual(result.document.id, 'test-doc');
+        assert.strictEqual(result.document.title, 'Test Document');
+      });
+
+      it('should get document by kb:// URI', async () => {
+        const result = await getTool.execute(
+          { id: 'kb://widget/test-doc' },
+          createMockContext(),
+        );
+
         assert.ok(result.document);
         assert.strictEqual(result.document.id, 'test-doc');
         assert.strictEqual(result.document.title, 'Test Document');

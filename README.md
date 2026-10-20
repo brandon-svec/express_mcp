@@ -119,7 +119,7 @@ const stats = await expressMcp.getKnowledgeBaseStats();
 |------|---------|
 | `kb_search` / `{name}_kb_search` | Full-text search (`query`, optional `limit`, `includeContent`) |
 | `kb_list` / `{name}_kb_list` | List documents (optional `tag`, `limit`) |
-| `kb_get` / `{name}_kb_get` | Fetch one document by `id` |
+| `kb_get` / `{name}_kb_get` | Fetch one document by plain `id` or by `kb://{namespace}/{id}` (the URI printed in the Turn-0 playbook directory) |
 
 Tool descriptions update as you add documents: available tags and your custom `description` are included so AI clients know what is searchable.
 
