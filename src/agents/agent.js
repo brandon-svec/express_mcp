@@ -879,20 +879,36 @@ export class Agent {
    */
   _declarationsForTurn (toolNames, includeRequestTools, escalation = null) {
     const declarations = this.buildToolDeclarations(toolNames);
-    if (includeRequestTools) {
-      const declaration = JSON.parse(JSON.stringify(REQUEST_TOOLS_DECLARATION));
-      if (escalation) {
-        const activeSet = new Set(toolNames || []);
-        const unloaded = escalation.toolNames.filter((name) => !activeSet.has(name));
-        if (unloaded.length > 0) {
-          declaration.parameters.properties.tools.items = {
-            type: 'string',
-            enum: unloaded,
-          };
-        }
-      }
-      declarations.push(canonicalizeValue(declaration));
+    if (!includeRequestTools) {
+      return declarations;
     }
+    const active = toolNames || [];
+    if (escalation) {
+      const activeSet = new Set(active);
+      const unloaded = escalation.toolNames.filter((name) => !activeSet.has(name));
+      if (unloaded.length === 0) {
+        return declarations;
+      }
+      const declaration = JSON.parse(JSON.stringify(REQUEST_TOOLS_DECLARATION));
+      const activeLabel = active.length > 0 ? active.join(', ') : 'none';
+      const unloadedLabel = unloaded.join(', ');
+      declaration.description =
+        `Request UNLOADED tools from AVAILABLE catalog: [${unloadedLabel}]. ` +
+        `ACTIVE tools already have full schemas loaded and must be invoked directly: [${activeLabel}]. ` +
+        'NEVER call request_tools for active tools.';
+      declaration.parameters.properties.tools.description =
+        `Only unloaded tools from: [${unloadedLabel}]. ` +
+        `Do NOT request tools already active: [${activeLabel}].`;
+      declaration.parameters.properties.tools.items = {
+        type: 'string',
+        enum: unloaded,
+      };
+      declarations.push(canonicalizeValue(declaration));
+      return declarations;
+    }
+    declarations.push(canonicalizeValue(
+      JSON.parse(JSON.stringify(REQUEST_TOOLS_DECLARATION)),
+    ));
     return declarations;
   }
 
