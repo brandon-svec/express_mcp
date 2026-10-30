@@ -1,4 +1,5 @@
 export { BaseTool } from './baseTool.js';
+export { CommandTool } from './commandTool.js';
 export { ToolRegistry } from './toolRegistry.js';
 export { BaseResource } from './baseResource.js';
 export { ResourceRegistry } from './resourceRegistry.js';

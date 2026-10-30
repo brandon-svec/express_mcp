@@ -5,6 +5,7 @@ import { randomUUID } from 'crypto';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { ToolRegistry } from './toolRegistry.js';
+import { ToolExecution } from './toolExecution.js';
 import { HookRegistry } from './hookRegistry.js';
 import { KnowledgeBase } from './knowledgeBase.js';
 import { ResourceRegistry } from './resourceRegistry.js';
@@ -390,6 +391,124 @@ export class ExpressMcp {
       throw new Error('Agent is not enabled. Set options.agent.enabled to true.');
     }
     return this.agent;
+  }
+
+  /**
+   * Execute a tool directly with optional conversation history recording.
+   * @param {string} toolName
+   * @param {Object} args
+   * @param {Object} [options]
+   * @param {string} [options.historyKey] - Conversation key to record into
+   * @param {string} [options.conversationId] - Alias for historyKey
+   * @param {boolean} [options.recordToHistory=false]
+   * @param {(result: any, context?: Object) => string|Promise<string>} [options.formatResponse]
+   * @param {string} [options.userText]
+   * @param {Object|null} [options.user]
+   * @param {Object|null} [options.hostContext]
+   * @param {Object|null} [options.meta]
+   * @param {string} [options.permissionMode]
+   * @returns {Promise<{ result: any, formattedText: string }>}
+   */
+  async executeTool(toolName, args, options = {}) {
+    if (typeof toolName !== 'string' || !toolName) {
+      throw new Error('toolName is required');
+    }
+    if (options !== undefined && (typeof options !== 'object' || options === null || Array.isArray(options))) {
+      throw new Error('options must be a plain object when provided');
+    }
+    const toolArgs = args === undefined || args === null ? {} : args;
+    if (typeof toolArgs !== 'object' || Array.isArray(toolArgs)) {
+      throw new Error('args must be a plain object');
+    }
+
+    const user = options.user ?? null;
+    const historyKey = options.historyKey || options.conversationId || null;
+    const recordToHistory = options.recordToHistory === true || Boolean(historyKey);
+    const toolContext = {
+      execution: new ToolExecution(toolName, null, toolArgs),
+      user,
+      userId: options.userId ?? user?.id ?? null,
+      sessionId: historyKey,
+      meta: options.meta || null,
+      hostContext: options.hostContext || null,
+      permissionMode: options.permissionMode || this.permissionMode || 'default',
+    };
+
+    const execution = await this.toolRegistry.executeTool(toolName, toolArgs, toolContext);
+    if (execution.status === 'error') {
+      const err = execution.getErrorData();
+      throw new Error(err.error || 'Tool execution failed');
+    }
+
+    const tool = this.toolRegistry.getTool(toolName);
+    const formatter = options.formatResponse
+      || (tool && typeof tool.formatResponse === 'function' ? tool.formatResponse.bind(tool) : null);
+    const formattedText = formatter
+      ? await formatter(execution.result, toolContext)
+      : (typeof execution.result === 'string'
+        ? execution.result
+        : JSON.stringify(execution.result, null, 2));
+    if (typeof formattedText !== 'string') {
+      throw new Error('formatResponse must return a string');
+    }
+
+    if (recordToHistory && historyKey && this.agent && this.agent.history) {
+      const userText = options.userText || `/${toolName}`;
+      this.agent.history.append(historyKey, [
+        { role: 'user', parts: [{ text: userText }] },
+        { role: 'model', parts: [{ text: formattedText }] },
+      ], {
+        recordedAt: new Date(),
+        toolNames: [toolName],
+      });
+    }
+
+    return {
+      result: execution.result,
+      formattedText,
+    };
+  }
+
+  /**
+   * Record a successful MCP tools/call into agent history when _meta.conversation_id is set.
+   * History key matches AgentTool: mcp:{user.sub|anon}:{conversationId}.
+   * @param {{
+   *   toolName: string,
+   *   args: Object,
+   *   result: any,
+   *   conversationId: string,
+   *   user: Object|null,
+   * }} params
+   * @returns {Promise<void>}
+   * @private
+   */
+  async _recordMcpToolCallToHistory(params) {
+    if (!this.agent || !this.agent.history) {
+      return;
+    }
+    const { toolName, result, conversationId, user } = params;
+    if (typeof conversationId !== 'string' || !conversationId.trim()) {
+      return;
+    }
+    const userScope = user?.sub || 'anon';
+    const historyKey = `mcp:${userScope}:${conversationId.trim()}`;
+    const tool = this.toolRegistry.getTool(toolName);
+    const formatter = tool && typeof tool.formatResponse === 'function'
+      ? tool.formatResponse.bind(tool)
+      : null;
+    const formattedText = formatter
+      ? await formatter(result)
+      : (typeof result === 'string' ? result : JSON.stringify(result, null, 2));
+    if (typeof formattedText !== 'string') {
+      throw new Error('formatResponse must return a string');
+    }
+    this.agent.history.append(historyKey, [
+      { role: 'user', parts: [{ text: `/${toolName}` }] },
+      { role: 'model', parts: [{ text: formattedText }] },
+    ], {
+      recordedAt: new Date(),
+      toolNames: [toolName],
+    });
   }
 
   /**
@@ -931,7 +1050,8 @@ export class ExpressMcp {
       userId,
       sessionId: context.sessionId ?? null,
       permissionMode: context.permissionMode ?? this.permissionMode,
-      meta: context.meta ?? {}
+      meta: context.meta ?? {},
+      recordToolCallToHistory: (params) => this._recordMcpToolCallToHistory(params),
     });
     this.resourceRegistry.registerOnMcpServer(mcpServer, {
       user,

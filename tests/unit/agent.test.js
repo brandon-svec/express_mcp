@@ -10,6 +10,7 @@ import { ModelAdapter } from '../../src/agents/modelAdapter.js';
 import { InMemoryHistoryStore } from '../../src/agents/historyStore.js';
 import { ToolRegistry } from '../../src/classes/toolRegistry.js';
 import { BaseTool } from '../../src/classes/baseTool.js';
+import { CommandTool } from '../../src/classes/commandTool.js';
 import { BaseHook, HookBlockedError } from '../../src/classes/baseHook.js';
 import { HookRegistry } from '../../src/classes/hookRegistry.js';
 import {
@@ -2575,6 +2576,196 @@ describe('Agent', () => {
       }
       // Initial generate + one self-correction generate, then block
       assert.strictEqual(adapter.callIndex, 2);
+    });
+  });
+
+  describe('CommandTool routing', () => {
+    class StatusCommand extends CommandTool {
+      constructor (options = {}) {
+        super('status', 'Status', {
+          type: 'object',
+          properties: {},
+          additionalProperties: false,
+        }, {
+          triggers: ['status'],
+          formatResponse: async (result) => `Equity: ${result.equity}`,
+          ...options,
+        });
+        this.executeCalls = 0;
+      }
+
+      async execute () {
+        this.executeCalls += 1;
+        return { equity: 42 };
+      }
+    }
+
+    class AuditCommand extends CommandTool {
+      constructor () {
+        super('audit', 'Audit', {
+          type: 'object',
+          properties: {
+            symbol: { type: 'string' },
+          },
+          required: ['symbol'],
+          additionalProperties: false,
+        }, {
+          triggers: [/^audit\s+(\w+)$/i],
+          mode: 'prompt',
+          defaultArgs: (match) => ({ symbol: match[1] }),
+          prompt: (match) => `Run a thorough audit of ${match[1]} using only the active tools.`,
+          historyUserText: (match, text) => text,
+          toolNames: ['echo'],
+        });
+      }
+
+      async execute () {
+        return { ok: true };
+      }
+    }
+
+    class HybridCommand extends CommandTool {
+      constructor () {
+        super('explain_status', 'Explain status', {
+          type: 'object',
+          properties: {},
+          additionalProperties: false,
+        }, {
+          triggers: ['explain status'],
+          mode: 'hybrid',
+          historyUserText: 'explain status',
+          prompt: (match, text, data) => (
+            data
+              ? `Explain this status JSON to the user:\n${JSON.stringify(data)}`
+              : text
+          ),
+        });
+        this.executeCalls = 0;
+      }
+
+      async execute () {
+        this.executeCalls += 1;
+        return { equity: 99 };
+      }
+    }
+
+    it('direct mode executes without generateContent and records user+model', async () => {
+      const history = new InMemoryHistoryStore({ windowMinutes: 60 });
+      const status = new StatusCommand();
+      registry.register(status);
+      const adapter = new FakeAdapter([]);
+      const agent = new Agent({
+        adapter,
+        toolRegistry: registry,
+        systemInstruction: 'test',
+        history,
+        maxToolRounds: 8,
+      });
+
+      const reply = await agent.processMessage('chat:1', 'status');
+      assert.strictEqual(reply, 'Equity: 42');
+      assert.strictEqual(adapter.callIndex, 0);
+      assert.strictEqual(status.executeCalls, 1);
+      assert.deepStrictEqual(history.get('chat:1'), [
+        { role: 'user', parts: [{ text: 'status' }] },
+        { role: 'model', parts: [{ text: 'Equity: 42' }] },
+      ]);
+    });
+
+    it('direct mode output is available to the next turn priorHistory', async () => {
+      const history = new InMemoryHistoryStore({ windowMinutes: 60 });
+      registry.register(new StatusCommand());
+      const adapter = new FakeAdapter([
+        { text: 'Your equity was 42', functionCalls: null },
+      ]);
+      const agent = new Agent({
+        adapter,
+        toolRegistry: registry,
+        systemInstruction: 'test',
+        history,
+        maxToolRounds: 8,
+      });
+
+      await agent.processMessage('chat:1', 'status');
+      const reply = await agent.processMessage('chat:1', 'What was my equity?');
+      assert.strictEqual(reply, 'Your equity was 42');
+      assert.strictEqual(adapter.callIndex, 1);
+      const contents = adapter.generateParams[0].contents;
+      assert.deepStrictEqual(contents[0], { role: 'user', parts: [{ text: 'status' }] });
+      assert.deepStrictEqual(contents[1], { role: 'model', parts: [{ text: 'Equity: 42' }] });
+      assert.deepStrictEqual(contents[2], { role: 'user', parts: [{ text: 'What was my equity?' }] });
+    });
+
+    it('prompt mode expands adapter prompt and stores concise historyUserText', async () => {
+      const history = new InMemoryHistoryStore({ windowMinutes: 60 });
+      registry.register(new AuditCommand());
+      const adapter = new FakeAdapter([
+        { text: 'audit complete', functionCalls: null },
+      ]);
+      const agent = new Agent({
+        adapter,
+        toolRegistry: registry,
+        systemInstruction: 'test',
+        history,
+        maxToolRounds: 8,
+      });
+
+      const reply = await agent.processMessage('chat:1', 'audit balq');
+      assert.strictEqual(reply, 'audit complete');
+      const userPart = adapter.generateParams[0].contents.at(-1).parts[0].text;
+      assert.match(userPart, /Run a thorough audit of balq/);
+      assert.deepStrictEqual(
+        adapter.generateParams[0].toolDeclarations.map((d) => d.name),
+        ['echo'],
+      );
+      assert.deepStrictEqual(history.get('chat:1')[0], {
+        role: 'user',
+        parts: [{ text: 'audit balq' }],
+      });
+    });
+
+    it('hybrid mode prefetches tool result into the adapter prompt', async () => {
+      const history = new InMemoryHistoryStore({ windowMinutes: 60 });
+      const hybrid = new HybridCommand();
+      registry.register(hybrid);
+      const adapter = new FakeAdapter([
+        { text: 'equity is 99', functionCalls: null },
+      ]);
+      const agent = new Agent({
+        adapter,
+        toolRegistry: registry,
+        systemInstruction: 'test',
+        history,
+        maxToolRounds: 8,
+      });
+
+      const reply = await agent.processMessage('chat:1', 'explain status');
+      assert.strictEqual(reply, 'equity is 99');
+      assert.strictEqual(hybrid.executeCalls, 1);
+      assert.strictEqual(adapter.callIndex, 1);
+      const userPart = adapter.generateParams[0].contents.at(-1).parts[0].text;
+      assert.match(userPart, /"equity":99/);
+      assert.deepStrictEqual(history.get('chat:1')[0], {
+        role: 'user',
+        parts: [{ text: 'explain status' }],
+      });
+    });
+
+    it('direct mode respects appendHistory false', async () => {
+      const history = new InMemoryHistoryStore({ windowMinutes: 60 });
+      registry.register(new StatusCommand());
+      const adapter = new FakeAdapter([]);
+      const agent = new Agent({
+        adapter,
+        toolRegistry: registry,
+        systemInstruction: 'test',
+        history,
+        maxToolRounds: 8,
+      });
+
+      await agent.processMessage('chat:1', 'status', { appendHistory: false });
+      assert.deepStrictEqual(history.get('chat:1'), []);
+      assert.strictEqual(adapter.callIndex, 0);
     });
   });
 });

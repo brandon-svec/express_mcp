@@ -109,9 +109,56 @@ export class ToolRegistry {
   }
 
   /**
+   * Resolve a registered tool by original or final (prefixed) name.
+   * @param {string} toolName
+   * @returns {import('./baseTool.js').BaseTool|null}
+   */
+  getTool(toolName) {
+    if (typeof toolName !== 'string' || !toolName) {
+      return null;
+    }
+    const finalName = this.nameMapping.get(toolName) || toolName;
+    return this.tools.get(finalName) || null;
+  }
+
+  /**
+   * Find a registered CommandTool matching the provided text.
+   * First match in registration order wins.
+   * @param {string} text
+   * @returns {import('./commandTool.js').CommandMatch|null}
+   */
+  findCommandMatch(text) {
+    if (typeof text !== 'string' || !text.trim()) {
+      return null;
+    }
+    for (const tool of this.tools.values()) {
+      if (typeof tool.match === 'function') {
+        const match = tool.match(text);
+        if (match) {
+          return match;
+        }
+      }
+    }
+    return null;
+  }
+
+  /**
    * Register all tools on an SDK McpServer instance using JSON Schema tool definitions.
    * @param {import('@modelcontextprotocol/sdk/server/mcp.js').McpServer} mcpServer
-   * @param {{ user?: Object|null, sessionId?: string|null, permissionMode?: string, meta?: Object }} [context]
+   * @param {{
+   *   user?: Object|null,
+   *   sessionId?: string|null,
+   *   permissionMode?: string,
+   *   meta?: Object,
+   *   recordToolCallToHistory?: (params: {
+   *     toolName: string,
+   *     args: Object,
+   *     result: any,
+   *     conversationId: string,
+   *     user: Object|null,
+   *     meta: Object,
+   *   }) => Promise<void>|void,
+   * }} [context]
    */
   registerOnMcpServer(mcpServer, context = {}) {
     const server = mcpServer.server;
@@ -128,15 +175,21 @@ export class ToolRegistry {
       const { name, arguments: args } = request.params;
       const requestId = extra?.requestId ?? null;
       const sessionId = extra?.sessionId ?? context.sessionId ?? null;
+      const paramsMeta = request.params?._meta && typeof request.params._meta === 'object'
+        ? request.params._meta
+        : {};
       const headerTraceparent = extra?.requestInfo?.headers?.traceparent
         ?? extra?.requestInfo?.headers?.Traceparent
         ?? null;
-      const traceparent = extra?._meta?.traceparent
+      const traceparent = paramsMeta.traceparent
+        ?? extra?._meta?.traceparent
         ?? headerTraceparent
         ?? context.meta?.traceparent
         ?? null;
       const meta = {
+        ...(context.meta || {}),
         ...(extra?._meta || {}),
+        ...paramsMeta,
         ...(traceparent ? { traceparent } : {})
       };
 
@@ -174,6 +227,23 @@ export class ToolRegistry {
       }
 
       const result = execution.result;
+      const conversationId = typeof meta.conversation_id === 'string'
+        ? meta.conversation_id.trim()
+        : '';
+      if (
+        conversationId
+        && typeof context.recordToolCallToHistory === 'function'
+      ) {
+        await context.recordToolCallToHistory({
+          toolName: name,
+          args: args || {},
+          result,
+          conversationId,
+          user: context.user ?? null,
+          meta,
+        });
+      }
+
       const content = [
         {
           type: 'text',
