@@ -1066,6 +1066,10 @@ export class Agent {
     try {
     let promptText = text;
     const contextPrefixes = [];
+    /** @type {string|undefined} */
+    let commandEphemeralPrefix;
+    /** @type {Object} */
+    let turnOptions = options;
 
     const priorHistory = this.history ? this.history.get(historyKey) : [];
 
@@ -1083,6 +1087,124 @@ export class Agent {
       this._sessionStartKeys.add(historyKey);
       if (sessionStart.additionalContext) {
         contextPrefixes.push(sessionStart.additionalContext);
+      }
+    }
+
+    const commandMatch = this.toolRegistry?.findCommandMatch?.(text) ?? null;
+
+    if (commandMatch && commandMatch.mode === 'direct') {
+      if (!this.toolRegistry) {
+        throw new Error('toolRegistry is required for CommandTool direct mode');
+      }
+      const toolContext = {
+        execution: new ToolExecution(commandMatch.tool.name, null, commandMatch.args),
+        user,
+        userId,
+        hostContext,
+        sessionId: historyKey,
+        permissionMode,
+        meta: { traceparent, turn_index: 0 },
+      };
+      const execution = await this.toolRegistry.executeTool(
+        commandMatch.tool.name,
+        commandMatch.args,
+        toolContext,
+      );
+      if (execution.status === 'error') {
+        const errorData = execution.getErrorData();
+        throw new Error(errorData.error || 'Tool execution failed');
+      }
+      const formattedReply = await commandMatch.tool.formatResponse(
+        execution.result,
+        toolContext,
+      );
+      if (typeof formattedReply !== 'string') {
+        throw new Error('CommandTool formatResponse must return a string');
+      }
+      let storedUserText = commandMatch.historyUserText || text;
+      if (historyUserTextExplicit) {
+        if (typeof options.historyUserText !== 'string' || !options.historyUserText.trim()) {
+          throw new Error('historyUserText must be a non-empty string when provided');
+        }
+        storedUserText = options.historyUserText;
+      }
+      if (appendHistory && this.history) {
+        this.history.append(
+          historyKey,
+          [
+            { role: 'user', parts: [{ text: storedUserText }] },
+            { role: 'model', parts: [{ text: formattedReply }] },
+          ],
+          {
+            ...historyAppendOptions,
+            toolNames: [commandMatch.tool.name],
+          },
+        );
+      }
+      this.logger?.info?.(
+        {
+          rounds: 0,
+          toolCalls: 1,
+          errorCalls: 0,
+          historyTurns: priorHistory.length,
+          commandMode: 'direct',
+          toolName: commandMatch.tool.name,
+          appendHistory,
+        },
+        'Agent processMessage completed',
+      );
+      finalReply = formattedReply;
+      return formattedReply;
+    }
+
+    if (commandMatch && (commandMatch.mode === 'prompt' || commandMatch.mode === 'hybrid')) {
+      let matchPrompt = commandMatch.prompt;
+      if (commandMatch.mode === 'hybrid') {
+        if (!this.toolRegistry) {
+          throw new Error('toolRegistry is required for CommandTool hybrid mode');
+        }
+        const toolContext = {
+          execution: new ToolExecution(commandMatch.tool.name, null, commandMatch.args),
+          user,
+          userId,
+          hostContext,
+          sessionId: historyKey,
+          permissionMode,
+          meta: { traceparent, turn_index: 0 },
+        };
+        const execution = await this.toolRegistry.executeTool(
+          commandMatch.tool.name,
+          commandMatch.args,
+          toolContext,
+        );
+        if (execution.status === 'error') {
+          const errorData = execution.getErrorData();
+          throw new Error(errorData.error || 'Tool execution failed');
+        }
+        if (typeof commandMatch.tool.promptTemplate === 'function') {
+          matchPrompt = commandMatch.tool.promptTemplate(
+            commandMatch.match,
+            text.trim(),
+            execution.result,
+          );
+        }
+      }
+      promptText = matchPrompt;
+      if (typeof commandMatch.ephemeralPrefix === 'string' && commandMatch.ephemeralPrefix.length > 0) {
+        commandEphemeralPrefix = commandMatch.ephemeralPrefix;
+      }
+      if (
+        options.toolNames === undefined
+        && Array.isArray(commandMatch.tool.toolNames)
+      ) {
+        turnOptions = { ...options, toolNames: commandMatch.tool.toolNames };
+      }
+      // Stash command historyUserText on turnOptions when caller did not override
+      if (!historyUserTextExplicit && commandMatch.historyUserText) {
+        turnOptions = {
+          ...turnOptions,
+          historyUserText: commandMatch.historyUserText,
+        };
       }
     }
 
@@ -1117,19 +1239,29 @@ export class Agent {
     }
 
     let historyUserText = promptText;
-    if (historyUserTextExplicit) {
-      if (typeof options.historyUserText !== 'string' || !options.historyUserText.trim()) {
+    const effectiveHistoryUserText = turnOptions.historyUserText !== undefined
+      ? turnOptions.historyUserText
+      : options.historyUserText;
+    if (effectiveHistoryUserText !== undefined) {
+      if (typeof effectiveHistoryUserText !== 'string' || !effectiveHistoryUserText.trim()) {
         throw new Error('historyUserText must be a non-empty string when provided');
       }
-      historyUserText = options.historyUserText;
+      historyUserText = effectiveHistoryUserText;
     }
 
     let modelUserText = promptText;
+    const ephemeralParts = [];
+    if (commandEphemeralPrefix) {
+      ephemeralParts.push(commandEphemeralPrefix);
+    }
     if (options.ephemeralPrefix !== undefined) {
       if (typeof options.ephemeralPrefix !== 'string' || options.ephemeralPrefix.length === 0) {
         throw new Error('ephemeralPrefix must be a non-empty string when provided');
       }
-      modelUserText = `${options.ephemeralPrefix}${promptText}`;
+      ephemeralParts.push(options.ephemeralPrefix);
+    }
+    if (ephemeralParts.length > 0) {
+      modelUserText = `${ephemeralParts.join('')}${promptText}`;
     }
     if (contextPrefixes.length > 0) {
       modelUserText = `${contextPrefixes.join('\n')}\n${modelUserText}`;
@@ -1139,7 +1271,7 @@ export class Agent {
       activeToolNames: initialToolNames,
       activeSystemInstruction: initialSystemInstruction,
       escalation,
-    } = this._resolveTurnOptions(options);
+    } = this._resolveTurnOptions(turnOptions);
 
     let activeToolNames = initialToolNames;
     let hostSystemInstruction = initialSystemInstruction;

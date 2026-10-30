@@ -2,6 +2,7 @@ import { assert } from 'chai';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { ToolRegistry } from '../../src/classes/toolRegistry.js';
 import { BaseTool } from '../../src/classes/baseTool.js';
+import { CommandTool } from '../../src/classes/commandTool.js';
 import { BaseHook } from '../../src/classes/baseHook.js';
 import { HookRegistry } from '../../src/classes/hookRegistry.js';
 import { ToolExecution } from '../../src/classes/toolExecution.js';
@@ -906,6 +907,51 @@ describe('ToolRegistry', () => {
       assert.strictEqual(tool.executeCalls, 0);
       assert.lengthOf(perm.calls, 1);
       assert.isTrue(perm.calls[0].event.tool_annotations.destructiveHint);
+    });
+  });
+
+  describe('findCommandMatch', () => {
+    class StatusTool extends CommandTool {
+      constructor () {
+        super('status', 'Status', {
+          type: 'object',
+          properties: {},
+          additionalProperties: false,
+        }, { triggers: ['status'] });
+      }
+
+      async execute () {
+        return { ok: true };
+      }
+    }
+
+    it('returns match for registered CommandTool', () => {
+      registry.register(new StatusTool());
+      const match = registry.findCommandMatch('status');
+      assert.isNotNull(match);
+      assert.strictEqual(match.tool.name, 'status');
+    });
+
+    it('returns null when no trigger matches or tool is BaseTool', () => {
+      registry.register(testTool);
+      assert.isNull(registry.findCommandMatch('status'));
+      registry.register(new StatusTool());
+      assert.isNull(registry.findCommandMatch('ping'));
+    });
+
+    it('stops matching after unregister', () => {
+      registry.register(new StatusTool());
+      assert.isNotNull(registry.findCommandMatch('status'));
+      registry.unregister('status');
+      assert.isNull(registry.findCommandMatch('status'));
+    });
+
+    it('getTool resolves original and prefixed names', () => {
+      const tool = new StatusTool();
+      registry.register(tool, 'svc');
+      assert.strictEqual(registry.getTool('status').name, 'svc_status');
+      assert.strictEqual(registry.getTool('svc_status').name, 'svc_status');
+      assert.isNull(registry.getTool('missing'));
     });
   });
 });

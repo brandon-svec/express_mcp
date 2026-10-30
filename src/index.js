@@ -2,7 +2,7 @@
 export { ExpressMcp, AuthManager } from './classes/index.js';
 
 // Base tool interface for creating custom tools
-export { BaseTool } from './classes/index.js';
+export { BaseTool, CommandTool } from './classes/index.js';
 
 // Base resource interface for playbooks / MCP resources
 export { BaseResource, ResourceRegistry } from './classes/index.js';

@@ -8,6 +8,7 @@ Register tools against your existing business logic, optionally add OAuth SSO (G
 
 - **Drop-in MCP on Express** — Mount JSON-RPC MCP endpoints on the app you already run
 - **Your tools, your data** — Register custom tools that wrap existing APIs and services
+- **CommandTool macros** — Regex/keyword chat triggers for zero-token fast-path tools, prompt macros with tool constraints, and hybrid prefetch + LLM analysis
 - **Optional OAuth SSO** — GitHub/Google login, Bearer JWTs, PKCE, and Dynamic Client Registration for MCP clients
 - **Gemini Spark Connected Apps** — First-class Google Account Linking for Spark: default DCR allowlist for `oauth-redirect*.googleusercontent.com`, wire-encoded `state` echo, and `refresh_token` issuance
 - **Built-in knowledge base** — Full-text document search via FlexSearch (`kb_search`, `kb_list`, `kb_get`) plus MCP resources at `kb://{name|documents}/{id}`
@@ -303,6 +304,50 @@ Optional agent constructor options:
 - `includeDomainManifest: boolean` — default `true`. When `true`, appends the Turn-0 domain expert manifest (service identity + playbooks directory with governing tools) to the system instruction on every turn. Set `false` to leave `systemInstruction` unaugmented.
 
 `processMessage` also accepts optional `historyUserText`: when set, that string is stored for the user turn instead of `text` (the model still sees `text`, optionally with `ephemeralPrefix`).
+
+### CommandTool (fast-path & prompt macros)
+
+`CommandTool` extends `BaseTool` with optional chat triggers. Tools without triggers behave as ordinary MCP tools. When `processMessage` receives text that matches a registered command (first match in registration order wins via `ToolRegistry.findCommandMatch`), the agent routes by `mode`:
+
+| Mode | Behavior |
+| --- | --- |
+| `direct` (default) | Runs `execute` + `formatResponse` with no LLM call; appends `{ user, model }` to history so follow-ups see the printed output |
+| `prompt` | Expands the short trigger into an engineered `prompt` for Gemini; stores concise `historyUserText` in history |
+| `hybrid` | Prefetches live data via `execute`, injects it into `prompt(match, text, result)`, then runs the LLM |
+
+Constructor options: `triggers` (`string | RegExp`[]), `mode`, `defaultArgs`, `formatResponse` (sync or async), `prompt`, `ephemeralPrefix`, `historyUserText`, `toolNames` (constrain Gemini declarations for prompt/hybrid; caller `options.toolNames` wins), `annotations`.
+
+```javascript
+import { CommandTool } from '@brandon-svec/express_mcp';
+
+class StatusTool extends CommandTool {
+  constructor() {
+    super('status', 'Account status', { type: 'object', properties: {} }, {
+      triggers: ['status', /^\/status$/i],
+      mode: 'direct',
+      formatResponse: (result) => `Equity: $${result.equity}`,
+    });
+  }
+  async execute() {
+    return { equity: 1000 };
+  }
+}
+
+expressMcp.registerTool(new StatusTool());
+// processMessage(key, 'status') → formatted reply, recorded in history, 0 tokens
+```
+
+Hosts can also run tools out-of-band and still keep conversation memory:
+
+```javascript
+await expressMcp.executeTool('status', {}, {
+  historyKey: chatId,       // or conversationId
+  userText: 'status',       // stored user turn (default `/${toolName}`)
+  recordToHistory: true,    // implied when historyKey is set
+});
+```
+
+MCP JSON-RPC `tools/call` may pass `_meta.conversation_id`. On success, ExpressMcp records the formatted result under the same history key as `agent_ask` (`mcp:{user.sub|anon}:{conversation_id}`) so a later `agent_ask` with that id inherits the tool output.
 
 `httpRouter({ mcpPath, rootAliases, sessionOptions })`: set `rootAliases: false` for a secondary mount (e.g. `/mcp/admin`) so it does not register site-root OAuth AS aliases that would collide with the primary. Path-based discovery (`/.well-known/oauth-authorization-server{mcpPath}`) is always registered. Auth middleware is attached only to exact `/` MCP routes so a longer sibling path is not intercepted.
 
