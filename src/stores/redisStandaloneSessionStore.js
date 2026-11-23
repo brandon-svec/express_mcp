@@ -1,4 +1,5 @@
 import { assertValidSessionId, contextAliasKey } from './sessionContext.js';
+import { mcpTransportKey, normalizeMcpTransportRecord } from './mcpTransportSession.js';
 
 /**
  * @param {string} sessionId
@@ -315,6 +316,78 @@ export class RedisStandaloneSessionStore {
       throw new Error('refreshToken is required');
     }
     const deleted = await this._redis.del(refreshKey(refreshToken));
+    return deleted > 0;
+  }
+
+  /**
+   * Persist Streamable HTTP MCP transport session metadata for restart recovery.
+   * @param {string} sessionId
+   * @param {{
+   *   user: Object|null,
+   *   userId: string|null,
+   *   extraInstructions: string|null,
+   *   permissionMode: string,
+   *   sessionMeta: Object,
+   *   protocolVersion: string,
+   *   capabilities: Object,
+   *   clientInfo: Object,
+   *   resourcePath: string,
+   *   createdAt: number
+   * }} record
+   * @param {number} ttlSeconds
+   * @returns {Promise<void>}
+   */
+  async saveMcpTransportSession(sessionId, record, ttlSeconds) {
+    assertValidSessionId(sessionId);
+    if (typeof ttlSeconds !== 'number' || ttlSeconds <= 0) {
+      throw new Error('ttlSeconds must be a positive number');
+    }
+    const normalized = normalizeMcpTransportRecord(record);
+    await this._redis.set(
+      mcpTransportKey(sessionId),
+      JSON.stringify(normalized),
+      'EX',
+      ttlSeconds
+    );
+  }
+
+  /**
+   * @param {string} sessionId
+   * @returns {Promise<{
+   *   user: Object|null,
+   *   userId: string|null,
+   *   extraInstructions: string|null,
+   *   permissionMode: string,
+   *   sessionMeta: Object,
+   *   protocolVersion: string,
+   *   capabilities: Object,
+   *   clientInfo: Object,
+   *   resourcePath: string,
+   *   createdAt: number
+   * }|null>}
+   */
+  async findMcpTransportSession(sessionId) {
+    assertValidSessionId(sessionId);
+    const raw = await this._redis.get(mcpTransportKey(sessionId));
+    if (raw === null) {
+      return null;
+    }
+    let parsed;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      throw new Error(`Invalid MCP transport session payload for ${sessionId}`);
+    }
+    return normalizeMcpTransportRecord(parsed);
+  }
+
+  /**
+   * @param {string} sessionId
+   * @returns {Promise<boolean>}
+   */
+  async deleteMcpTransportSession(sessionId) {
+    assertValidSessionId(sessionId);
+    const deleted = await this._redis.del(mcpTransportKey(sessionId));
     return deleted > 0;
   }
 
