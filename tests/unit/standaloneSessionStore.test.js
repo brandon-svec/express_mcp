@@ -59,6 +59,74 @@ describe('InMemoryStandaloneSessionStore', () => {
     expect(await store.deleteRefreshToken('rt-1')).to.equal(true);
     expect(await store.findRefreshToken('rt-1')).to.equal(null);
   });
+
+  it('saves, finds, and deletes MCP transport sessions', async () => {
+    const store = new InMemoryStandaloneSessionStore();
+    const record = {
+      user: { sub: 'gh:1', email: 'a@b.com' },
+      userId: null,
+      extraInstructions: null,
+      permissionMode: 'default',
+      sessionMeta: {},
+      protocolVersion: '2024-11-05',
+      capabilities: {},
+      clientInfo: { name: 'test', version: '1.0.0' },
+      resourcePath: '/mcp',
+      createdAt: Date.now()
+    };
+    await store.saveMcpTransportSession(SESSION_ID, record, 3600);
+    expect(await store.findMcpTransportSession(SESSION_ID)).to.deep.equal(record);
+    expect(await store.deleteMcpTransportSession(SESSION_ID)).to.equal(true);
+    expect(await store.findMcpTransportSession(SESSION_ID)).to.equal(null);
+  });
+
+  it('returns null for expired MCP transport sessions', async () => {
+    const store = new InMemoryStandaloneSessionStore();
+    const record = {
+      user: null,
+      userId: null,
+      extraInstructions: null,
+      permissionMode: 'default',
+      sessionMeta: {},
+      protocolVersion: '2024-11-05',
+      capabilities: {},
+      clientInfo: { name: 'test', version: '1.0.0' },
+      resourcePath: '/mcp',
+      createdAt: Date.now()
+    };
+    await store.saveMcpTransportSession(SESSION_ID, record, 1);
+    await new Promise((resolve) => {
+      setTimeout(resolve, 1100);
+    });
+    expect(await store.findMcpTransportSession(SESSION_ID)).to.equal(null);
+  });
+
+  it('rejects invalid MCP transport session ids and records', async () => {
+    const store = new InMemoryStandaloneSessionStore();
+    try {
+      await store.saveMcpTransportSession('not-a-uuid', {
+        user: null,
+        userId: null,
+        extraInstructions: null,
+        permissionMode: 'default',
+        sessionMeta: {},
+        protocolVersion: '2024-11-05',
+        capabilities: {},
+        clientInfo: { name: 'test', version: '1.0.0' },
+        resourcePath: '/mcp',
+        createdAt: Date.now()
+      }, 3600);
+      expect.fail('expected invalid session id error');
+    } catch (err) {
+      expect(err.message).to.include('Invalid session_id');
+    }
+    try {
+      await store.saveMcpTransportSession(SESSION_ID, { user: null }, 3600);
+      expect.fail('expected invalid record error');
+    } catch (err) {
+      expect(err.message).to.match(/userId|permissionMode|required/);
+    }
+  });
 });
 
 describe('RedisStandaloneSessionStore', () => {
@@ -106,6 +174,44 @@ describe('RedisStandaloneSessionStore', () => {
     await store.activate(SESSION_ID, user, 3600, context);
     const active = await store.findActive(SESSION_ID);
     expect(active).to.deep.equal({ user, context });
+  });
+
+  it('saves and finds MCP transport sessions under mcp:transport key', async () => {
+    const storage = new Map();
+    const redis = {
+      async set(key, value, flag, ttl) {
+        storage.set(key, { value, flag, ttl });
+      },
+      async get(key) {
+        const entry = storage.get(key);
+        return entry ? entry.value : null;
+      },
+      async del(key) {
+        const existed = storage.has(key);
+        storage.delete(key);
+        return existed ? 1 : 0;
+      }
+    };
+    const store = new RedisStandaloneSessionStore(redis);
+    const record = {
+      user: { sub: 'google:1' },
+      userId: null,
+      extraInstructions: null,
+      permissionMode: 'default',
+      sessionMeta: { traceparent: '00-abc' },
+      protocolVersion: '2024-11-05',
+      capabilities: {},
+      clientInfo: { name: 'test', version: '1.0.0' },
+      resourcePath: '/mcp',
+      createdAt: 1700000000000
+    };
+    await store.saveMcpTransportSession(SESSION_ID, record, 7200);
+    const stored = storage.get(`mcp:transport:${SESSION_ID}`);
+    expect(stored.flag).to.equal('EX');
+    expect(stored.ttl).to.equal(7200);
+    expect(await store.findMcpTransportSession(SESSION_ID)).to.deep.equal(record);
+    expect(await store.deleteMcpTransportSession(SESSION_ID)).to.equal(true);
+    expect(await store.findMcpTransportSession(SESSION_ID)).to.equal(null);
   });
 });
 

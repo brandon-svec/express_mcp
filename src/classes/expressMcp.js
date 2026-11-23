@@ -29,6 +29,11 @@ import {
   normalizeTelemetryConfig,
   TelemetryEngine,
 } from '../telemetry/index.js';
+import { parseDurationToSeconds } from '../stores/sessionTtl.js';
+import {
+  ownsMcpTransportSession,
+  replayMcpTransportInitialize,
+} from '../mcpTransportRecovery.js';
 
 const packageVersion = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')).version;
 
@@ -1080,12 +1085,58 @@ export class ExpressMcp {
   }
 
   /**
+   * @returns {string}
+   * @private
+   */
+  _mcpResourcePath() {
+    if (this.authManager && typeof this.authManager.resourcePath === 'string' && this.authManager.resourcePath) {
+      return this.authManager.resourcePath;
+    }
+    return '/mcp';
+  }
+
+  /**
+   * @returns {{
+   *   saveMcpTransportSession: Function,
+   *   findMcpTransportSession: Function,
+   *   deleteMcpTransportSession: Function
+   * }|null}
+   * @private
+   */
+  _mcpTransportSessionStore() {
+    const store = this.authManager?.sessionStore;
+    if (
+      !store
+      || typeof store.saveMcpTransportSession !== 'function'
+      || typeof store.findMcpTransportSession !== 'function'
+      || typeof store.deleteMcpTransportSession !== 'function'
+    ) {
+      return null;
+    }
+    return store;
+  }
+
+  /**
+   * @param {string} sessionId
+   * @returns {Promise<void>}
+   * @private
+   */
+  async _deleteStoredMcpTransportSession(sessionId) {
+    const store = this._mcpTransportSessionStore();
+    if (!store) {
+      return;
+    }
+    await store.deleteMcpTransportSession(sessionId);
+  }
+
+  /**
    * Creates an Express router with MCP protocol routes
    * @returns {Router} Express router configured for MCP
    */
   router() {
     const router = Router();
     const sessions = new Map();
+    const recovering = new Map();
     const maxSessions = 1000;
 
     // Attach auth only to exact '/' routes so a sibling mount under a longer
@@ -1095,6 +1146,185 @@ export class ExpressMcp {
       ? this.authManager.protectedMiddleware()
       : [];
 
+    /**
+     * @param {{
+     *   sessionId: string,
+     *   requestLogger: Object,
+     *   extraInstructions: string|null,
+     *   sessionMeta: Object,
+     *   user: Object|null,
+     *   userId: string|null,
+     *   permissionMode: string,
+     *   persist: boolean,
+     *   initParams: { protocolVersion?: string, capabilities?: Object, clientInfo?: Object }|null
+     * }} options
+     * @returns {Promise<{ transport: import('@modelcontextprotocol/sdk/server/streamableHttp.js').StreamableHTTPServerTransport, mcpServer: import('@modelcontextprotocol/sdk/server/mcp.js').McpServer }>}
+     */
+    const createSessionEntry = async (options) => {
+      const {
+        sessionId,
+        requestLogger,
+        extraInstructions,
+        sessionMeta,
+        user,
+        userId,
+        permissionMode,
+        persist,
+        initParams
+      } = options;
+
+      /** @type {{ transport: import('@modelcontextprotocol/sdk/server/streamableHttp.js').StreamableHTTPServerTransport, mcpServer: import('@modelcontextprotocol/sdk/server/mcp.js').McpServer }} */
+      let sessionEntry;
+
+      const transport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: () => sessionId,
+        enableJsonResponse: true,
+        onsessioninitialized: async (sid) => {
+          while (sessions.size >= maxSessions) {
+            const oldestId = sessions.keys().next().value;
+            const oldest = sessions.get(oldestId);
+            sessions.delete(oldestId);
+            try {
+              oldest?.transport?.close?.();
+            } catch {
+              // ignore close errors during eviction
+            }
+            try {
+              await this._deleteStoredMcpTransportSession(oldestId);
+            } catch (error) {
+              requestLogger.error(
+                { sessionId: oldestId, error: error.message, stack: error.stack },
+                'Failed to delete evicted MCP transport session from store'
+              );
+            }
+          }
+          sessions.set(sid, sessionEntry);
+
+          if (persist !== true) {
+            return;
+          }
+
+          const store = this._mcpTransportSessionStore();
+          if (!store) {
+            return;
+          }
+          if (!initParams || typeof initParams !== 'object') {
+            throw new Error('initialize params are required to persist an MCP transport session');
+          }
+          if (typeof initParams.protocolVersion !== 'string' || !initParams.protocolVersion) {
+            throw new Error('initialize params.protocolVersion is required to persist an MCP transport session');
+          }
+          if (
+            !initParams.capabilities
+            || typeof initParams.capabilities !== 'object'
+            || Array.isArray(initParams.capabilities)
+          ) {
+            throw new Error('initialize params.capabilities is required to persist an MCP transport session');
+          }
+          if (
+            !initParams.clientInfo
+            || typeof initParams.clientInfo !== 'object'
+            || Array.isArray(initParams.clientInfo)
+          ) {
+            throw new Error('initialize params.clientInfo is required to persist an MCP transport session');
+          }
+
+          await store.saveMcpTransportSession(
+            sid,
+            {
+              user,
+              userId,
+              extraInstructions,
+              permissionMode,
+              sessionMeta,
+              protocolVersion: initParams.protocolVersion,
+              capabilities: initParams.capabilities,
+              clientInfo: initParams.clientInfo,
+              resourcePath: this._mcpResourcePath(),
+              createdAt: Date.now()
+            },
+            parseDurationToSeconds(this.authManager.jwtExpiresIn)
+          );
+        }
+      });
+
+      transport.onclose = () => {
+        if (transport.sessionId) {
+          sessions.delete(transport.sessionId);
+        }
+      };
+      transport.onerror = (error) => {
+        requestLogger.error({ error: error.message, stack: error.stack }, 'MCP transport error');
+      };
+
+      const mcpServer = this._buildMcpServer({
+        user,
+        userId,
+        extraInstructions,
+        permissionMode,
+        sessionId,
+        meta: sessionMeta
+      });
+      sessionEntry = { transport, mcpServer };
+      await mcpServer.connect(transport);
+      return sessionEntry;
+    };
+
+    /**
+     * @param {string} sessionId
+     * @param {import('express').Request} req
+     * @param {Object} requestLogger
+     * @returns {Promise<{ transport: import('@modelcontextprotocol/sdk/server/streamableHttp.js').StreamableHTTPServerTransport, mcpServer: import('@modelcontextprotocol/sdk/server/mcp.js').McpServer }|null>}
+     */
+    const recoverSessionEntry = async (sessionId, req, requestLogger) => {
+      const existing = sessions.get(sessionId);
+      if (existing) {
+        return existing;
+      }
+
+      const inFlight = recovering.get(sessionId);
+      if (inFlight) {
+        return inFlight;
+      }
+
+      const recoveryPromise = (async () => {
+        const store = this._mcpTransportSessionStore();
+        if (!store) {
+          return null;
+        }
+
+        const record = await store.findMcpTransportSession(sessionId);
+        if (!record) {
+          return null;
+        }
+        if (!ownsMcpTransportSession(record, req.mcpUser ?? null, this._mcpResourcePath())) {
+          return null;
+        }
+
+        const sessionEntry = await createSessionEntry({
+          sessionId,
+          requestLogger,
+          extraInstructions: record.extraInstructions,
+          sessionMeta: record.sessionMeta,
+          user: record.user,
+          userId: record.userId,
+          permissionMode: record.permissionMode,
+          persist: false,
+          initParams: null
+        });
+        await replayMcpTransportInitialize(sessionEntry.transport, record);
+        requestLogger.info({ sessionId }, 'Recovered MCP transport session from store');
+        return sessions.get(sessionId) || sessionEntry;
+      })();
+
+      recovering.set(sessionId, recoveryPromise);
+      try {
+        return await recoveryPromise;
+      } finally {
+        recovering.delete(sessionId);
+      }
+    };
+
     const handlePost = async (req, res) => {
       const requestLogger = this.logger.child({
         requestId: req.body?.id || 'unknown',
@@ -1103,10 +1333,27 @@ export class ExpressMcp {
 
       const sessionId = req.headers['mcp-session-id'];
       let transport;
-      let mcpServer;
 
       if (sessionId) {
-        const session = sessions.get(sessionId);
+        let session = sessions.get(sessionId);
+        if (!session) {
+          try {
+            session = await recoverSessionEntry(sessionId, req, requestLogger);
+          } catch (error) {
+            requestLogger.error(
+              { sessionId, error: error.message, stack: error.stack },
+              'MCP transport session recovery failed'
+            );
+            if (!res.headersSent) {
+              res.status(500).json({
+                jsonrpc: '2.0',
+                error: { code: -32603, message: 'Internal server error' },
+                id: req.body?.id ?? null
+              });
+            }
+            return;
+          }
+        }
         if (!session) {
           if (!res.headersSent) {
             res.status(404).json({
@@ -1117,9 +1364,8 @@ export class ExpressMcp {
           }
           return;
         }
-        ({ transport, mcpServer } = session);
+        ({ transport } = session);
       } else {
-        let sessionEntry;
         const newSessionId = randomUUID();
         const headerTraceparent = req.headers['traceparent'] ?? null;
         const bodyTraceparent = req.body?.params?._meta?.traceparent ?? null;
@@ -1147,43 +1393,20 @@ export class ExpressMcp {
           }
         }
 
-        transport = new StreamableHTTPServerTransport({
-          sessionIdGenerator: () => newSessionId,
-          enableJsonResponse: true,
-          onsessioninitialized: (sid) => {
-            while (sessions.size >= maxSessions) {
-              const oldestId = sessions.keys().next().value;
-              const oldest = sessions.get(oldestId);
-              sessions.delete(oldestId);
-              try {
-                oldest?.transport?.close?.();
-              } catch {
-                // ignore close errors during eviction
-              }
-            }
-            sessions.set(sid, sessionEntry);
-          }
-        });
-        transport.onclose = () => {
-          if (transport.sessionId) {
-            sessions.delete(transport.sessionId);
-          }
-        };
-        transport.onerror = (error) => {
-          requestLogger.error({ error: error.message, stack: error.stack }, 'MCP transport error');
-        };
         const sessionUser = req.mcpUser ?? null;
         const sessionUserId = await this._resolveSessionUserId(sessionUser);
-        mcpServer = this._buildMcpServer({
+        const sessionEntry = await createSessionEntry({
+          sessionId: newSessionId,
+          requestLogger,
+          extraInstructions,
+          sessionMeta,
           user: sessionUser,
           userId: sessionUserId,
-          extraInstructions,
           permissionMode: this.permissionMode,
-          sessionId: newSessionId,
-          meta: sessionMeta
+          persist: true,
+          initParams: req.body?.params ?? null
         });
-        sessionEntry = { transport, mcpServer };
-        await mcpServer.connect(transport);
+        ({ transport } = sessionEntry);
       }
 
       try {
@@ -1212,16 +1435,75 @@ export class ExpressMcp {
         return;
       }
 
-      const session = sessions.get(sessionId);
+      const requestLogger = this.logger.child({
+        ...userLogFields(req.mcpUser)
+      });
+
+      let session = sessions.get(sessionId);
       if (!session) {
-        if (!res.headersSent) {
-          res.status(404).end();
+        if (req.method === 'DELETE') {
+          try {
+            const store = this._mcpTransportSessionStore();
+            if (!store) {
+              if (!res.headersSent) {
+                res.status(404).end();
+              }
+              return;
+            }
+            const record = await store.findMcpTransportSession(sessionId);
+            if (!record || !ownsMcpTransportSession(record, req.mcpUser ?? null, this._mcpResourcePath())) {
+              if (!res.headersSent) {
+                res.status(404).end();
+              }
+              return;
+            }
+            await store.deleteMcpTransportSession(sessionId);
+            if (!res.headersSent) {
+              res.status(200).end();
+            }
+          } catch (error) {
+            requestLogger.error(
+              { sessionId, error: error.message, stack: error.stack },
+              'Failed to delete stored MCP transport session'
+            );
+            if (!res.headersSent) {
+              res.status(500).json({
+                jsonrpc: '2.0',
+                error: { code: -32603, message: 'Internal server error' }
+              });
+            }
+          }
+          return;
         }
-        return;
+
+        try {
+          session = await recoverSessionEntry(sessionId, req, requestLogger);
+        } catch (error) {
+          requestLogger.error(
+            { sessionId, error: error.message, stack: error.stack },
+            'MCP transport session recovery failed'
+          );
+          if (!res.headersSent) {
+            res.status(500).json({
+              jsonrpc: '2.0',
+              error: { code: -32603, message: 'Internal server error' }
+            });
+          }
+          return;
+        }
+        if (!session) {
+          if (!res.headersSent) {
+            res.status(404).end();
+          }
+          return;
+        }
       }
 
       try {
         await session.transport.handleRequest(req, res);
+        if (req.method === 'DELETE') {
+          await this._deleteStoredMcpTransportSession(sessionId);
+        }
       } catch (error) {
         this.logger.error({ error: error.message, stack: error.stack }, 'MCP session request failed');
         if (!res.headersSent) {

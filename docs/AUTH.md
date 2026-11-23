@@ -318,6 +318,14 @@ const session = await expressMcp.getVerifiedSessionByContext({
 
 Use `InMemoryStandaloneSessionStore` for local dev or single-process tests. Use `RedisStandaloneSessionStore` for multi-worker deployments (`ioredis` is an optional peer dependency).
 
+### MCP Streamable HTTP transport sessions
+
+OAuth Bearer rows (`mcp:session:{jti}`) are separate from Streamable HTTP transport sessions. When `auth.sessionStore` implements the transport helpers (both built-in stores do), ExpressMcp also persists lightweight MCP transport metadata under **`mcp:transport:{mcpSessionId}`** with the same TTL as `jwtExpiresIn`.
+
+On a process restart the in-memory transport Map is empty. The next `POST` / `GET` with a still-valid `Mcp-Session-Id` looks up that Redis (or in-memory store) row, checks JWT `sub` ownership and `resourcePath` (`/mcp` vs `/mcp/admin`), rebuilds `{ transport, mcpServer }`, runs an internal synthetic `initialize` + `notifications/initialized` (not written to the client response), and then handles the real request. Unknown, expired, or foreign session IDs still return **404 Session not found**.
+
+`DELETE /mcp` removes both the in-memory entry and the store row (including a Map-miss short-circuit that deletes the store row without rebuilding a transport). FIFO eviction at the in-memory cap also deletes the store row. `transport.onclose` only clears the Map so a graceful process shutdown cannot wipe recoverable sessions.
+
 ## API exports
 
 - `buildAuthOptions(input)` — normalize and validate auth config (also called by constructor)

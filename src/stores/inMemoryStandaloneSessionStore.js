@@ -1,4 +1,5 @@
 import { assertValidSessionId, contextAliasKey } from './sessionContext.js';
+import { normalizeMcpTransportRecord } from './mcpTransportSession.js';
 
 /**
  * @param {unknown} details
@@ -49,6 +50,8 @@ export class InMemoryStandaloneSessionStore {
     this._refreshTokens = new Map();
     /** @type {Map<string, { sealedRefreshToken: string, scopes: string[], updatedAt: string }>} */
     this._idpGrants = new Map();
+    /** @type {Map<string, { record: Object, expiresAt: number }>} */
+    this._mcpTransports = new Map();
   }
 
   /**
@@ -263,6 +266,72 @@ export class InMemoryStandaloneSessionStore {
       return false;
     }
     return this.deactivate(sessionId);
+  }
+
+  /**
+   * Persist Streamable HTTP MCP transport session metadata for restart recovery.
+   * @param {string} sessionId
+   * @param {{
+   *   user: Object|null,
+   *   userId: string|null,
+   *   extraInstructions: string|null,
+   *   permissionMode: string,
+   *   sessionMeta: Object,
+   *   protocolVersion: string,
+   *   capabilities: Object,
+   *   clientInfo: Object,
+   *   resourcePath: string,
+   *   createdAt: number
+   * }} record
+   * @param {number} ttlSeconds
+   * @returns {Promise<void>}
+   */
+  async saveMcpTransportSession(sessionId, record, ttlSeconds) {
+    assertValidSessionId(sessionId);
+    if (typeof ttlSeconds !== 'number' || ttlSeconds <= 0) {
+      throw new Error('ttlSeconds must be a positive number');
+    }
+    const normalized = normalizeMcpTransportRecord(record);
+    const expiresAt = Math.floor(Date.now() / 1000) + ttlSeconds;
+    this._mcpTransports.set(sessionId, { record: normalized, expiresAt });
+  }
+
+  /**
+   * @param {string} sessionId
+   * @returns {Promise<{
+   *   user: Object|null,
+   *   userId: string|null,
+   *   extraInstructions: string|null,
+   *   permissionMode: string,
+   *   sessionMeta: Object,
+   *   protocolVersion: string,
+   *   capabilities: Object,
+   *   clientInfo: Object,
+   *   resourcePath: string,
+   *   createdAt: number
+   * }|null>}
+   */
+  async findMcpTransportSession(sessionId) {
+    assertValidSessionId(sessionId);
+    const entry = this._mcpTransports.get(sessionId);
+    if (!entry) {
+      return null;
+    }
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    if (entry.expiresAt <= nowSeconds) {
+      this._mcpTransports.delete(sessionId);
+      return null;
+    }
+    return normalizeMcpTransportRecord(entry.record);
+  }
+
+  /**
+   * @param {string} sessionId
+   * @returns {Promise<boolean>}
+   */
+  async deleteMcpTransportSession(sessionId) {
+    assertValidSessionId(sessionId);
+    return this._mcpTransports.delete(sessionId);
   }
 
   /**
